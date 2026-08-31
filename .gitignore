@@ -40,3 +40,4 @@ dist-ssr
 .vite
 .futu-home
 third_party/
+__pycache__/
