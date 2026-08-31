@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>A 股量化工作台原型</title>
+  <style>
+    :root {
+      --bg: #fff7ed;
+      --card: #fffaf5;
+      --text: #292524;
+      --muted: #78716c;
+      --primary: #f59e0b;
+      --risk: #e11d48;
+      --border: rgba(245, 158, 11, 0.24);
+      --shadow: rgba(120, 53, 15, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(245, 158, 11, 0.22), transparent 34rem),
+        radial-gradient(circle at 90% 12%, rgba(225, 29, 72, 0.13), transparent 30rem),
+        linear-gradient(135deg, #fffaf0 0%, #fff7ed 50%, #fef3c7 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .shell {
+      width: min(1440px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 30px 0 56px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin: -30px calc((100vw - min(1440px, calc(100% - 48px))) / -2) 26px;
+      padding: 14px max(24px, calc((100vw - 1440px) / 2 + 24px));
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 250, 245, 0.88);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar-inner,
+    .hero-grid,
+    .workspace-grid,
+    .three-grid,
+    .two-grid,
+    .nav-links,
+    .actions,
+    .row,
+    .chips {
+      display: flex;
+      gap: 14px;
+    }
+
+    .topbar-inner {
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 900;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--primary), #fb7185);
+      box-shadow: 0 12px 30px var(--shadow);
+    }
+
+    .brand small,
+    .muted {
+      color: var(--muted);
+    }
+
+    .nav-links {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill,
+    .nav-pill,
+    button {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 250, 245, 0.86);
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .nav-pill {
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+
+    .nav-pill.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #1c1917;
+    }
+
+    .hero {
+      margin-bottom: 18px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 34px;
+      background: rgba(255, 250, 245, 0.82);
+      box-shadow: 0 24px 80px var(--shadow);
+    }
+
+    .hero-grid {
+      align-items: stretch;
+      padding: 28px;
+    }
+
+    .hero-main {
+      flex: 1.35;
+      min-width: 0;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(245, 158, 11, 0.14);
+      color: #9a3412;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: 0.22em;
+    }
+
+    h1 {
+      margin: 18px 0 12px;
+      font-size: clamp(40px, 5vw, 76px);
+      line-height: 0.92;
+      letter-spacing: -0.07em;
+    }
+
+    .hero-copy {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.8;
+    }
+
+    .hero-side {
+      flex: 0.85;
+      min-width: 360px;
+      border-radius: 28px;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(254, 243, 199, 0.72));
+      padding: 18px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      border: 1px solid rgba(245, 158, 11, 0.18);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.7);
+      padding: 14px;
+    }
+
+    .metric span,
+    .card-title span,
+    .table-label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 7px;
+      font-size: 24px;
+      letter-spacing: -0.04em;
+    }
+
+    .actions {
+      flex-wrap: wrap;
+      margin-top: 22px;
+    }
+
+    button,
+    .button {
+      cursor: default;
+      padding: 12px 17px;
+      font-size: 14px;
+      box-shadow: 0 12px 30px rgba(120, 53, 15, 0.08);
+    }
+
+    .button.primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--primary), #fb7185);
+      color: #1c1917;
+    }
+
+    .button.danger {
+      border-color: rgba(225, 29, 72, 0.25);
+      background: rgba(255, 241, 242, 0.9);
+      color: #be123c;
+    }
+
+    .platform-section {
+      margin: 18px 0 24px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 0 14px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.05em;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .platform-card,
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      background: rgba(255, 250, 245, 0.84);
+      box-shadow: 0 18px 60px rgba(120, 53, 15, 0.09);
+    }
+
+    .platform-card {
+      min-height: 330px;
+      padding: 22px;
+    }
+
+    .platform-card.featured {
+      background:
+        radial-gradient(circle at top right, rgba(245, 158, 11, 0.22), transparent 15rem),
+        rgba(255, 250, 245, 0.94);
+      outline: 2px solid rgba(245, 158, 11, 0.28);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .card-title h3 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.05;
+      letter-spacing: -0.05em;
+    }
+
+    .badge {
+      display: inline-flex;
+      white-space: nowrap;
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(245, 158, 11, 0.14);
+      color: #9a3412;
+      font-size: 12px;
+      font-weight: 950;
+    }
+
+    .platform-card p {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .chips {
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    .chip {
+      border: 1px solid rgba(245, 158, 11, 0.18);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 10px 12px;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .panel {
+      padding: 20px;
+    }
+
+    .panel h3 {
+      margin: 8px 0 4px;
+      font-size: 24px;
+      letter-spacing: -0.04em;
+    }
+
+    .lookup-box {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.78);
+      padding: 13px 14px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 750;
+      outline: none;
+    }
+
+    .result {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr 0.8fr auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 14px;
+      border: 1px solid rgba(245, 158, 11, 0.18);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.66);
+      padding: 12px;
+    }
+
+    .row {
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(245, 158, 11, 0.14);
+      padding: 12px 0;
+    }
+
+    .row:last-child { border-bottom: 0; }
+
+    .code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-weight: 900;
+    }
+
+    .tone-good { color: #9a3412; }
+    .tone-risk { color: var(--risk); }
+
+    .two-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .mini-card {
+      border: 1px solid rgba(245, 158, 11, 0.16);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 14px;
+    }
+
+    .mini-card strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 20px;
+      letter-spacing: -0.04em;
+    }
+
+    .table {
+      overflow: hidden;
+      margin-top: 12px;
+      border: 1px solid rgba(245, 158, 11, 0.18);
+      border-radius: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(245, 158, 11, 0.12);
+    }
+
+    th {
+      background: rgba(254, 243, 199, 0.54);
+      color: #78716c;
+      font-size: 12px;
+      font-weight: 950;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    @media (max-width: 1120px) {
+      .hero-grid,
+      .workspace-grid {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+
+      .hero-side {
+        min-width: 0;
+      }
+
+      .three-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 28px, 1440px); }
+      .topbar { margin-left: -14px; margin-right: -14px; }
+      .result,
+      .lookup-box,
+      .two-grid,
+      .status-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">量</span>
+        <div>
+          <div>量化交易工作台</div>
+          <small>平台入口 · 账户 · 行情 · 策略 · 风控</small>
+        </div>
+      </div>
+      <nav class="nav-links">
+        <span class="nav-pill">Futu 工作台</span>
+        <span class="nav-pill">Longbridge 工作台</span>
+        <span class="nav-pill active">A 股工作台</span>
+        <span class="nav-pill">切换英文</span>
+      </nav>
+    </div>
+  </div>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="hero-grid">
+        <div class="hero-main">
+          <span class="eyebrow">PLATFORM SELECTOR</span>
+          <h1>一级入口独立出 A 股量化工作台</h1>
+          <p class="hero-copy">
+            A 股不再塞进 Futu 实盘页，而是作为独立市场工作台进入。股票池、查询订阅、行情缓存、LLM 评估、候选池和风控规则都与现有 Futu / Longbridge 工作台隔离。
+          </p>
+          <div class="actions">
+            <span class="button primary">进入 A 股工作台</span>
+            <span class="button">返回平台选择</span>
+            <span class="button danger">只多头 · 禁止卖空</span>
+          </div>
+        </div>
+        <aside class="hero-side">
+          <span class="eyebrow">A 股工作台状态</span>
+          <div class="status-grid" style="margin-top: 14px;">
+            <div class="metric"><span>行情源</span><strong>Futu OpenD</strong></div>
+            <div class="metric"><span>交易市场</span><strong>SH / SZ</strong></div>
+            <div class="metric"><span>交易动作</span><strong>BUY / 卖出已有多头</strong></div>
+            <div class="metric"><span>LLM Gate</span><strong>午休/收盘跳过</strong></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="platform-section">
+      <div class="section-head">
+        <h2>一级平台选择页</h2>
+        <span class="muted">三入口并列，A 股不挂在 Futu 内部</span>
+      </div>
+      <div class="three-grid">
+        <article class="platform-card">
+          <div class="card-title">
+            <h3>Futu 量化交易工作台</h3>
+            <span class="badge">已接入</span>
+          </div>
+          <p>保留现有美股/港股账户、持仓、研究报告、实盘确认队列和模拟盘。</p>
+          <div class="chips">
+            <span class="chip">账户资产</span>
+            <span class="chip">持仓盈亏</span>
+            <span class="chip">Futu OpenD</span>
+            <span class="chip">实盘确认</span>
+            <span class="chip">模拟盘</span>
+            <span class="chip">报告中心</span>
+          </div>
+        </article>
+
+        <article class="platform-card">
+          <div class="card-title">
+            <h3>Longbridge 量化交易工作台</h3>
+            <span class="badge">已接入</span>
+          </div>
+          <p>长桥账户、行情、持仓、订单和策略执行继续作为独立平台，不与 Futu/A 股混用。</p>
+          <div class="chips">
+            <span class="chip">OAuth 账户</span>
+            <span class="chip">长桥行情</span>
+            <span class="chip">持仓同步</span>
+            <span class="chip">订单队列</span>
+            <span class="chip">策略执行</span>
+            <span class="chip">风控</span>
+          </div>
+        </article>
+
+        <article class="platform-card featured">
+          <div class="card-title">
+            <h3>A 股量化工作台</h3>
+            <span class="badge">新增入口</span>
+          </div>
+          <p>面向沪深 A 股：查询真实 Futu code，手动订阅进独立股票池，只多头评估，午休和收盘自动跳过。</p>
+          <div class="chips">
+            <span class="chip">SH/SZ 查询</span>
+            <span class="chip">独立股票池</span>
+            <span class="chip">逐笔数据</span>
+            <span class="chip">1m K线</span>
+            <span class="chip">只多头</span>
+            <span class="chip">CNY 口径</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="platform-section">
+      <div class="section-head">
+        <h2>A 股工作台首屏</h2>
+        <span class="muted">参考现有两个量化工作台的高密度功能入口</span>
+      </div>
+
+      <div class="workspace-grid">
+        <div class="stack">
+          <section id="lookup" class="panel">
+            <span class="eyebrow">查询与订阅</span>
+            <h3>A 股真实代码查询</h3>
+            <p class="muted">输入 SH/SZ 代码或 6 位数字，后端调用 Futu OpenD 查询真实证券信息；点击 + 后才进入 A 股股票池。</p>
+            <div class="lookup-box">
+              <input value="SH.600519" readonly />
+              <span class="button primary">查询 Futu 真实代码</span>
+            </div>
+            <div class="result">
+              <div>
+                <span class="table-label">名称</span>
+                <strong>贵州茅台</strong>
+              </div>
+              <div>
+                <span class="table-label">真实订阅代码</span>
+                <strong class="code">SH.600519</strong>
+              </div>
+              <div>
+                <span class="table-label">币种 / 类型</span>
+                <strong>CNY · STOCK</strong>
+              </div>
+              <span class="button primary">+ 订阅进股票池</span>
+            </div>
+          </section>
+
+          <section id="universe" class="panel">
+            <span class="eyebrow">独立股票池</span>
+            <h3>A 股 LLM 股票池</h3>
+            <div class="table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>行情</th>
+                    <th>逐笔</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="code">SH.600519</td>
+                    <td>贵州茅台</td>
+                    <td class="tone-good">QUOTE OK</td>
+                    <td class="tone-good">TICKER 240</td>
+                    <td>查看 / 移除</td>
+                  </tr>
+                  <tr>
+                    <td class="code">SZ.000001</td>
+                    <td>平安银行</td>
+                    <td class="tone-good">QUOTE OK</td>
+                    <td class="tone-good">TICKER 240</td>
+                    <td>查看 / 移除</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="market-data" class="panel">
+            <span class="eyebrow">行情窗口</span>
+            <h3>LLM 请求数据</h3>
+            <div class="two-grid">
+              <div class="mini-card"><span class="table-label">K 线窗口</span><strong>120 x 1m</strong><p class="muted">早盘不足时回补前一交易日</p></div>
+              <div class="mini-card"><span class="table-label">逐笔/分时点</span><strong>240 tickerPoints</strong><p class="muted">来自 Futu TICKER 订阅</p></div>
+              <div class="mini-card"><span class="table-label">盘口</span><strong>5 档摆盘</strong><p class="muted">ask / bid 双侧校验</p></div>
+              <div class="mini-card"><span class="table-label">更新时间</span><strong>实时缓存</strong><p class="muted">quote/kline/ticker/orderBook</p></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section id="strategy" class="panel">
+            <span class="eyebrow">策略评估</span>
+            <h3>A 股实盘评估引擎</h3>
+            <div class="two-grid">
+              <div class="mini-card"><span class="table-label">引擎</span><strong>Stopped</strong></div>
+              <div class="mini-card"><span class="table-label">并发</span><strong>1 / N</strong></div>
+              <div class="mini-card"><span class="table-label">模型</span><strong>跟随 LLM 配置</strong></div>
+              <div class="mini-card"><span class="table-label">会话 Gate</span><strong>RTH Only</strong></div>
+            </div>
+            <div class="actions">
+              <span class="button primary">启动 A 股评估</span>
+              <span class="button">单轮评估</span>
+              <span class="button">停止</span>
+            </div>
+          </section>
+
+          <section id="risk" class="panel">
+            <span class="eyebrow">风控规则</span>
+            <h3>只多头 A 股约束</h3>
+            <div class="row">
+              <strong>禁止 SELL_SHORT</strong>
+              <span class="badge">硬拦截</span>
+            </div>
+            <div class="row">
+              <strong>只允许 RTH</strong>
+              <span class="badge">09:30-11:30 / 13:00-15:00</span>
+            </div>
+            <div class="row">
+              <strong>CNY 口径</strong>
+              <span class="badge">账户与名义金额</span>
+            </div>
+            <div class="row">
+              <strong>T+1 / 涨跌停提示</strong>
+              <span class="badge">Prompt 风险上下文</span>
+            </div>
+          </section>
+
+          <section id="candidate-pool" class="panel">
+            <span class="eyebrow">候选池</span>
+            <h3>组合裁决与待确认</h3>
+            <div class="table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>标的</th>
+                    <th>动作</th>
+                    <th>状态</th>
+                    <th>原因</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="code">SH.600519</td>
+                    <td>BUY</td>
+                    <td class="tone-good">候选池</td>
+                    <td>趋势确认，等待组合裁决</td>
+                  </tr>
+                  <tr>
+                    <td class="code">SZ.000001</td>
+                    <td>HOLD</td>
+                    <td>未入队</td>
+                    <td>短周期信号不足</td>
+                  </tr>
+                  <tr>
+                    <td class="code">SH.600519</td>
+                    <td class="tone-risk">SELL_SHORT</td>
+                    <td class="tone-risk">已拦截</td>
+                    <td>A 股禁止卖空</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <span class="eyebrow">页面关系</span>
+            <h3>独立但复用设计语言</h3>
+            <p class="muted">
+              A 股工作台复用 Futu/Longbridge 的高密度模块组织、卡片式指标、候选池和待确认订单结构；但入口、股票池、订阅服务、API、Prompt 和风控规则独立。
+            </p>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

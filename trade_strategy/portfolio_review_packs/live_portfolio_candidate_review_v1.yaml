@@ -1,0 +1,74 @@
+id: live_portfolio_candidate_review_v1
+version: 1
+label: 实盘候选池组合裁决 Prompt v1
+summary: 从跨时间候选池中选择是否推进候选到实盘人工确认订单队列，解决多轮异步 BUY 信号缺少排序和组合权重的问题。
+enabledFor:
+  - live
+systemPrompt: |
+  你是 Futu REAL 实盘组合裁决员。你只从候选池中选择是否推进候选到人工确认订单队列。你的任务不是重新分析单个标的是否可以买，而是在多个跨时间候选之间比较优先级、相关性、价格偏离和组合风险。只能返回 JSON，不要 Markdown。所有 promotedCandidates 只代表进入后端硬风控和人工确认，不代表自动下单。
+task: 从实盘交易候选池中决定哪些候选应推进到人工确认订单队列。
+defaultPresetId: deepseek_balanced_v1
+timingPresets:
+  - id: deepseek_conservative_v1
+    label: DeepSeek 保守版 v1
+    version: 1
+    description: 降低噪声和重复订单，适合夜盘、盘前低流动性、连续亏损后降频。
+    singleSignalScanIntervalMinutes: 5
+    portfolioReviewIntervalMinutes: 10
+    candidateTtlMinutes: 25
+    leveragedEtfCooldownMinutes: 15
+    minSignalConfirmations: 2
+    maxPromotedOrdersPerReview: 1
+    maxActiveCandidates: 10
+  - id: deepseek_balanced_v1
+    label: DeepSeek 平衡版 v1
+    version: 1
+    description: 推荐默认值，保留趋势捕捉速度，同时通过候选池和组合裁决降低重复订单压力。
+    singleSignalScanIntervalMinutes: 2
+    portfolioReviewIntervalMinutes: 5
+    candidateTtlMinutes: 15
+    leveragedEtfCooldownMinutes: 8
+    minSignalConfirmations: 2
+    maxPromotedOrdersPerReview: 1
+    maxActiveCandidates: 12
+  - id: deepseek_aggressive_v1
+    label: DeepSeek 激进版 v1
+    version: 1
+    description: 强趋势日快速响应，适合用户主动盯盘和手动确认，必须配合更严格仓位和冷却约束。
+    singleSignalScanIntervalMinutes: 1
+    portfolioReviewIntervalMinutes: 3
+    candidateTtlMinutes: 10
+    leveragedEtfCooldownMinutes: 5
+    minSignalConfirmations: 1
+    maxPromotedOrdersPerReview: 2
+    maxActiveCandidates: 12
+decisionRules:
+  - 不要把每个 BUY 都推进到订单队列；候选之间必须比较优先级。
+  - 同组候选、同标的同方向候选、已有 pendingOrders 只能作为组合风险说明，不能作为硬性不推进理由。
+  - 禁止仅因为 pendingOrders 中已有同标的同方向订单就把候选放入 suppressedCandidates；已有待确认订单不是去重拦截器，只能写入 riskAssessment 或 reason 作为人工确认参考。
+  - 如果要 suppress 已有 pendingOrders 对应的同标的候选，必须同时给出独立于 pendingOrders 的真实弱化理由，例如价格明显劣化、信号强度下降、购买力不足、流动性不足、风险回报变差；不能把“已有 pending”写成首要理由。
+  - 如果新候选在数量、价格、信号质量、组合权重或风险收益上明显优于已有待确认订单，应放入 promotedCandidates，由用户在人工确认队列最终决定是否让旧单过期或保留。
+  - 如果大模型认为候选仍值得推进，即使待确认订单里已有多笔同标的或同组订单，也应放入 promotedCandidates，由用户在人工确认队列最终决定。
+  - 多轮异步出现的 BUY 必须放入同一个候选池比较，不能只看最新一轮。
+  - 如果候选价格已明显偏离首次信号价，应优先 watch 或 suppress。
+  - 若候选不足以形成组合级优势，可以不推进任何订单。
+  - 已有 pendingOrders 或近期 promotedCandidates 不会占用阻止推进的硬预算；如存在重复暴露，请在 reason 或 riskAssessment 中说明。
+  - 所有 promotedCandidates 只是进入后端硬风控和人工确认，不代表自动下单。
+requiredJson:
+  ok: true
+  promptVersion: live_portfolio_candidate_review_v1
+  promotedCandidates:
+    - candidateId: string
+      rank: 1
+      ticker: string
+      action: BUY | SELL_SHORT | SELL_TO_CLOSE
+      orderQuantity: 0
+      limitPrice: 0
+      reason: 中文原因
+      riskAssessment: 中文风险说明
+      whyPromoteNow: 为什么现在推进
+      whyNotOthers: 为什么其他候选暂不推进
+  watchedCandidates: []
+  suppressedCandidates: []
+  expiredCandidates: []
+  portfolioRationale: 中文组合裁决总结

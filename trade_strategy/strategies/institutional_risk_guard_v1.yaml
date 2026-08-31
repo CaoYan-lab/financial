@@ -1,0 +1,47 @@
+id: institutional_risk_guard_v1
+version: 1
+label: 机构风控兜底策略 v1
+summary: 多层风险预算框架，替代写死的固定名义金额和固定百分比开仓规则。
+enabledFor:
+  - simulation
+  - live
+references:
+  - title: Morgan Stanley Concentrated Stock Solutions
+    url: https://advisor.morganstanley.com/brian.hammersley/documents/field/b/br/brian-hammersley/Concentrated_Stock_Solutions.pdf
+  - title: Advanced Risk Management Portfolio Heat
+    url: https://education.signalpilot.io/curriculum/intermediate/46-advanced-risk-management.html
+  - title: Kelly Criterion Position Sizing
+    url: https://www.momentumq.com/blog/kelly-criterion-optimal-position-sizing
+riskControls:
+  minNotional:
+    mode: warning
+    amount: 0
+    description: 不再把最低名义金额作为硬拦截，只作为费用效率提示。
+  shortExposure:
+    maxSingleNamePctEquity: 0.03
+    maxPortfolioShortPctEquity: 0.08
+    mode: hard_block
+  portfolioHeat:
+    maxPctEquity: 0.05
+    mode: hard_block
+  perTradeLossBudget:
+    maxPctEquity: 0.005
+    mode: advisory
+  buyingPowerProtection:
+    maxPctBuyingPower: 0.95
+    mode: hard_block
+  feeDrag:
+    maxRoundTripFeePctNotional: 0.02
+    mode: hard_block
+trendFilters:
+  requireTrendForOpening: true
+  blockAgainstTrendOpening: true
+  blockScalpOpeningWhenFlat: true
+  minWhyNotNoiseLength: 12
+orderRules:
+  marketableLimitSlippageBps: 15
+  shortCoverRthOrderType: MARKET
+  defaultOrderType: MARKETABLE_LIMIT
+copy:
+  riskModelDescription: |
+    当前策略采用机构风控兜底框架：后端按购买力保护、费用拖累、空头敞口和趋势上下文进行必要硬拦截；模型只给交易意图和理由，最终是否入队由后端风控决定。单票集中度不是固定硬上限，只作为动态风险预算观察项；是否加仓必须结合趋势质量、波动率、流动性、已有浮盈、账户可用资金、增量风险回报和组合相关性判断。不得因为持仓超过某个固定百分比就自动禁止加仓或强制 SELL_TO_CLOSE。最低名义金额默认不再作为硬拦截，只作为费用效率提示。

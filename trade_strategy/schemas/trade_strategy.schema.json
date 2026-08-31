@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trade Strategy Config",
+  "type": "object",
+  "required": ["id", "version", "label", "summary", "enabledFor"],
+  "properties": {
+    "id": { "type": "string" },
+    "version": { "type": "number" },
+    "label": { "type": "string" },
+    "summary": { "type": "string" },
+    "enabledFor": {
+      "type": "array",
+      "items": { "enum": ["simulation", "live"] }
+    }
+  }
+}

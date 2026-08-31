@@ -1,0 +1,46 @@
+id: aggressive_research_preview_v1
+version: 1
+label: 进取研究预览策略 v1
+summary: 放宽单票上限用于模拟盘研究；实盘不可选。
+enabledFor:
+  - simulation
+references:
+  - title: Kelly Criterion Position Sizing
+    url: https://www.momentumq.com/blog/kelly-criterion-optimal-position-sizing
+riskControls:
+  minNotional:
+    mode: warning
+    amount: 0
+    description: 不把最低名义金额作为硬拦截。
+  singleNameExposure:
+    maxPctEquity: 0.1
+    highConvictionMaxPctEquity: 0.15
+    mode: hard_block
+  shortExposure:
+    maxSingleNamePctEquity: 0.05
+    maxPortfolioShortPctEquity: 0.12
+    mode: hard_block
+  portfolioHeat:
+    maxPctEquity: 0.08
+    mode: hard_block
+  perTradeLossBudget:
+    maxPctEquity: 0.01
+    mode: advisory
+  buyingPowerProtection:
+    maxPctBuyingPower: 0.95
+    mode: hard_block
+  feeDrag:
+    maxRoundTripFeePctNotional: 0.02
+    mode: hard_block
+trendFilters:
+  requireTrendForOpening: true
+  blockAgainstTrendOpening: true
+  blockScalpOpeningWhenFlat: true
+  minWhyNotNoiseLength: 12
+orderRules:
+  marketableLimitSlippageBps: 15
+  shortCoverRthOrderType: MARKET
+  defaultOrderType: MARKETABLE_LIMIT
+copy:
+  riskModelDescription: |
+    当前策略为模拟盘研究预览版本：允许更高单票风险预算，但仍按账户权益、空头敞口、购买力保护、费用拖累和趋势上下文进行后端硬拦截。该版本不可用于实盘。

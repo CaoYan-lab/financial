@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>量化交易工作台平台入口原型</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        background: #f8f5ef;
+        color: #1c1917;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(circle at top left, rgba(251, 146, 60, 0.24), transparent 30rem),
+          radial-gradient(circle at top right, rgba(34, 211, 238, 0.2), transparent 28rem),
+          linear-gradient(135deg, #fffaf0 0%, #f8fafc 54%, #eef6ff 100%);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .shell {
+        width: min(1200px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 40px 0;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 42px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 48px;
+        height: 48px;
+        place-items: center;
+        border-radius: 18px;
+        background: linear-gradient(135deg, #f59e0b, #fb7185);
+        color: #1c1917;
+        font-size: 18px;
+        font-weight: 900;
+        box-shadow: 0 18px 40px rgba(249, 115, 22, 0.2);
+      }
+
+      .brand-title {
+        margin: 0;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 850;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-subtitle {
+        margin: 4px 0 0;
+        color: #78716c;
+        font-size: 13px;
+      }
+
+      .prototype-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid rgba(120, 113, 108, 0.22);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 9px 14px;
+        color: #57534e;
+        font-size: 13px;
+        font-weight: 700;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+        backdrop-filter: blur(16px);
+      }
+
+      .hero {
+        max-width: 760px;
+        margin-bottom: 30px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        background: rgba(255, 237, 213, 0.78);
+        padding: 7px 12px;
+        color: #c2410c;
+        font-size: 12px;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+      }
+
+      h1 {
+        margin: 18px 0 14px;
+        color: #0f172a;
+        font-size: clamp(38px, 7vw, 72px);
+        font-weight: 900;
+        letter-spacing: -0.06em;
+        line-height: 0.98;
+      }
+
+      .hero-copy {
+        margin: 0;
+        color: #57534e;
+        font-size: 18px;
+        line-height: 1.75;
+      }
+
+      .platform-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+        margin-top: 34px;
+      }
+
+      .platform-card {
+        position: relative;
+        min-height: 520px;
+        overflow: hidden;
+        border: 1px solid rgba(120, 113, 108, 0.18);
+        border-radius: 34px;
+        background: rgba(255, 255, 255, 0.78);
+        padding: 30px;
+        box-shadow: 0 28px 70px rgba(15, 23, 42, 0.12);
+        transition:
+          transform 180ms ease,
+          box-shadow 180ms ease,
+          border-color 180ms ease;
+        backdrop-filter: blur(18px);
+      }
+
+      .platform-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 34px 88px rgba(15, 23, 42, 0.16);
+      }
+
+      .platform-card::before {
+        position: absolute;
+        inset: 0;
+        content: "";
+        pointer-events: none;
+      }
+
+      .platform-card.futu {
+        border-color: rgba(251, 146, 60, 0.38);
+      }
+
+      .platform-card.futu::before {
+        background:
+          radial-gradient(circle at 20% 0%, rgba(251, 146, 60, 0.28), transparent 20rem),
+          radial-gradient(circle at 100% 12%, rgba(244, 63, 94, 0.18), transparent 22rem);
+      }
+
+      .platform-card.longbridge {
+        border-color: rgba(14, 165, 233, 0.34);
+      }
+
+      .platform-card.longbridge::before {
+        background:
+          radial-gradient(circle at 18% 0%, rgba(6, 182, 212, 0.24), transparent 20rem),
+          radial-gradient(circle at 100% 12%, rgba(99, 102, 241, 0.18), transparent 22rem);
+      }
+
+      .card-content {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        min-height: 460px;
+        flex-direction: column;
+      }
+
+      .card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 28px;
+      }
+
+      .platform-icon {
+        display: grid;
+        width: 66px;
+        height: 66px;
+        place-items: center;
+        border-radius: 24px;
+        color: #111827;
+        font-size: 22px;
+        font-weight: 950;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+      }
+
+      .futu .platform-icon {
+        background: linear-gradient(135deg, #fbbf24, #fb7185);
+      }
+
+      .longbridge .platform-icon {
+        background: linear-gradient(135deg, #22d3ee, #818cf8);
+      }
+
+      .status {
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 850;
+      }
+
+      .status.ready {
+        background: rgba(220, 252, 231, 0.86);
+        color: #15803d;
+      }
+
+      .status.planned {
+        background: rgba(219, 234, 254, 0.86);
+        color: #1d4ed8;
+      }
+
+      .platform-card h2 {
+        margin: 0;
+        color: #111827;
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 900;
+        letter-spacing: -0.05em;
+        line-height: 1.05;
+      }
+
+      .lead {
+        margin: 18px 0 0;
+        color: #57534e;
+        font-size: 16px;
+        line-height: 1.75;
+      }
+
+      .sublead {
+        margin: 10px 0 0;
+        color: #78716c;
+        font-size: 14px;
+        line-height: 1.7;
+      }
+
+      .capability-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin: 28px 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .capability-list li {
+        border: 1px solid rgba(120, 113, 108, 0.16);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.62);
+        padding: 11px 12px;
+        color: #44403c;
+        font-size: 13px;
+        font-weight: 750;
+      }
+
+      .cta-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-top: auto;
+        flex-wrap: wrap;
+      }
+
+      .primary-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        border-radius: 18px;
+        padding: 0 20px;
+        color: #fff;
+        font-size: 15px;
+        font-weight: 850;
+        box-shadow: 0 16px 32px rgba(15, 23, 42, 0.18);
+        transition:
+          transform 160ms ease,
+          filter 160ms ease;
+      }
+
+      .primary-button:hover {
+        transform: translateY(-1px);
+        filter: saturate(1.08);
+      }
+
+      .futu .primary-button {
+        background: linear-gradient(135deg, #ea580c, #e11d48);
+      }
+
+      .longbridge .primary-button {
+        background: linear-gradient(135deg, #0284c7, #4f46e5);
+      }
+
+      .route-note {
+        color: #78716c;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .architecture-note {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        margin-top: 26px;
+      }
+
+      .note-card {
+        border: 1px solid rgba(120, 113, 108, 0.16);
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.62);
+        padding: 18px;
+        color: #57534e;
+        font-size: 14px;
+        line-height: 1.7;
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+      }
+
+      .note-card strong {
+        display: block;
+        margin-bottom: 6px;
+        color: #292524;
+        font-size: 14px;
+      }
+
+      @media (max-width: 899px) {
+        .shell {
+          width: min(100% - 28px, 680px);
+          padding: 24px 0;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+          margin-bottom: 32px;
+        }
+
+        .platform-grid,
+        .architecture-note {
+          grid-template-columns: 1fr;
+        }
+
+        .platform-card {
+          min-height: auto;
+          border-radius: 28px;
+          padding: 24px;
+        }
+
+        .card-content {
+          min-height: auto;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .capability-list {
+          grid-template-columns: 1fr;
+        }
+
+        .card-head {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">量</div>
+          <div>
+            <p class="brand-title">量化交易工作台</p>
+            <p class="brand-subtitle">平台入口页原型 · 不连接真实交易能力</p>
+          </div>
+        </div>
+        <div class="prototype-pill">Prototype · 一级入口</div>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div class="eyebrow">PLATFORM SELECTOR</div>
+        <h1 id="page-title">选择交易平台，进入对应量化工作区</h1>
+        <p class="hero-copy">
+          用一个清晰的一级页面区分 Futu 与 Longbridge：现有金融助手工作台归入
+          Futu，长桥证券能力作为独立平台逐步建设。
+        </p>
+      </section>
+
+      <section class="platform-grid" aria-label="交易平台入口">
+        <article class="platform-card futu">
+          <div class="card-content">
+            <div class="card-head">
+              <div class="platform-icon">富</div>
+              <span class="status ready">已接入</span>
+            </div>
+            <h2>Futu 量化交易工作台</h2>
+            <p class="lead">
+              现有金融助手工作台，将作为 Futu 平台点进去后的 Web 应用入口。
+            </p>
+            <p class="sublead">
+              Futu OpenD 行情、账户资产、持仓、研究报告、实盘确认队列和模拟盘集中管理。
+            </p>
+            <ul class="capability-list">
+              <li>账户资产</li>
+              <li>持仓与盈亏</li>
+              <li>Futu OpenD 行情</li>
+              <li>实盘人工确认</li>
+              <li>模拟盘</li>
+              <li>研究报告</li>
+            </ul>
+            <div class="cta-row">
+              <a class="primary-button" href="#" aria-label="原型按钮，目标路径 /futu">进入 Futu 工作台</a>
+              <span class="route-note">目标路径：/futu</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="platform-card longbridge">
+          <div class="card-content">
+            <div class="card-head">
+              <div class="platform-icon">长</div>
+              <span class="status planned">规划中</span>
+            </div>
+            <h2>Longbridge 量化交易工作台</h2>
+            <p class="lead">
+              长桥证券量化能力入口，作为独立平台工作区预留。
+            </p>
+            <p class="sublead">
+              后续接入 Longbridge 行情、账户、持仓、订单、策略执行和风控队列，不混入 Futu 工作台。
+            </p>
+            <ul class="capability-list">
+              <li>行情接入</li>
+              <li>账户资产</li>
+              <li>持仓同步</li>
+              <li>订单与成交</li>
+              <li>策略执行</li>
+              <li>风控队列</li>
+            </ul>
+            <div class="cta-row">
+              <a class="primary-button" href="#" aria-label="原型按钮，目标路径 /longbridge">查看 Longbridge 规划</a>
+              <span class="route-note">目标路径：/longbridge</span>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="architecture-note" aria-label="信息架构说明">
+        <div class="note-card">
+          <strong>现有工作台归属</strong>
+          当前“金融助手工作台”不再作为根路径本身，而是作为 Futu 量化交易工作台的主应用入口。
+        </div>
+        <div class="note-card">
+          <strong>长桥能力边界</strong>
+          Longbridge 当前只展示规划入口；真实行情、账户、订单和风控能力后续独立接入。
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

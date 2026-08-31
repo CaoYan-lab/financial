@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Futu A股实盘 Trading Agent 模式原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #fffaf0;
+      --card: rgba(255, 255, 255, 0.9);
+      --text: #1c1917;
+      --muted: #78716c;
+      --line: rgba(251, 146, 60, 0.28);
+      --orange: #f97316;
+      --amber: #f59e0b;
+      --rose: #fb7185;
+      --risk: #e11d48;
+      --green: #059669;
+      --stone: #57534e;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 0%, rgba(251, 146, 60, 0.20), transparent 28rem),
+        radial-gradient(circle at 100% 8%, rgba(251, 113, 133, 0.14), transparent 28rem),
+        linear-gradient(135deg, #fffaf0 0%, #fff7ed 58%, #fef3c7 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    .note {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.94);
+      padding: 10px 24px;
+      color: #9a3412;
+      font-size: 13px;
+      font-weight: 900;
+      backdrop-filter: blur(16px);
+    }
+
+    .shell {
+      width: min(1280px, calc(100% - 64px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }
+
+    .topbar,
+    .subnav,
+    .hero-head,
+    .between,
+    .chips {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .topbar {
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .mark {
+      display: grid;
+      width: 46px;
+      height: 46px;
+      place-items: center;
+      border-radius: 18px;
+      background: linear-gradient(135deg, var(--amber), var(--rose));
+      color: #111827;
+      font-weight: 950;
+      box-shadow: 0 18px 40px rgba(249, 115, 22, 0.18);
+    }
+
+    .brand h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 950;
+      letter-spacing: -0.03em;
+    }
+
+    .brand p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(251, 146, 60, 0.25);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.76);
+      padding: 8px 13px;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 850;
+      box-shadow: 0 10px 26px rgba(120, 53, 15, 0.06);
+    }
+
+    .pill.orange { color: #c2410c; background: #fff7ed; border-color: #fed7aa; }
+    .pill.red { color: #be123c; background: #fff1f2; border-color: #fecdd3; }
+    .pill.green { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+    .pill.active { color: white; background: var(--orange); border-color: var(--orange); }
+
+    .subnav {
+      position: sticky;
+      top: 37px;
+      z-index: 10;
+      margin-bottom: 22px;
+      border: 1px solid rgba(251, 146, 60, 0.20);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.88);
+      padding: 10px;
+      backdrop-filter: blur(14px);
+    }
+
+    .subnav a {
+      border-radius: 15px;
+      padding: 9px 13px;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .subnav a.active {
+      background: #fff7ed;
+      color: #c2410c;
+      box-shadow: inset 0 0 0 1px #fed7aa;
+    }
+
+    .card {
+      border: 1px solid rgba(251, 146, 60, 0.28);
+      border-radius: 28px;
+      background: var(--card);
+      padding: 24px;
+      box-shadow: 0 22px 56px rgba(120, 53, 15, 0.08);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero {
+      border-radius: 30px;
+      background:
+        radial-gradient(circle at 6% 0%, rgba(251, 146, 60, 0.22), transparent 24rem),
+        rgba(255, 255, 255, 0.9);
+      padding: 28px;
+    }
+
+    .eyebrow {
+      color: #c2410c;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin: 12px 0 14px;
+      color: #111827;
+      font-size: clamp(38px, 5vw, 58px);
+      font-weight: 950;
+      letter-spacing: -0.055em;
+      line-height: 1;
+    }
+    h2 {
+      margin: 8px 0 10px;
+      color: #111827;
+      font-size: 26px;
+      font-weight: 950;
+      letter-spacing: -0.035em;
+    }
+    h3 {
+      margin: 6px 0 8px;
+      color: #111827;
+      font-size: 18px;
+      font-weight: 950;
+      letter-spacing: -0.025em;
+    }
+    .copy {
+      margin: 0;
+      max-width: 820px;
+      color: #57534e;
+      font-size: 15px;
+      font-weight: 650;
+      line-height: 1.75;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .button {
+      border: 0;
+      border-radius: 16px;
+      padding: 11px 16px;
+      background: #111827;
+      color: white;
+      font-size: 14px;
+      font-weight: 950;
+    }
+
+    .button.orange { background: var(--orange); }
+    .button.soft {
+      border: 1px solid #fed7aa;
+      background: #fff7ed;
+      color: #c2410c;
+    }
+    .button.disabled {
+      background: #f5f5f4;
+      color: #a8a29e;
+    }
+
+    .grid4 {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      border: 1px solid rgba(251, 146, 60, 0.24);
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.86);
+      padding: 18px;
+      box-shadow: 0 14px 38px rgba(120, 53, 15, 0.06);
+    }
+    .metric span {
+      color: #78716c;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 6px;
+      color: #111827;
+      font-size: 26px;
+      font-weight: 950;
+      letter-spacing: -0.04em;
+    }
+    .metric small {
+      display: block;
+      margin-top: 3px;
+      color: #78716c;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .section {
+      margin-top: 22px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 0.9fr;
+      gap: 22px;
+    }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .mode {
+      position: relative;
+      border: 1px solid rgba(251, 146, 60, 0.20);
+      border-radius: 22px;
+      background: #fff;
+      padding: 18px;
+    }
+
+    .mode.active {
+      border-color: rgba(249, 115, 22, 0.55);
+      background: #fff7ed;
+      box-shadow: 0 18px 42px rgba(249, 115, 22, 0.12);
+    }
+
+    .mode .tag {
+      display: inline-flex;
+      border-radius: 999px;
+      background: #f5f5f4;
+      padding: 6px 10px;
+      color: #57534e;
+      font-size: 11px;
+      font-weight: 950;
+    }
+
+    .mode.active .tag {
+      background: var(--orange);
+      color: white;
+    }
+
+    .mode p {
+      margin: 0;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.65;
+    }
+
+    .agent-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .agent {
+      border: 1px solid rgba(251, 146, 60, 0.22);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 16px;
+      min-height: 160px;
+    }
+
+    .agent .num {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 12px;
+      background: #ffedd5;
+      color: #c2410c;
+      font-size: 12px;
+      font-weight: 950;
+    }
+
+    .agent p {
+      margin: 8px 0 0;
+      color: #57534e;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.6;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.7fr 1fr auto;
+      gap: 12px;
+      margin-top: 18px;
+      align-items: end;
+    }
+
+    label {
+      display: block;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 850;
+    }
+    select,
+    input {
+      width: 100%;
+      margin-top: 8px;
+      border: 1px solid #e7e5e4;
+      border-radius: 16px;
+      background: white;
+      padding: 12px 13px;
+      color: #1c1917;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .guard-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .guard {
+      border: 1px solid #fed7aa;
+      border-radius: 17px;
+      background: #fff7ed;
+      padding: 12px 14px;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 850;
+    }
+    .guard.risk {
+      border-color: #fecdd3;
+      background: #fff1f2;
+      color: #be123c;
+    }
+
+    .agent-report-grid {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+    }
+
+    .step {
+      border: 1px solid rgba(251, 146, 60, 0.22);
+      border-radius: 18px;
+      background: #fff;
+      padding: 14px;
+    }
+
+    .step header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .step strong {
+      color: #111827;
+      font-size: 14px;
+      font-weight: 950;
+    }
+
+    .step p {
+      margin: 8px 0 0;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.65;
+    }
+
+    .decision {
+      border: 1px solid rgba(5, 150, 105, 0.26);
+      border-radius: 22px;
+      background: #ecfdf5;
+      padding: 18px;
+    }
+
+    .decision .price {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mini {
+      border: 1px solid rgba(5, 150, 105, 0.18);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.78);
+      padding: 12px;
+    }
+    .mini span {
+      display: block;
+      color: #78716c;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .mini strong {
+      display: block;
+      margin-top: 5px;
+      color: #064e3b;
+      font-size: 17px;
+      font-weight: 950;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1000px;
+      font-size: 13px;
+    }
+    .table-wrap {
+      margin-top: 16px;
+      overflow-x: auto;
+      border: 1px solid rgba(251, 146, 60, 0.20);
+      border-radius: 20px;
+    }
+    th {
+      background: #fff7ed;
+      color: #78716c;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-align: left;
+      text-transform: uppercase;
+    }
+    th, td {
+      border-bottom: 1px solid rgba(251, 146, 60, 0.16);
+      padding: 13px 14px;
+      vertical-align: top;
+    }
+    td {
+      color: #57534e;
+      font-weight: 750;
+    }
+    .mono {
+      color: #111827;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 950;
+    }
+    .text-green { color: #047857; }
+    .text-red { color: #be123c; }
+    .muted { color: #78716c; }
+
+    .details {
+      margin-top: 14px;
+      border: 1px solid rgba(251, 146, 60, 0.18);
+      border-radius: 18px;
+      background: #fffaf0;
+      padding: 14px;
+    }
+    .details-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .quote {
+      border-left: 4px solid var(--orange);
+      border-radius: 14px;
+      background: white;
+      padding: 12px;
+      color: #57534e;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.65;
+    }
+
+    @media (max-width: 980px) {
+      .grid4,
+      .mode-grid,
+      .agent-flow,
+      .two-col,
+      .agent-report-grid,
+      .form-grid,
+      .details-grid {
+        grid-template-columns: 1fr;
+      }
+      .shell { width: min(100% - 32px, 1280px); }
+      .subnav { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <div class="note">静态原型：Trading Agent 不作为新的工作台入口，而是放入 A 股实盘页，作为 legacy_direct / candidate_pool 之外的第三种 executionMode。</div>
+
+  <main class="shell">
+    <div class="topbar">
+      <div class="brand">
+        <div class="mark">A</div>
+        <div>
+          <h3>Futu A股实盘量化交易</h3>
+          <p>AshareLiveTradingView · 第三种 executionMode · 不影响 Futu / Longbridge</p>
+        </div>
+      </div>
+      <div class="chips">
+        <span class="pill orange">A股独立配置</span>
+        <span class="pill red">禁止 SELL_SHORT</span>
+        <span class="pill green">连续竞价 Gate</span>
+      </div>
+    </div>
+
+    <nav class="subnav">
+      <div>
+        <a class="active" href="#overview">实盘总览</a>
+        <a href="#settings">LLM 与门禁</a>
+        <a href="#mode">策略模式</a>
+        <a href="#agent">Agent 明细</a>
+        <a href="#orders">信号与订单</a>
+      </div>
+      <span class="pill active">Trading Agent 实验</span>
+    </nav>
+
+    <section id="overview" class="hero card">
+      <div class="hero-head">
+        <div>
+          <div class="eyebrow">Futu A-SHARE REAL · LIVE TRADING PAGE</div>
+          <h1>真实操作盘 A股量化交易</h1>
+          <p class="copy">
+            Trading Agent 作为 A 股实盘页里的第三种决策模式存在，和“大模型直推”“候选池组合裁决”共用同一个实盘控制台。它通过 market、risk、bull、bear、portfolio manager 多角色链路形成最终裁决，但仍复用 A 股 Gate、硬风控、待确认订单和人工确认。
+          </p>
+        </div>
+        <div class="chips">
+          <span class="pill green">运行中</span>
+          <span class="pill orange">Trading Agent</span>
+          <span class="pill red">RTH Only</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="button orange">启动 A股评估</button>
+        <button class="button soft">单轮 Agent 评估</button>
+        <button class="button soft">刷新当前页</button>
+        <button class="button disabled">自动提交未开放</button>
+      </div>
+      <div class="grid4">
+        <div class="metric"><span>股票池</span><strong>3</strong><small>独立 A 股 universe</small></div>
+        <div class="metric"><span>订阅进程</span><strong>运行中</strong><small>Futu OpenD A 股</small></div>
+        <div class="metric"><span>Trading Agent</span><strong>5 角色</strong><small>market / risk / bull / bear / PM</small></div>
+        <div class="metric"><span>待确认订单</span><strong>1</strong><small>来源：Trading Agent 裁决</small></div>
+      </div>
+    </section>
+
+    <section id="settings" class="section two-col">
+      <div class="card">
+        <div class="eyebrow">LLM CONFIG</div>
+        <h2>大模型配置</h2>
+        <p class="copy">这一块保持 A 股实盘页现有排版：模型、并发、连续竞价 Gate 和保存按钮在 LLM CONFIG 卡片内；右侧固定是实盘门禁。</p>
+        <div class="form-grid">
+          <label>模型
+            <select><option>DeepSeek Reasoner · A股 Agent</option></select>
+          </label>
+          <label>并发
+            <select><option>2</option><option>1</option><option>3</option></select>
+          </label>
+          <label>Gate
+            <input value="仅连续竞价提交 LLM" disabled />
+          </label>
+          <button class="button orange">保存配置</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="eyebrow">GUARDRAILS</div>
+        <h2>实盘门禁</h2>
+        <div class="guard-list">
+          <div class="guard risk">SELL_SHORT 在 schema 和硬风控层面禁止。</div>
+          <div class="guard">Trading Agent 只能输出 HOLD / BUY / SELL_TO_CLOSE。</div>
+          <div class="guard">最终裁决仍必须经过 A 股 session gate、readiness gate 和人工确认。</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="mode" class="section card">
+      <div class="between">
+        <div>
+          <div class="eyebrow">A-SHARE TRADE STRATEGY</div>
+          <h2>A股策略与提示词版本</h2>
+          <p class="copy">这是 A 股实盘页中 LLM CONFIG + GUARDRAILS 后面的独立整行模块。Trading Agent 在这里作为第三个 executionMode，不新增一级入口，也不挪出实盘链路。</p>
+        </div>
+        <span class="pill orange">当前：Trading Agent 实验</span>
+      </div>
+      <div class="mode-grid">
+        <article class="mode">
+          <span class="tag">legacy_direct</span>
+          <h3>大模型直推</h3>
+          <p>单票 LLM 决策直接进入 A 股硬风控；通过后进入待确认订单。适合最快速地形成交易建议。</p>
+        </article>
+        <article class="mode">
+          <span class="tag">candidate_pool</span>
+          <h3>候选池组合裁决</h3>
+          <p>非 HOLD 先进入候选池，再由组合裁决比较多票优先级。适合解决“买哪个、先买哪个”。</p>
+        </article>
+        <article class="mode active">
+          <span class="tag">trading_agent</span>
+          <h3>Trading Agent 实验</h3>
+          <p>多角色 Agent 研究链输出最终裁决。非 HOLD 不进入候选池，直接走 Agent 裁决后的硬风控。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="agent" class="section card">
+      <div class="between">
+        <div>
+          <div class="eyebrow">TRADING AGENT PIPELINE</div>
+          <h2>多角色 Agent 研究链</h2>
+          <p class="copy">第一版不引入 Python LangGraph；在 A 股模块内实现轻量 pipeline，每个阶段都可记录、可展示、可失败、可跳过。</p>
+        </div>
+        <span class="pill green">agentRunId: ashare-agent-20260628-001</span>
+      </div>
+      <div class="agent-flow">
+        <article class="agent">
+          <div class="num">1</div>
+          <h3>Market Analyst</h3>
+          <p>读取 120 根 1m K线、tickerPoints、盘口和 quote，判断短线结构、成交活跃度、盘口压力。</p>
+        </article>
+        <article class="agent">
+          <div class="num">2</div>
+          <h3>Risk Analyst</h3>
+          <p>检查 A 股交易规则、涨跌幅约束、流动性、波动、连续竞价和 SELL_SHORT 禁止。</p>
+        </article>
+        <article class="agent">
+          <div class="num">3</div>
+          <h3>Bull Researcher</h3>
+          <p>给出为什么现在可以买入或平仓卖出的正向论据，明确触发条件和价格区间。</p>
+        </article>
+        <article class="agent">
+          <div class="num">4</div>
+          <h3>Bear Researcher</h3>
+          <p>给出为什么不该交易、为什么可能是噪声、为什么应该继续 HOLD 的反方论据。</p>
+        </article>
+        <article class="agent">
+          <div class="num">5</div>
+          <h3>Portfolio Manager</h3>
+          <p>综合所有报告，输出 HOLD / BUY / SELL_TO_CLOSE、数量、价格、置信度和风险说明。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section card">
+      <div class="between">
+        <div>
+          <div class="eyebrow">AGENT RUN DETAIL</div>
+          <h2>Agent 运行明细</h2>
+          <p class="copy">历史信号展开后，应能看到完整中间报告；这些报告不进入候选池表格，候选池只服务 candidate_pool 模式。</p>
+        </div>
+        <span class="pill orange">来源：Trading Agent 裁决</span>
+      </div>
+      <div class="agent-report-grid">
+        <div class="timeline">
+          <div class="step">
+            <header><strong>market_analyst</strong><span class="pill green">OK</span></header>
+            <p>000001.SZ 近 120 根 1m K线呈现温和上行，tickerPoints 成交密度提升，盘口买一承接稳定，短线结构偏多但不是脉冲式噪声。</p>
+          </div>
+          <div class="step">
+            <header><strong>risk_analyst</strong><span class="pill green">OK</span></header>
+            <p>当前处于连续竞价，未触及 A 股禁止方向，建议仅允许小仓位 BUY；若价格跌破 10.18 则撤销本次待确认订单。</p>
+          </div>
+          <div class="step">
+            <header><strong>bull_researcher</strong><span class="pill green">OK</span></header>
+            <p>盘口与逐笔成交同步改善，短线资金承接明显，买入理由成立；建议用限价控制滑点。</p>
+          </div>
+          <div class="step">
+            <header><strong>bear_researcher</strong><span class="pill orange">WATCH</span></header>
+            <p>反方认为当前涨幅并不大，仍可能是盘中修复而非趋势启动；建议降低数量并保留人工确认。</p>
+          </div>
+        </div>
+        <div class="decision">
+          <div class="eyebrow">PORTFOLIO MANAGER FINAL</div>
+          <h2>最终裁决：BUY</h2>
+          <p class="copy">综合 market、risk、bull、bear 报告后，允许进入 A 股硬风控。该裁决不是自动下单，只代表进入待确认订单队列。</p>
+          <div class="price">
+            <div class="mini"><span>标的</span><strong>000001.SZ</strong></div>
+            <div class="mini"><span>数量</span><strong>300 股</strong></div>
+            <div class="mini"><span>限价</span><strong>¥10.24</strong></div>
+          </div>
+          <div class="details">
+            <strong>风险提示</strong>
+            <p class="copy">Trading Agent 认为当前信号偏多，但反方指出仍可能是盘中修复。订单需人工确认；若盘口承接消失或跌破 10.18，应拒绝或过期。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="orders" class="section card">
+      <div class="between">
+        <div>
+          <div class="eyebrow">历史策略信号</div>
+          <h2>A股历史信号（Trading Agent 展开态）</h2>
+          <p class="copy">列表结构继续对齐老逻辑，但来源、生命周期和明细内容增加 Trading Agent 中间报告。</p>
+        </div>
+        <div class="chips">
+          <span class="pill active">全部</span>
+          <span class="pill">Trading Agent</span>
+          <span class="pill">BUY</span>
+          <span class="pill">HOLD</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>标的</th>
+              <th>方向</th>
+              <th>来源</th>
+              <th>生命周期</th>
+              <th>Agent Run</th>
+              <th>最终理由</th>
+              <th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">000001.SZ</span><br><span class="muted">平安银行</span></td>
+              <td class="text-red">BUY</td>
+              <td>Trading Agent 裁决</td>
+              <td><span class="pill green">待确认</span></td>
+              <td><span class="mono">ashare-agent-001</span></td>
+              <td>市场结构偏多，风险分析允许小仓位，反方提示降低数量。</td>
+              <td>14:18:06</td>
+            </tr>
+            <tr>
+              <td colspan="7">
+                <div class="details">
+                  <strong>展开明细：agentReports</strong>
+                  <div class="details-grid">
+                    <div class="quote"><b>Market:</b> 120 根 1m K线温和上行，成交点密度提升，盘口买一承接稳定。</div>
+                    <div class="quote"><b>Risk:</b> 连续竞价可评估；禁止 SELL_SHORT；建议小仓位并设置价格失效条件。</div>
+                    <div class="quote"><b>Bull:</b> 逐笔成交和盘口同步改善，买入理由成立，限价控制滑点。</div>
+                    <div class="quote"><b>Bear:</b> 可能只是盘中修复，不确认趋势启动，应保留人工确认。</div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="mono">600519.SH</span><br><span class="muted">贵州茅台</span></td>
+              <td>HOLD</td>
+              <td>Trading Agent 裁决</td>
+              <td><span class="pill">观望</span></td>
+              <td><span class="mono">ashare-agent-002</span></td>
+              <td>market report 未给出足够交易优势，bear case 强于 bull case。</td>
+              <td>14:16:42</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section card">
+      <div class="between">
+        <div>
+          <div class="eyebrow">待确认订单</div>
+          <h2>A股待确认订单队列（1）</h2>
+          <p class="copy">Trading Agent 最终 BUY / SELL_TO_CLOSE 通过 A 股硬风控后，进入同一套待确认订单队列，不自动下单。</p>
+        </div>
+        <span class="pill red">人工确认必需</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>标的 / 方向</th>
+              <th>数量 / 价格</th>
+              <th>来源</th>
+              <th>Agent 裁决</th>
+              <th>费用提示</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">000001.SZ</span><br><span class="text-red">BUY</span></td>
+              <td>300 股<br>¥10.24 LIMIT</td>
+              <td>Trading Agent 裁决<br><span class="mono">ashare-agent-001</span></td>
+              <td>Portfolio Manager 批准小仓位推进；反方风险写入人工确认提示。</td>
+              <td>CNY 费用待估<br>不自动提交</td>
+              <td><span class="pill orange">待确认</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
