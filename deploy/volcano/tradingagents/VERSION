@@ -1,0 +1,9 @@
+# TradingAgents 依赖版本锁定（A 股 LLM 多智能体决策链路使用）
+# third_party/ 与 .venv* 均被 .gitignore 忽略，不随仓库分发；
+# 云端/容器环境通过 deploy/volcano/scripts/fetch-tradingagents.sh 按本文件拉取并安装。
+REPO_URL=https://github.com/TauricResearch/TradingAgents.git
+PINNED_COMMIT=85946c2f60768ab2dae23a5a36cd927662feef94
+PINNED_TAG=v0.3.0
+PYTHON_MIN_VERSION=3.10
+# 安装方式：在克隆出的仓库目录执行 pip install . （依赖见 pyproject.toml：
+# langgraph / langchain-* / pandas / stockstats / yfinance 等）
