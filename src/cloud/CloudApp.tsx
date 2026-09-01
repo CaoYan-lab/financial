@@ -46,7 +46,7 @@ function AuthGate() {
           void cloudLogout().then(() => setAnon())
         }}
         title="退出登录"
-        className="fixed right-4 bottom-4 z-[9999] flex items-center gap-1.5 rounded-md border border-slate-700 bg-[#0d1420]/95 px-3 py-1.5 text-xs text-slate-300 shadow-lg transition hover:border-amber-400/40 hover:text-amber-200"
+        className="fixed left-4 bottom-4 z-[9999] flex items-center gap-1.5 rounded-md border border-slate-700 bg-[#0d1420]/95 px-3 py-1.5 text-xs text-slate-300 shadow-lg transition hover:border-amber-400/40 hover:text-amber-200"
       >
         <LogOut className="h-3.5 w-3.5" />
         退出{username ? `（${username}）` : ''}
