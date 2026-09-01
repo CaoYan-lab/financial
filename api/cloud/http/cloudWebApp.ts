@@ -6,6 +6,7 @@ import app from '../../app.js'
 import { requestLogger } from '../../middleware/requestLogger.js'
 import { login } from '../auth/authService.js'
 import { requireAuth, type AuthedRequest } from '../auth/requireAuth.js'
+import { createRouteOverrideRouter } from './routeOverrides.js'
 import { logger } from '../../utils/logger.js'
 
 const COOKIE_NAME = 'fa_session'
@@ -93,6 +94,9 @@ export function createCloudApp(): express.Application {
   cloudApp.get('/api/auth/me', (req: AuthedRequest, res: express.Response) => {
     res.json({ success: true, username: req.user?.username ?? null })
   })
+
+  // ---- 云端拦截路由：引擎控制指令入队 + worker 状态快照（在兜底 app 之前） ----
+  cloudApp.use('/api', createRouteOverrideRouter())
 
   // ---- 前端静态站（同源托管 dist，仅存在时启用） ----
   const distDir = path.resolve(process.cwd(), 'dist')

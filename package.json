@@ -13,6 +13,7 @@
     "longbridge:sdk-cache:concurrency": "tsx scripts/longbridge-sdk-cache-concurrency.ts",
     "server:dev": "nodemon",
     "server:cloud": "tsx api/cloud/cloudServer.ts",
+    "server:worker": "tsx api/cloud/worker/workerServer.ts",
     "dev:error-logs": "bash scripts/start-dev-error-logs.sh",
     "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\""
   },

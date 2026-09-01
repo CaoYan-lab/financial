@@ -1,0 +1,38 @@
+# 仅用于火山镜像构建排除，避免把本地数据/虚拟环境/密钥打进镜像
+.git
+.github
+**/__pycache__/
+**/*.pyc
+
+# 本地数据与运行时（数据走 AIDAP，不进镜像）
+.data/
+.futu-home/
+.logs/
+logs/
+*.log
+
+# 本地虚拟环境（镜像内自建 /opt/venv 与 /app/.venv-tradingagents）
+.venv/
+.venv-*/
+node_modules/
+
+# 第三方仓库（构建期由 fetch-tradingagents.sh 重新拉取）
+third_party/
+
+# 密钥与本地环境（绝不进镜像）
+.env
+.env.*
+!.env.cloud.example
+*.pem
+*.key
+
+# 构建产物与 IDE
+dist/
+*.tsbuildinfo
+.vscode/
+.idea/
+.DS_Store
+
+# Trae/文档
+.trae/
+docs/

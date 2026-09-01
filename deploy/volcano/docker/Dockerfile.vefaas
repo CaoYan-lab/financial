@@ -1,0 +1,64 @@
+# 火山 veFaaS 单镜像双角色（Web 函数 / 常驻 Worker）。
+# 由 APP_ROLE=web|worker 选择入口（见 deploy/volcano/faas/run-*.sh）。
+# 监听 0.0.0.0:8000（veFaaS Webserver 模式要求）。
+# 构建上下文为仓库根目录：docker build -f deploy/volcano/docker/Dockerfile.vefaas -t <image> .
+
+# ---------- Stage 1: 前端构建 ----------
+FROM node:20-bookworm-slim AS frontend
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN VITE_AUTH_ENABLED=true npm run build
+
+# ---------- Stage 2: 运行时（Node + Python 同镜像） ----------
+FROM node:20-bookworm-slim AS runtime
+
+# Python 3.11 + pip，使用火山镜像源加速
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's|deb.debian.org|mirrors.ivolces.com|g; s|security.debian.org|mirrors.ivolces.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv python3-pip git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Node 依赖（仅生产依赖 + tsx 用于运行 TS）
+COPY package.json package-lock.json ./
+RUN npm config set registry https://registry.npmmirror.com \
+  && npm ci --omit=dev || npm install --omit=dev \
+  && npm install -g tsx
+
+# Python 依赖（Futu OpenD SDK + PG 驱动 + 数据处理），用火山 pypi 镜像
+RUN python3 -m venv /opt/venv \
+  && /opt/venv/bin/pip install --no-cache-dir \
+      -i https://mirrors.ivolces.com/pypi/simple/ \
+      "futu-api" "psycopg[binary]" "pandas" "numpy"
+
+# 应用代码
+COPY . .
+# 前端构建产物（dist）
+COPY --from=frontend /app/dist ./dist
+
+# TradingAgents（A股多智能体）构建期拉取并装到独立 venv；
+# 失败不阻断镜像构建（A股 worker 启动时会报缺失，其余平台不受影响）。
+ARG SKIP_TRADINGAGENTS=
+RUN if [ -z "$SKIP_TRADINGAGENTS" ]; then \
+      bash deploy/volcano/scripts/fetch-tradingagents.sh || echo "WARN: TradingAgents fetch skipped/failed"; \
+    fi
+
+# 启动脚本可执行
+RUN chmod +x deploy/volcano/faas/run-web.sh deploy/volcano/faas/run-worker.sh
+
+ENV NODE_ENV=production \
+    PORT=8000 \
+    FUTU_PYTHON_BIN=/opt/venv/bin/python \
+    VOLCANO_CLOUD_PYTHONPATH=/app/deploy/volcano/pg/python \
+    PYTHONPATH=/app/deploy/volcano/pg/python \
+    TRADINGAGENTS_PYTHON_BIN=/app/.venv-tradingagents/bin/python \
+    TRADINGAGENTS_REPO_PATH=/app/third_party/TradingAgents
+
+EXPOSE 8000
+
+# 默认入口；veFaaS 启动命令可覆盖为 run-web.sh 或 run-worker.sh
+CMD ["bash", "deploy/volcano/faas/run-web.sh"]
