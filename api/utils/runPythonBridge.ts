@@ -18,14 +18,19 @@ export async function runPythonBridge<T>(scriptName: string, payload: unknown): 
   const scriptPath = path.resolve(__dirname, '..', 'futu_bridge', scriptName)
   const projectRoot = path.resolve(__dirname, '..', '..')
   const bridgeHome = process.env.FUTU_BRIDGE_HOME || path.join(projectRoot, '.futu-home')
-  const defaultUserSite = '/Users/bytedance/Library/Python/3.9/lib/python/site-packages'
+  // 云端/容器模式（CLOUD_PYTHON=1 或 PG_HISTORY_DRIVER=1）使用自带完整依赖的 python 环境，
+  // 不再注入本机 macOS 专用 site-packages（避免 3.9 路径污染容器/venv 的 3.x 环境）。
+  const cloudPython = process.env.CLOUD_PYTHON === '1' || process.env.PG_HISTORY_DRIVER === '1'
+  const defaultUserSite = cloudPython ? '' : '/Users/bytedance/Library/Python/3.9/lib/python/site-packages'
   const pythonPath = [process.env.PYTHONPATH, defaultUserSite].filter(Boolean).join(':')
+  // 云端模式下 HOME 不强制隔离（容器内 OpenD 连接不依赖本机 .futu-home 登录缓存）
+  const bridgeHomeEnv = cloudPython ? (process.env.HOME || bridgeHome) : bridgeHome
   fs.mkdirSync(bridgeHome, { recursive: true })
 
   return new Promise((resolve) => {
     const child = spawn(pythonBin, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, HOME: bridgeHome, PYTHONPATH: pythonPath, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, HOME: bridgeHomeEnv, PYTHONPATH: pythonPath, PYTHONUNBUFFERED: '1' },
     })
     let stdout = ''
     let stderr = ''
