@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ChevronDown, RefreshCw, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, Eye, RefreshCw, ShieldAlert } from 'lucide-react'
 import AppNav from '@/components/common/AppNav'
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import Badge from '@/components/common/Badge'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
+import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
 import { useUiStore } from '@/stores/uiStore'
 import { maskAssetValue } from '@/utils/displayText'
@@ -62,6 +63,8 @@ export default function LiveTradingView() {
     history,
     tradeStrategyConfig,
     futuOrders,
+    managedOrders,
+    cancelingManagedOrderId,
     pendingOrderStatusFilter,
     pendingOrderTickerFilter,
     pendingOrderSideFilter,
@@ -96,6 +99,8 @@ export default function LiveTradingView() {
     rejectOrder,
     batchExpirePendingOrders,
     updateAutoSubmit,
+    updateAutoCancel,
+    cancelManagedOrder,
   } = useLiveTrading()
     const assetPrivacyHidden = useUiStore((state) => state.assetPrivacyHidden)
   const [selectedModel, setSelectedModel] = useState('')
@@ -134,6 +139,7 @@ export default function LiveTradingView() {
   const actionBusy = loading || refreshing
   const liveEnabled = Boolean(data?.liveTradingEnabled)
   const autoSubmitEnabled = Boolean(data?.autoSubmitEnabled)
+  const autoCancelEnabled = Boolean(data?.autoCancelEnabled)
 
   useEffect(() => {
     if (!runtimeConfig) return
@@ -201,6 +207,16 @@ export default function LiveTradingView() {
             <Guard ok={Boolean(data?.account.ok)}>Futu REAL 账户 {data?.account.ok ? '可用' : '不可用'}</Guard>
           </div>
         </section>
+
+        <ManagedOrdersPanel
+          platformLabel="Futu"
+          data={managedOrders}
+          autoCancelEnabled={autoCancelEnabled}
+          saving={savingSettings}
+          cancelingOrderId={cancelingManagedOrderId}
+          onToggleAutoCancel={updateAutoCancel}
+          onCancel={cancelManagedOrder}
+        />
 
         <section className="grid gap-4 md:grid-cols-5">
           <Metric label="真实账户" value={data?.account.selectedAccountId || 'unavailable'} note="Futu REAL" />
@@ -376,7 +392,7 @@ export default function LiveTradingView() {
                           {livePendingStatusLabel(order.status)}
                         </span>
                       )}
-                      <Link className="rounded-xl bg-white/90 px-3 py-2 text-xs font-bold text-stone-950" to={`/live-trading/orders/${order.id}`}>详情</Link>
+                      <Link className="rounded-xl bg-white/90 px-3 py-2 text-xs font-bold text-stone-950" to={liveOrderDetailPath(order)}>详情</Link>
                     </div>
                   </div>
                   <div className="mt-3 grid gap-3 border-t border-stone-200 pt-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
@@ -423,7 +439,16 @@ export default function LiveTradingView() {
                 <div key={order.orderId} className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm">
                   <div className="flex justify-between gap-3">
                     <strong>{order.ticker} · {order.orderStatusLabel}</strong>
-                    <span className="text-stone-600">{order.orderId}</span>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <span className="text-stone-600">{order.orderId}</span>
+                      <Link
+                        className="inline-flex items-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50"
+                        to={`/live-trading/orders/${order.orderId}?ticker=${encodeURIComponent(order.ticker)}&submittedAt=${encodeURIComponent(order.createTime)}`}
+                      >
+                        <Eye size={14} />
+                        订单详情
+                      </Link>
+                    </div>
                   </div>
                   <p className="mt-2 text-stone-600">成交 {order.filledQuantity}/{order.quantity} · {displayOrderPriceWithType(order.price, order.orderType, 'zh')}</p>
                   <p className="mt-1 text-xs text-stone-500">创建：{formatDateTime(order.createTime)} · 更新：{formatDateTime(order.updatedTime)}</p>
@@ -1005,6 +1030,13 @@ function historySideLabel(signal: { side: string; reason?: string }) {
 
 function pendingOrderSideLabel(order: LivePendingOrder) {
   return historySideLabel({ side: order.intent.side, reason: order.intent.reason || order.signal.reason })
+}
+
+function liveOrderDetailPath(order: LivePendingOrder) {
+  const params = new URLSearchParams({ ticker: order.intent.ticker })
+  if (order.submittedOrder?.orderId) params.set('brokerOrderId', order.submittedOrder.orderId)
+  if (order.submittedOrder?.submittedAt) params.set('submittedAt', order.submittedOrder.submittedAt)
+  return `/live-trading/orders/${order.id}?${params.toString()}`
 }
 
 function pendingOrderSideTone(order: LivePendingOrder) {

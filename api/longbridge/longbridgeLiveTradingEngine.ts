@@ -17,6 +17,8 @@ import { longbridgeOrderQueueService } from './longbridgeOrderQueueService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
+import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
+import { hasManagedOrderConflict } from '../live/managedOrderPolicy.js'
 
 const STRATEGY: QuantStrategyName = 'LLM_AUTONOMOUS_STOCK_TRADER'
 const DEFAULT_RUN_INTERVAL_MS = 60_000
@@ -130,6 +132,7 @@ class LongbridgeLiveTradingEngine {
   async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; account?: LiveAccountDashboardResponse; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
     const warnings: string[] = []
     const account = options.account ?? (await loadLongbridgeLiveAccountDashboard())
+    const managedOpenOrders = await listManagedOrders('longbridge', true)
     this.account = account
     warnings.push(...account.warnings)
     if (options.ensureRealtime ?? true) await ensureLongbridgeRealtimeSubscriptions([symbol], { waitForSeed: true, requiredKlineCount: DEFAULT_DATA_WINDOW.kline1mBars })
@@ -184,10 +187,14 @@ class LongbridgeLiveTradingEngine {
       marketData,
       dataWindow,
       trendContext,
+      managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === marketData.ticker.toUpperCase()),
     })
-    const riskRejectionReason = decision.ok && decision.approved && decision.action !== 'HOLD' && decision.orderQuantity > 0
-      ? longbridgeOpeningRiskRejectionReason(account, decision, decision.limitPrice || marketData.lastPrice, getTradeStrategyRuntimeConfig('live').activeStrategy)
-      : undefined
+    const managedConflict = hasManagedOrderConflict(managedOpenOrders, marketData.ticker)
+    const riskRejectionReason = managedConflict
+      ? `存在未终态系统挂单 ${managedConflict.orderId}，本轮禁止生成重复或反向订单。`
+      : decision.ok && decision.approved && decision.action !== 'HOLD' && decision.orderQuantity > 0
+        ? longbridgeOpeningRiskRejectionReason(account, decision, decision.limitPrice || marketData.lastPrice, getTradeStrategyRuntimeConfig('live').activeStrategy)
+        : undefined
     const signal = signalFromDecision(decision, marketData, trendContext, riskRejectionReason)
     longbridgePersistence.appendSignal(signal)
 
@@ -228,8 +235,7 @@ class LongbridgeLiveTradingEngine {
     return {
       ok: true,
       engine: this.getEngine(),
-      liveTradingEnabled: getLongbridgeLiveSettings().liveTradingEnabled,
-      autoSubmitEnabled: getLongbridgeLiveSettings().autoSubmitEnabled,
+      ...getLongbridgeLiveSettings(),
       signals: longbridgePersistence.latestSignals(),
       pendingOrders: longbridgeOrderQueueService.activePendingOrders(),
       candidatePool: longbridgeCandidatePoolService.snapshot(executionMode),
@@ -275,12 +281,24 @@ class LongbridgeLiveTradingEngine {
     this.account = account
     const prompt = getActiveLivePortfolioReviewPrompt()
     const runtime = getTradeStrategyRuntimeConfig('live')
+    const managedOpenOrders = await listManagedOrders('longbridge', true)
     const preset = prompt.timingPresets.find((item) => item.id === runtime.selection.portfolioTimingPresetId) ?? prompt.timingPresets.find((item) => item.id === prompt.defaultPresetId) ?? prompt.timingPresets[0]
     const review = await requestLivePortfolioReviewDecision({
       candidates: reviewCandidates,
       account,
       positions: account.positions,
-      pendingOrders: longbridgeOrderQueueService.activePendingOrders().map((order) => ({ id: order.id, ticker: order.intent.ticker, side: order.intent.side, createdAt: order.createdAt })),
+      pendingOrders: [
+        ...longbridgeOrderQueueService.activePendingOrders().map((order) => ({ id: order.id, ticker: order.intent.ticker, side: order.intent.side, createdAt: order.createdAt })),
+        ...managedOpenOrders.map((order) => ({
+          id: `${order.platform}:${order.orderId}`,
+          ticker: order.ticker,
+          side: order.side,
+          createdAt: order.submittedAt,
+          brokerOrderId: order.orderId,
+          status: order.status,
+          remainingQuantity: order.remainingQuantity,
+        })),
+      ],
       constraints: {
         maxPromotedOrdersPerReview: preset.maxPromotedOrdersPerReview,
         minSignalConfirmations: preset.minSignalConfirmations,

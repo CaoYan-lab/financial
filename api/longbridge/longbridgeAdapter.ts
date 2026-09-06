@@ -13,6 +13,11 @@ import type { LiveAccountDashboardResponse, Position, UpdateLlmRuntimeConfigRequ
 import { getLlmRuntimeConfig, updateLlmRuntimeConfig } from '../simulation/llmRuntimeConfigService.js'
 import { getActiveLivePortfolioReviewPrompt, getTradeStrategyRuntimeConfig, updateTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
 import { parseJsonOutput, resolveLongbridgeCliPath, runLongbridgeCli } from './longbridgeCli.js'
+import {
+  loadLongbridgeSdkAccountSnapshot,
+  longbridgeSdkCredentialsConfigured,
+  probeLongbridgeSdk,
+} from './longbridgeSdkGateway.js'
 
 const LONGBRIDGE_SKILLS = [
   'longbridge',
@@ -39,6 +44,10 @@ type AuthPayload = {
 }
 
 export async function loadLongbridgeSourceStatus(): Promise<LongbridgeSourceStatusResponse> {
+  if (longbridgeSdkCredentialsConfigured()) {
+    return loadLongbridgeSdkSourceStatus()
+  }
+
   const checkedAt = new Date().toISOString()
   const cliPath = resolveLongbridgeCliPath()
   const envTokenConfigured = Boolean(process.env.LONGBRIDGE_ACCESS_TOKEN && process.env.LONGBRIDGE_APP_KEY && process.env.LONGBRIDGE_APP_SECRET)
@@ -122,7 +131,13 @@ export async function loadLongbridgeLiveAccountDashboard(): Promise<LiveAccountD
       buyingPowerInTradingCurrency: formatUsd(buyPower),
       dailyPnL: formatUsd(assets.today_pnl),
       totalPnL: formatUsd(assets.total_pnl),
-      source: { source: 'Longbridge CLI assets', accessedAt: now, timestamp: now },
+      source: {
+        source: longbridgeSdkCredentialsConfigured()
+          ? 'Longbridge SDK account'
+          : 'Longbridge CLI assets',
+        accessedAt: now,
+        timestamp: now,
+      },
     },
     positions: positions.map(toSharedPosition),
     risk: {
@@ -176,6 +191,15 @@ async function loadAccountMetrics(warnings: string[]): Promise<LongbridgeMetric[
 }
 
 async function loadAssetRecord(warnings: string[]): Promise<Record<string, unknown>> {
+  if (longbridgeSdkCredentialsConfigured()) {
+    try {
+      return (await loadLongbridgeSdkAccountSnapshot()).assets
+    } catch (error) {
+      warnings.push(`Longbridge SDK 账户资产读取失败：${error instanceof Error ? error.message : String(error)}`)
+      return {}
+    }
+  }
+
   const assets = await runLongbridgeCli(['assets', '--format', 'json'])
   if (!assets.ok) {
     warnings.push(`Longbridge assets 读取失败：${assets.stderr || assets.error || 'unknown error'}`)
@@ -186,6 +210,15 @@ async function loadAssetRecord(warnings: string[]): Promise<Record<string, unkno
 }
 
 async function loadPositions(warnings: string[]): Promise<LongbridgePosition[]> {
+  if (longbridgeSdkCredentialsConfigured()) {
+    try {
+      return (await loadLongbridgeSdkAccountSnapshot()).positions
+    } catch (error) {
+      warnings.push(`Longbridge SDK 持仓读取失败：${error instanceof Error ? error.message : String(error)}`)
+      return []
+    }
+  }
+
   const result = await runLongbridgeCli(['positions', '--format', 'json'])
   if (!result.ok) {
     warnings.push(`Longbridge positions 读取失败：${result.stderr || result.error || 'unknown error'}`)
@@ -255,12 +288,68 @@ function riskCards(positions: LongbridgePosition[], status: LongbridgeSourceStat
 }
 
 function dataPanels(status: LongbridgeSourceStatusResponse): LongbridgeMetric[] {
+  if (status.runtimeProvider === 'sdk') {
+    return [
+      metric('接入方式', status.sdkAvailable ? 'Node SDK' : '不可用', '常驻 worker 内无头鉴权'),
+      metric('授权状态', authLabel(status.authStatus), status.authDetail),
+      metric('行情权限', status.quotePackages?.length ? status.quotePackages.join(' / ') : '未探测到', '由长桥账户行情套餐决定'),
+      metric('令牌有效期', status.tokenExpiresAt ? `${Math.max(0, Math.floor(status.tokenRemainingDays ?? 0))} 天` : '未知', status.tokenExpiresAt ?? '未提供到期时间'),
+    ]
+  }
+
   return [
     metric('命令行状态', status.cliAvailable ? '可用' : '不可用', status.cliVersion),
     metric('OAuth 状态', authLabel(status.authStatus), status.authDetail),
     metric('技能装载', `${status.installedSkills.length}/${LONGBRIDGE_SKILLS.length}`, '已装载到 Trae CN'),
     metric('后备通道', status.mcpFallbackConfigured ? '已配置' : '未配置', '命令行优先，MCP 后备'),
   ]
+}
+
+async function loadLongbridgeSdkSourceStatus(): Promise<LongbridgeSourceStatusResponse> {
+  const probe = await probeLongbridgeSdk()
+  const missingCapabilities = [...probe.errors]
+  const tokenTooCloseToExpiry =
+    probe.tokenRemainingDays !== undefined && probe.tokenRemainingDays < 1
+  const orderProxyReady = Boolean(process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim())
+  if (tokenTooCloseToExpiry && !missingCapabilities.some((item) => item.includes('Access Token'))) {
+    missingCapabilities.push('长桥 Access Token 剩余有效期不足 24 小时，真实交易已熔断。')
+  }
+  if (!probe.orderReadAvailable) {
+    missingCapabilities.push('长桥订单读取权限不可用。')
+  }
+  if (!orderProxyReady) {
+    missingCapabilities.push('长桥真实订单专用代理尚未配置。')
+  }
+
+  return {
+    ok: probe.ok,
+    runtimeProvider: 'sdk',
+    sdkAvailable: probe.sdkAvailable,
+    cliAvailable: false,
+    cliPath: 'not-required',
+    cliVersion: 'not-required',
+    authStatus: probe.ok ? 'authenticated' : 'not_authenticated',
+    authDetail: probe.ok ? '长桥 SDK API Key 已鉴权' : '长桥 SDK 鉴权失败',
+    tokenExpiresAt: probe.tokenExpiresAt,
+    tokenRemainingDays: probe.tokenRemainingDays,
+    quotePackages: probe.quotePackages,
+    accountReadAvailable: probe.accountDataAvailable,
+    positionReadAvailable: probe.accountDataAvailable,
+    orderReadAvailable: probe.orderReadAvailable,
+    skillsInstalled: true,
+    installedSkills: [],
+    marketDataAvailable: probe.marketDataAvailable,
+    accountDataAvailable: probe.accountDataAvailable,
+    tradingAvailable:
+      probe.accountDataAvailable
+      && probe.orderReadAvailable
+      && !tokenTooCloseToExpiry
+      && orderProxyReady
+      && process.env.LONGBRIDGE_LIVE_TRADING_ENABLED === 'true',
+    mcpFallbackConfigured: false,
+    lastCheckedAt: probe.checkedAt,
+    missingCapabilities,
+  }
 }
 
 function researchPanels(status: LongbridgeSourceStatusResponse): LongbridgeMetric[] {

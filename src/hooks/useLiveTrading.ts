@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  FutuLiveOrderDetailResponse,
   FutuLiveOrdersResponse,
   LiveCandidatePoolHistoryFilter,
   LiveCandidatePoolItem,
@@ -18,6 +19,7 @@ import type {
   UpdateLlmRuntimeConfigRequest,
   UpdateTradeStrategyConfigRequest,
 } from '../../shared/types'
+import type { ManagedOrderListResponse } from '../../shared/managedOrderTypes'
 
 type LiveHistoryState = {
   signals?: SimulationHistoryPage<LiveSignalHistoryItem>
@@ -32,6 +34,27 @@ type LiveHistoryKey = keyof LiveHistoryState
 const LIVE_HISTORY_PAGE_SIZE = 12
 const FUTU_ORDERS_PAGE_SIZE = 5
 const AUTO_REFRESH_MS = 30_000
+const CONTROL_POLL_INTERVAL_MS = 500
+const CONTROL_POLL_ATTEMPTS = 60
+
+function isDashboardResponse(payload: unknown): payload is LiveTradingDashboardResponse {
+  if (!payload || typeof payload !== 'object') return false
+  const dashboard = payload as Partial<LiveTradingDashboardResponse>
+  return Boolean(
+    dashboard.engine
+    && dashboard.account
+    && Array.isArray(dashboard.universe)
+    && Array.isArray(dashboard.latestSignals)
+    && Array.isArray(dashboard.pendingOrders)
+    && Array.isArray(dashboard.submittedOrders),
+  )
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds)
+  })
+}
 
 export function useLiveTrading() {
   const [data, setData] = useState<LiveTradingDashboardResponse>()
@@ -44,6 +67,11 @@ export function useLiveTrading() {
     skipped: 1,
   })
   const [futuOrders, setFutuOrders] = useState<FutuLiveOrdersResponse>()
+  const [futuOrderDetail, setFutuOrderDetail] = useState<FutuLiveOrderDetailResponse>()
+  const [loadingFutuOrderDetailId, setLoadingFutuOrderDetailId] = useState<string>()
+  const [futuOrderDetailError, setFutuOrderDetailError] = useState<string>()
+  const [managedOrders, setManagedOrders] = useState<ManagedOrderListResponse>()
+  const [cancelingManagedOrderId, setCancelingManagedOrderId] = useState<string>()
   const [tradeStrategyConfig, setTradeStrategyConfig] = useState<TradeStrategyConfigResponse>()
   const [futuOrdersPage, setFutuOrdersPageState] = useState(1)
   const [pendingOrderStatusFilter, setPendingOrderStatusFilterState] = useState<LivePendingOrderStatusFilter>('ALL')
@@ -81,12 +109,13 @@ export function useLiveTrading() {
     skipped: 0,
   })
 
-  const requestDashboard = useCallback(async (url: string, method = 'GET') => {
+  const requestDashboard = useCallback(async () => {
     setLoading(true)
     try {
-      const response = await fetch(url, { method })
+      const response = await fetch('/api/live-trading/dashboard')
       if (!response.ok) throw new Error(`Live trading request failed with HTTP ${response.status}.`)
-      const payload = (await response.json()) as LiveTradingDashboardResponse
+      const payload: unknown = await response.json()
+      if (!isDashboardResponse(payload)) throw new Error('实盘看板返回内容不完整。')
       setData(payload)
       setError(undefined)
       return payload
@@ -98,10 +127,44 @@ export function useLiveTrading() {
     }
   }, [])
 
-  const refresh = useCallback(() => requestDashboard('/api/live-trading/dashboard'), [requestDashboard])
-  const start = useCallback(() => requestDashboard('/api/live-trading/start', 'POST'), [requestDashboard])
-  const stop = useCallback(() => requestDashboard('/api/live-trading/stop', 'POST'), [requestDashboard])
-  const runOnce = useCallback(() => requestDashboard('/api/live-trading/run-once', 'POST'), [requestDashboard])
+  const requestControl = useCallback(async (url: string, expectedRunning?: boolean) => {
+    setLoading(true)
+    try {
+      const response = await fetch(url, { method: 'POST' })
+      const acknowledgement: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) throw new Error(`实盘控制请求失败，状态码 ${response.status}。`)
+
+      if (isDashboardResponse(acknowledgement)) {
+        setData(acknowledgement)
+        setError(undefined)
+        return acknowledgement
+      }
+
+      for (let attempt = 0; attempt < CONTROL_POLL_ATTEMPTS; attempt += 1) {
+        await wait(CONTROL_POLL_INTERVAL_MS)
+        const dashboardResponse = await fetch('/api/live-trading/dashboard')
+        if (!dashboardResponse.ok) continue
+        const dashboard: unknown = await dashboardResponse.json().catch(() => undefined)
+        if (!isDashboardResponse(dashboard)) continue
+        if (expectedRunning !== undefined && dashboard.engine.running !== expectedRunning) continue
+        setData(dashboard)
+        setError(undefined)
+        return dashboard
+      }
+
+      throw new Error('实盘控制指令已提交，但等待状态更新超时。')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '实盘控制请求失败。')
+      return undefined
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const refresh = useCallback(() => requestDashboard(), [requestDashboard])
+  const start = useCallback(() => requestControl('/api/live-trading/start', true), [requestControl])
+  const stop = useCallback(() => requestControl('/api/live-trading/stop', false), [requestControl])
+  const runOnce = useCallback(() => requestControl('/api/live-trading/run-once'), [requestControl])
 
   const loadHistory = useCallback(async (kind: LiveHistoryKey, page = 1, pageSize = LIVE_HISTORY_PAGE_SIZE) => {
     const requestSeq = historyRequestSeqRef.current[kind] + 1
@@ -137,14 +200,30 @@ export function useLiveTrading() {
 
   const loadFutuOrders = useCallback(async (page = 1, pageSize = FUTU_ORDERS_PAGE_SIZE) => {
     try {
-      const response = await fetch(`/api/live-trading/futu-orders?page=${page}&pageSize=${pageSize}`)
-      if (!response.ok) throw new Error(`Futu REAL order request failed with HTTP ${response.status}.`)
+      const response = await fetch(
+        `/api/live-trading/futu-orders?page=${page}&pageSize=${pageSize}`,
+        { signal: AbortSignal.timeout(30_000) },
+      )
+      if (!response.ok) throw new Error(`Futu 实盘订单请求失败，状态码 ${response.status}。`)
       const payload = (await response.json()) as FutuLiveOrdersResponse
       setFutuOrders(payload)
       setError(undefined)
       return payload
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load Futu REAL orders.')
+      setError(requestError instanceof Error ? requestError.message : '无法加载 Futu 实盘订单。')
+      return undefined
+    }
+  }, [])
+
+  const loadManagedOrders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/live-trading/managed-orders')
+      const payload = await response.json() as ManagedOrderListResponse
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? '系统挂单读取失败。')
+      setManagedOrders(payload)
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '系统挂单读取失败。')
       return undefined
     }
   }, [])
@@ -350,8 +429,10 @@ export function useLiveTrading() {
     try {
       const payload = await refresh()
       const currentHistoryPages = historyPagesRef.current
+      // OpenD 订单查询耗时波动较大，独立刷新，不能阻塞主看板和操作按钮复位。
+      void loadFutuOrders(futuOrdersPageRef.current, FUTU_ORDERS_PAGE_SIZE)
       await Promise.all([
-        loadFutuOrders(futuOrdersPageRef.current, FUTU_ORDERS_PAGE_SIZE),
+        loadManagedOrders(),
         refreshTradeStrategyConfig(),
         loadHistory('signals', currentHistoryPages.signals, LIVE_HISTORY_PAGE_SIZE),
         loadHistory('pending-orders', currentHistoryPages['pending-orders'], LIVE_HISTORY_PAGE_SIZE),
@@ -364,7 +445,7 @@ export function useLiveTrading() {
       dashboardRefreshInFlight.current = false
       setRefreshing(false)
     }
-  }, [loadFutuOrders, loadHistory, refresh, refreshTradeStrategyConfig])
+  }, [loadFutuOrders, loadHistory, loadManagedOrders, refresh, refreshTradeStrategyConfig])
 
   const confirmOrder = useCallback(async (id: string) => {
     setConfirmingOrderId(id)
@@ -425,6 +506,42 @@ export function useLiveTrading() {
     }
   }, [refreshAll])
 
+  const loadFutuOrderDetail = useCallback(async (input: {
+    orderId: string
+    ticker?: string
+    submittedAt?: string
+  }) => {
+    setLoadingFutuOrderDetailId(input.orderId)
+    setFutuOrderDetail(undefined)
+    setFutuOrderDetailError(undefined)
+    try {
+      const params = new URLSearchParams()
+      if (input.ticker) params.set('ticker', input.ticker)
+      if (input.submittedAt) params.set('submittedAt', input.submittedAt)
+      const suffix = params.size ? `?${params.toString()}` : ''
+      const response = await fetch(
+        `/api/live-trading/futu-orders/${encodeURIComponent(input.orderId)}/detail${suffix}`,
+      )
+      const payload = await response.json().catch(() => undefined) as FutuLiveOrderDetailResponse | undefined
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `Futu 订单详情请求失败，状态码 ${response.status}。`)
+      }
+      setFutuOrderDetail(payload)
+      return payload
+    } catch (requestError) {
+      setFutuOrderDetailError(requestError instanceof Error ? requestError.message : 'Futu 订单详情加载失败。')
+      return undefined
+    } finally {
+      setLoadingFutuOrderDetailId(undefined)
+    }
+  }, [])
+
+  const clearFutuOrderDetail = useCallback(() => {
+    setFutuOrderDetail(undefined)
+    setFutuOrderDetailError(undefined)
+    setLoadingFutuOrderDetailId(undefined)
+  }, [])
+
   const updateAutoSubmit = useCallback(async (autoSubmitEnabled: boolean) => {
     setSavingSettings(true)
     try {
@@ -435,7 +552,18 @@ export function useLiveTrading() {
       })
       const payload = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(payload?.error ?? `Futu live settings update failed with HTTP ${response.status}.`)
-      await refreshAll()
+      if (payload && typeof payload === 'object' && typeof payload.autoSubmitEnabled === 'boolean') {
+        setData((current) => current
+          ? {
+              ...current,
+              autoSubmitEnabled: payload.autoSubmitEnabled,
+              liveTradingEnabled:
+                typeof payload.liveTradingEnabled === 'boolean'
+                  ? payload.liveTradingEnabled
+                  : current.liveTradingEnabled,
+            }
+          : current)
+      }
       setError(undefined)
       return payload
     } catch (requestError) {
@@ -444,7 +572,53 @@ export function useLiveTrading() {
     } finally {
       setSavingSettings(false)
     }
-  }, [refreshAll])
+  }, [])
+
+  const updateAutoCancel = useCallback(async (autoCancelEnabled: boolean) => {
+    setSavingSettings(true)
+    try {
+      const response = await fetch('/api/live-trading/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoSubmitEnabled: data?.autoSubmitEnabled === true,
+          autoCancelEnabled,
+        }),
+      })
+      const payload = await response.json().catch(() => undefined)
+      if (!response.ok) throw new Error(payload?.error ?? `自动撤单设置失败，状态码 ${response.status}。`)
+      setData((current) => current ? { ...current, autoCancelEnabled: payload.autoCancelEnabled === true } : current)
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '自动撤单开关更新失败。')
+      return undefined
+    } finally {
+      setSavingSettings(false)
+    }
+  }, [data?.autoSubmitEnabled])
+
+  const cancelManagedOrder = useCallback(async (orderId: string) => {
+    setCancelingManagedOrderId(orderId)
+    try {
+      const response = await fetch(`/api/live-trading/futu-orders/${encodeURIComponent(orderId)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cancelRequestId: crypto.randomUUID(),
+          reason: '用户在系统挂单监管页面手工撤单',
+        }),
+      })
+      const payload = await response.json().catch(() => undefined)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? 'Futu 撤单失败。')
+      await loadManagedOrders()
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Futu 撤单失败。')
+      return undefined
+    } finally {
+      setCancelingManagedOrderId(undefined)
+    }
+  }, [loadManagedOrders])
 
   useEffect(() => {
     refreshAll().catch(() => undefined)
@@ -470,6 +644,11 @@ export function useLiveTrading() {
     signalLifecycleFilter,
     candidatePoolHistoryFilter,
     futuOrders,
+    futuOrderDetail,
+    loadingFutuOrderDetailId,
+    futuOrderDetailError,
+    managedOrders,
+    cancelingManagedOrderId,
     futuOrdersPage,
     loading,
     savingConfig,
@@ -500,6 +679,10 @@ export function useLiveTrading() {
     confirmOrder,
     rejectOrder,
     batchExpirePendingOrders,
+    loadFutuOrderDetail,
+    clearFutuOrderDetail,
     updateAutoSubmit,
+    updateAutoCancel,
+    cancelManagedOrder,
   }
 }

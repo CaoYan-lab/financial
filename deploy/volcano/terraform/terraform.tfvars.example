@@ -1,0 +1,36 @@
+# 复制为 terraform.tfvars 并填写；敏感项建议用环境变量而非写入本文件：
+#   export VOLCENGINE_ACCESS_KEY=***   export VOLCENGINE_SECRET_KEY=***
+#   export TF_VAR_rds_account_password='***'
+#   export TF_VAR_opend_password='***'
+
+region = "cn-beijing"
+zone_a = "cn-beijing-a"
+zone_b = "cn-beijing-b"
+
+name_prefix = "fin"
+
+# 网络
+vpc_cidr        = "10.20.0.0/16"
+subnet_a_cidr   = "10.20.1.0/24"
+subnet_b_cidr   = "10.20.2.0/24"
+# 收紧为你的固定办公公网 IP，例如 "203.0.113.10/32"
+operator_office_cidr = "0.0.0.0/0"
+
+# 数据库：默认复用已开通的 AIDAP PostgreSQL，terraform 不建 RDS。
+# 应用侧通过环境变量 DATABASE_URL / PG_HISTORY_DRIVER 直连 AIDAP（连接串不写入本文件）。
+# 仅当确实需要 terraform 自建一套独立 RDS PG 时才设为 true。
+rds_create          = false
+# 以下仅在 rds_create=true 时生效：
+rds_instance_type   = "rds.postgres.1c2g"
+rds_storage_gb      = 40
+rds_pg_version      = "PostgreSQL_16"
+rds_db_name         = "financial"
+rds_account_name    = "fin_app"
+# rds_account_password 用 TF_VAR_rds_account_password 注入
+
+# Windows OpenD ECS（先在控制台查询 Windows Server 2022 公共镜像 ID 填入）
+opend_ecs_create       = true
+opend_image_id         = "image-xxxxxxxxxxxx"
+opend_instance_type    = "ecs.g3il.large"
+opend_system_volume_size = 60
+# opend_password 用 TF_VAR_opend_password 注入（Windows 复杂度要求）

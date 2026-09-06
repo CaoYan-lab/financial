@@ -41,3 +41,14 @@ dist-ssr
 .futu-home
 third_party/
 __pycache__/
+
+# Terraform 状态与本地变量（含密钥，绝不入库）；只提交 *.example
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+terraform.tfvars.json
+deploy/volcano/faas/out/
+crash.log
+crash.log.*

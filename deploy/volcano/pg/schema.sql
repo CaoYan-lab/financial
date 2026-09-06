@@ -185,3 +185,52 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_event_type_created_at ON audit_log(event_type, created_at DESC);
+
+-- ============ 实盘托管订单与撤单审计 ============
+
+CREATE TABLE IF NOT EXISTS managed_live_orders (
+    platform TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    pending_order_id TEXT NOT NULL,
+    signal_id TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    side TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    order_session TEXT,
+    strategy TEXT NOT NULL,
+    status TEXT NOT NULL,
+    broker_status TEXT NOT NULL DEFAULT '',
+    submitted_quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    executed_quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    remaining_quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    submitted_price DOUBLE PRECISION,
+    executed_price DOUBLE PRECISION,
+    submitted_at TIMESTAMPTZ NOT NULL,
+    broker_updated_at TIMESTAMPTZ,
+    last_checked_at TIMESTAMPTZ,
+    terminal_at TIMESTAMPTZ,
+    ownership_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    cancel_request_id TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (platform, order_id),
+    UNIQUE (platform, pending_order_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_live_orders_active
+    ON managed_live_orders(platform, submitted_at)
+    WHERE terminal_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS managed_order_events (
+    id BIGSERIAL PRIMARY KEY,
+    request_id TEXT UNIQUE,
+    platform TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_managed_order_events_order
+    ON managed_order_events(platform, order_id, created_at DESC, id DESC);

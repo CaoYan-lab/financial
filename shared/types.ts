@@ -767,6 +767,35 @@ export type FutuLiveOrdersResponse = Omit<FutuSimulationOrdersResponse, 'orders'
   orders: FutuLiveOrder[]
 }
 
+export type FutuLiveDeal = {
+  dealId: string
+  orderId: string
+  ticker: string
+  side: string
+  quantity: string
+  price: string
+  dealtAmount: string
+  createdAt: string
+  counterBrokerId: string
+  counterBrokerName: string
+  rawResponse?: unknown
+}
+
+export type FutuLiveOrderDetailResponse =
+  | {
+      ok: false
+      error: string
+      warnings: string[]
+    }
+  | {
+      ok: true
+      error?: never
+      order: FutuLiveOrder
+      deals: FutuLiveDeal[]
+      checkedAt: string
+      warnings: string[]
+    }
+
 export type LiveSkippedTicker = SimulationSkippedTicker
 
 export type LiveHistoryKind = 'signals' | 'pending_orders' | 'submitted_orders' | 'rejected_orders' | 'skipped' | 'confirmations'
@@ -783,4 +812,10 @@ export type LiveTradingDashboardResponse = {
   skippedTickers: LiveSkippedTicker[]
   warnings: string[]
   liveTradingEnabled: boolean
+  autoSubmitEnabled: boolean
+  autoCancelEnabled: boolean
+  marketableLimitTimeoutSeconds: number
+  limitTimeoutSeconds: number
+  brokerSyncIntervalSeconds: number
+  modelReviewIntervalSeconds: number
 }

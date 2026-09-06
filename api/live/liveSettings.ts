@@ -1,14 +1,26 @@
-let autoSubmitEnabled = process.env.FUTU_AUTO_SUBMIT_ENABLED === 'true'
+import type { BrokerExecutionSettings } from '../../shared/managedOrderTypes.js'
+import {
+  defaultBrokerExecutionSettings,
+  loadBrokerExecutionSettings,
+  saveBrokerExecutionSettings,
+} from '../cloud/state/brokerExecutionSettingsStore.js'
+
+let controls = defaultBrokerExecutionSettings('futu')
 
 export function getFutuLiveSettings() {
   return {
     liveTradingEnabled: process.env.LIVE_TRADING_ENABLED === 'true' && process.env.FUTU_LIVE_TRD_ENV === 'REAL',
-    autoSubmitEnabled,
+    ...controls,
     updatedAt: new Date().toISOString(),
   }
 }
 
-export function updateFutuLiveSettings(input: { autoSubmitEnabled?: boolean }) {
-  if (typeof input.autoSubmitEnabled === 'boolean') autoSubmitEnabled = input.autoSubmitEnabled
+export async function hydrateFutuLiveSettings() {
+  controls = await loadBrokerExecutionSettings('futu')
+  return getFutuLiveSettings()
+}
+
+export async function updateFutuLiveSettings(input: Partial<BrokerExecutionSettings>) {
+  controls = await saveBrokerExecutionSettings('futu', { ...controls, ...input })
   return getFutuLiveSettings()
 }

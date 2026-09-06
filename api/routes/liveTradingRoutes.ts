@@ -5,7 +5,9 @@ import { livePersistence } from '../live/livePersistence.js'
 import { liveOrderQueueService } from '../live/liveOrderQueueService.js'
 import { loadLiveAccountDashboard } from '../live/liveAccountService.js'
 import { loadFutuLiveOrders } from '../live/futuLiveOrderService.js'
+import { requestManagedOrderCancel } from '../live/managedOrderSupervisor.js'
 import { getFutuLiveSettings, updateFutuLiveSettings } from '../live/liveSettings.js'
+import { listManagedOrderEvents, listManagedOrders } from '../cloud/state/managedOrderStore.js'
 import { getLlmRuntimeConfig, updateLlmRuntimeConfig } from '../simulation/llmRuntimeConfigService.js'
 import { getTradeStrategyRuntimeConfig, updateTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
 import { logger } from '../utils/logger.js'
@@ -32,8 +34,12 @@ router.get('/settings', (_req, res) => {
   res.json(getFutuLiveSettings())
 })
 
-router.put('/settings', (req, res) => {
-  res.json(updateFutuLiveSettings({ autoSubmitEnabled: req.body?.autoSubmitEnabled === true }))
+router.put('/settings', async (req, res, next) => {
+  try {
+    res.json(await updateFutuLiveSettings(executionSettingsPatch(req.body)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 router.post('/start', async (_req, res, next) => {
@@ -177,6 +183,39 @@ router.get('/futu-orders', async (req, res, next) => {
   }
 })
 
+router.get('/managed-orders', async (_req, res, next) => {
+  try {
+    const [orders, events] = await Promise.all([
+      listManagedOrders('futu'),
+      listManagedOrderEvents('futu', undefined, 100),
+    ])
+    res.json({ ok: true, orders, events })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/futu-orders/:orderId/cancel', async (req, res, next) => {
+  try {
+    const result = await requestManagedOrderCancel({
+      platform: 'futu',
+      orderId: req.params.orderId,
+      requestId:
+        typeof req.body?.cancelRequestId === 'string'
+          ? req.body.cancelRequestId
+          : undefined,
+      source: 'manual',
+      reason:
+        typeof req.body?.reason === 'string'
+          ? req.body.reason
+          : '用户手工撤单',
+    })
+    res.status(result.ok ? 200 : 400).json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/llm-config', (_req, res) => {
   res.json(getLlmRuntimeConfig())
 })
@@ -221,3 +260,26 @@ router.put('/trade-strategy-config', (req, res, next) => {
 })
 
 export default router
+
+function executionSettingsPatch(body: Record<string, unknown> | undefined) {
+  return {
+    ...(typeof body?.autoSubmitEnabled === 'boolean'
+      ? { autoSubmitEnabled: body.autoSubmitEnabled }
+      : {}),
+    ...(typeof body?.autoCancelEnabled === 'boolean'
+      ? { autoCancelEnabled: body.autoCancelEnabled }
+      : {}),
+    ...(typeof body?.marketableLimitTimeoutSeconds === 'number'
+      ? { marketableLimitTimeoutSeconds: body.marketableLimitTimeoutSeconds }
+      : {}),
+    ...(typeof body?.limitTimeoutSeconds === 'number'
+      ? { limitTimeoutSeconds: body.limitTimeoutSeconds }
+      : {}),
+    ...(typeof body?.brokerSyncIntervalSeconds === 'number'
+      ? { brokerSyncIntervalSeconds: body.brokerSyncIntervalSeconds }
+      : {}),
+    ...(typeof body?.modelReviewIntervalSeconds === 'number'
+      ? { modelReviewIntervalSeconds: body.modelReviewIntervalSeconds }
+      : {}),
+  }
+}

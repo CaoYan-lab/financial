@@ -4,15 +4,18 @@
 # 构建上下文为仓库根目录：docker build -f deploy/volcano/docker/Dockerfile.vefaas -t <image> .
 
 # ---------- Stage 1: 前端构建 ----------
-FROM node:20-bookworm-slim AS frontend
+FROM node:20-trixie-slim AS frontend
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmmirror.com \
+  && npm ci
 COPY . .
-RUN VITE_AUTH_ENABLED=true npm run build
+# 容器内仅做 vite 打包（esbuild 转译，跳过开发期 tsc 严格类型门），保证静态资源产出；
+# 类型检查在本地开发/CI 用 `npm run build` 执行。
+RUN VITE_AUTH_ENABLED=true npx vite build
 
 # ---------- Stage 2: 运行时（Node + Python 同镜像） ----------
-FROM node:20-bookworm-slim AS runtime
+FROM node:20-trixie-slim AS runtime
 
 # Python 3.11 + pip，使用火山镜像源加速
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,16 +27,25 @@ RUN sed -i 's|deb.debian.org|mirrors.ivolces.com|g; s|security.debian.org|mirror
 WORKDIR /app
 
 # Node 依赖（仅生产依赖 + tsx 用于运行 TS）
+# 注意：longbridge 含按平台分发的原生 .node（optionalDependencies）。npmmirror 上的
+# longbridge-linux-* 是无关旧包（0.2.x），缺 4.x；故主依赖走 npmmirror 加速后，
+# 再从官方 registry 重装 longbridge，让其按 linux 平台正确拉取 longbridge-linux-x64-gnu@4.3.2。
 COPY package.json package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com \
-  && npm ci --omit=dev || npm install --omit=dev \
-  && npm install -g tsx
+  && npm install --omit=dev \
+  && npm install -g tsx \
+  && npm install --no-save --registry=https://registry.npmjs.org longbridge@4.3.2
 
-# Python 依赖（Futu OpenD SDK + PG 驱动 + 数据处理），用火山 pypi 镜像
+# Python 依赖（PG 驱动 + 数据处理）用火山 pypi 镜像；
+# futu-api 必须为 10.x（OpenSecTradeContext/OpenQuoteContext 支持 ai_type 参数，
+# 火山 pypi 镜像最新仅 9.4.5408 缺该参数会导致连接 OpenD 报错），故 futu-api 走清华源锁版本。
 RUN python3 -m venv /opt/venv \
   && /opt/venv/bin/pip install --no-cache-dir \
       -i https://mirrors.ivolces.com/pypi/simple/ \
-      "futu-api" "psycopg[binary]" "pandas" "numpy"
+      "psycopg[binary]" "pandas" "numpy" \
+  && /opt/venv/bin/pip install --no-cache-dir --upgrade \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+      "futu-api==10.10.7008"
 
 # 应用代码
 COPY . .

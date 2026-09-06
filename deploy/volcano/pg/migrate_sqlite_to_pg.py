@@ -98,9 +98,6 @@ def copy_table(pg_conn, sqlite_conn, source_table, target_table):
     columns = sqlite_columns(sqlite_conn, source_table)
     if not columns:
         return 0, 0
-    rows = sqlite_conn.execute(f"SELECT {', '.join(columns)} FROM {source_table}").fetchall()
-    if not rows:
-        return 0, 0
 
     insert_cols = ", ".join(columns)
     value_placeholders = ", ".join(
@@ -109,13 +106,24 @@ def copy_table(pg_conn, sqlite_conn, source_table, target_table):
     conflict = " ON CONFLICT (id) DO NOTHING" if "id" in columns else ""
     sql = f"INSERT INTO {target_table} ({insert_cols}) VALUES ({value_placeholders}){conflict}"
 
+    # 批量提交，避免 AIDP Serverless 下逐行公网往返导致长事务被服务端断开
+    # （AdminShutdown）。每 BATCH 行 executemany 一次；流式读取不一次性载入内存。
+    BATCH = 500
+    total = 0
     inserted = 0
+    batch = []
     with pg_conn.cursor() as cur:
-        for row in rows:
-            params = tuple(row)
-            cur.execute(sql, params)
-            inserted += cur.rowcount if cur.rowcount is not None else 1
-    return len(rows), inserted
+        for row in sqlite_conn.execute(f"SELECT {', '.join(columns)} FROM {source_table}"):
+            batch.append(tuple(row))
+            total += 1
+            if len(batch) >= BATCH:
+                cur.executemany(sql, batch)
+                inserted += cur.rowcount if (cur.rowcount and cur.rowcount >= 0) else len(batch)
+                batch.clear()
+        if batch:
+            cur.executemany(sql, batch)
+            inserted += cur.rowcount if (cur.rowcount and cur.rowcount >= 0) else len(batch)
+    return total, inserted
 
 
 def reset_sequences(pg_conn):
@@ -132,8 +140,14 @@ def reset_sequences(pg_conn):
             )
 
 
+def with_keepalive(url):
+    """追加 TCP keepalive，降低 AIDP Serverless 长连接被服务端/中间链路断开的概率。"""
+    sep = "&" if "?" in url else "?"
+    return url + sep + "keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
+
+
 def main():
-    pg_dsn = dsn()
+    pg_dsn = with_keepalive(dsn())
     summary = []
     with psycopg.connect(pg_dsn, autocommit=False) as pg_conn:
         if os.environ.get("RESET_PG") == "1":
@@ -142,6 +156,7 @@ def main():
                 for table in reversed(ID_TABLES):
                     cur.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
                 cur.execute("TRUNCATE TABLE simulation_meta, simulation_config RESTART IDENTITY")
+            pg_conn.commit()
             summary.append(("RESET_PG", "已清空目标表"))
         for filename, table_map in DB_TABLE_MAP.items():
             sqlite_path = DATA_DIR / filename
@@ -154,7 +169,10 @@ def main():
                 targets = [(s, t) for s, t in table_map.items() if s in present]
                 targets.sort(key=lambda pair: TABLE_ORDER_HINT.get(pair[1], 5))
                 for source_table, target_table in targets:
+                    # 每张表独立提交：即便单表迁移中途连接被断开，也只影响该表，
+                    # 重跑时 ON CONFLICT DO NOTHING 幂等补齐。
                     total, inserted = copy_table(pg_conn, sconn, source_table, target_table)
+                    pg_conn.commit()
                     summary.append((f"{filename}:{source_table} → {target_table}", f"{inserted}/{total} 行迁入"))
         reset_sequences(pg_conn)
         pg_conn.commit()

@@ -1,5 +1,6 @@
 import type { LiveAccountDashboardResponse, LlmDataWindowRecommendation, LlmTradingDecision, Position, SimulationUniverseItem, TrendContextSummary } from '../../shared/types.js'
 import type { LongbridgeStrategyMarketData } from '../../shared/longbridgeTypes.js'
+import type { ManagedOrder } from '../../shared/managedOrderTypes.js'
 import { callArkResponses, parseJsonObject } from '../simulation/llmResponseUtils.js'
 import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import { LLM_SIMULATION_UNIVERSE } from '../simulation/simulationUniverse.js'
@@ -14,6 +15,7 @@ type DecisionInput = {
   dataWindow: LlmDataWindowRecommendation
   trendContext?: TrendContextSummary
   universe?: SimulationUniverseItem[]
+  managedOpenOrders?: ManagedOrder[]
 }
 
 export async function requestLongbridgeLiveTradingDecision(input: DecisionInput): Promise<LlmTradingDecision> {
@@ -108,6 +110,20 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
             SELL_TO_CLOSE: '平掉已有多头，不用于回补空头。',
             HOLD: '不交易。',
           },
+          managedOpenOrdersForTicker: (input.managedOpenOrders ?? []).map((order) => ({
+            platform: order.platform,
+            orderId: order.orderId,
+            ticker: order.ticker,
+            side: order.side,
+            orderType: order.orderType,
+            status: order.status,
+            submittedQuantity: order.submittedQuantity,
+            executedQuantity: order.executedQuantity,
+            remainingQuantity: order.remainingQuantity,
+            submittedPrice: order.submittedPrice,
+            submittedAt: order.submittedAt,
+          })),
+          managedOrderRule: '如存在尚未终态的系统挂单，本轮不得生成重复或反向订单，必须 HOLD，等待挂单监管器处理。',
         },
         currentPosition: currentPosition
           ? {

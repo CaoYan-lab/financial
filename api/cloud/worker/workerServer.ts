@@ -12,20 +12,27 @@
  */
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
+import type { PoolClient } from 'pg'
 import { closePool } from '../db/pgClient.js'
 import { logger } from '../../utils/logger.js'
 import { claimNextJob, completeJob, failJob, getEngineDesired, upsertWorkerStatus } from '../state/taskStores.js'
 import { collectEngineSnapshots, handleJob } from '../jobs/jobHandlers.js'
+import { tryAcquireLeader, releaseLeader, leaderKeepAlive } from '../state/leaderLock.js'
+import { managedOrderSupervisor } from '../../live/managedOrderSupervisor.js'
 
 const WORKER_ID = process.env.WORKER_ID || `worker-${process.pid}-${randomUUID().slice(0, 8)}`
 const PORT = Number(process.env.PORT || 8000)
 const JOB_POLL_INTERVAL_MS = Number(process.env.WORKER_JOB_POLL_MS || 5_000)
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WORKER_HEARTBEAT_MS || 15_000)
+const LEADER_POLL_INTERVAL_MS = Number(process.env.WORKER_LEADER_POLL_MS || 10_000)
 
 let startedAt = new Date().toISOString()
 let lastJobAt: string | null = null
 let running = true
 let processing = false
+let leaderClient: PoolClient | null = null
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 function writeJson(res: http.ServerResponse, statusCode: number, body: unknown): void {
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -71,8 +78,15 @@ async function processOneJob(): Promise<boolean> {
 
 async function heartbeat(): Promise<void> {
   try {
-    const engines = collectEngineSnapshots()
-    await upsertWorkerStatus('primary', { ...buildStatus(), engines })
+    const engines = await collectEngineSnapshots()
+    // 仅 leader 写心跳；固定写到 'leader' 行，避免旧版本/非 leader 实例写 'primary' 造成噪声。
+    // web 侧只读 'leader' 行展示引擎看板。
+    await upsertWorkerStatus('leader', {
+      ...buildStatus(),
+      leader: true,
+      engines,
+      managedOrders: managedOrderSupervisor.snapshot(),
+    })
   } catch (error) {
     logger.error({ event: 'cloud.worker.heartbeat.failed', error: error instanceof Error ? error.message : String(error) }, '心跳写入失败')
   }
@@ -141,6 +155,43 @@ export function createWorkerServer(): http.Server {
   return server
 }
 
+/**
+ * 领导选举：仅抢到 PG 咨询锁的实例执行引擎恢复/任务消费/心跳快照；
+ * 其余实例 standby 轮询等待接管。避免多实例重复驱动引擎、互相覆盖心跳。
+ */
+async function campaignLeadership(): Promise<void> {
+  while (running) {
+    try {
+      const client = await tryAcquireLeader()
+      if (client) {
+        leaderClient = client
+        logger.info({ event: 'cloud.worker.leader.acquired', workerId: WORKER_ID }, '本实例成为 leader，开始驱动引擎')
+        await reconcileDesiredState().catch(() => undefined)
+        await managedOrderSupervisor.start()
+        startJobLoop()
+        startHeartbeatLoop()
+        startLeaderKeepalive(client)
+        return
+      }
+      logger.info({ event: 'cloud.worker.leader.standby', workerId: WORKER_ID }, '未获 leader 锁，standby 等待接管')
+    } catch (error) {
+      logger.error({ event: 'cloud.worker.leader.campaign_failed', workerId: WORKER_ID, error: error instanceof Error ? error.message : String(error) }, '竞选 leader 失败，稍后重试')
+    }
+    await sleep(LEADER_POLL_INTERVAL_MS)
+  }
+}
+
+function startLeaderKeepalive(client: PoolClient): void {
+  setInterval(() => {
+    void leaderKeepAlive(client).then((ok) => {
+      if (!ok) {
+        logger.error({ event: 'cloud.worker.leader.lost', workerId: WORKER_ID }, 'leader 连接丢失（锁已释放），退出以重新竞选')
+        process.exit(1)
+      }
+    })
+  }, 15_000)
+}
+
 async function bootstrap(): Promise<void> {
   if (!process.env.DATABASE_URL) {
     logger.error({ event: 'cloud.worker.no_database_url' }, 'DATABASE_URL 未配置，worker 无法运行')
@@ -151,15 +202,17 @@ async function bootstrap(): Promise<void> {
     logger.info({ event: 'cloud.worker.started', port: PORT, workerId: WORKER_ID }, 'Cloud worker ready')
   })
 
-  await reconcileDesiredState().catch(() => undefined)
-  startJobLoop()
-  startHeartbeatLoop()
+  // 引擎恢复 / 任务消费 / 心跳仅由 leader 执行（内部做领导选举）
+  void campaignLeadership()
 
   const shutdown = (signal: string): void => {
     running = false
+    managedOrderSupervisor.stop()
     logger.info({ event: 'cloud.worker.shutdown', signal }, 'Worker shutting down')
-    server.close(() => {
-      void closePool().finally(() => process.exit(0))
+    void releaseLeader(leaderClient).finally(() => {
+      server.close(() => {
+        void closePool().finally(() => process.exit(0))
+      })
     })
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'))

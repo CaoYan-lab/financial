@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { longbridgeLiveTradingEngine } from '../api/longbridge/longbridgeLiveTradingEngine'
-import { buildLongbridgeLiveOrderCommand } from '../api/longbridge/longbridgeLiveOrderService'
+import { buildLongbridgeSdkOrderPayload } from '../api/longbridge/longbridgeLiveOrderService'
 import { longbridgeOrderQueueService } from '../api/longbridge/longbridgeOrderQueueService'
 import { longbridgeOpeningRiskRejectionReason } from '../api/longbridge/longbridgeRiskService'
 import { updateTradeStrategyRuntimeConfig } from '../api/trade_strategy/tradeStrategyConfigService'
@@ -26,24 +26,23 @@ describe('Longbridge order gate', () => {
     expect(longbridgeOrderQueueService.findPendingOrder(order.id)?.status).toBe('PENDING_CONFIRMATION')
   })
 
-  it('真实订单 adapter 使用 Longbridge CLI 非交互确认参数', () => {
+  it('真实订单 adapter 生成 SDK 订单参数', () => {
     const order = testPendingOrder()
-    const command = buildLongbridgeLiveOrderCommand({
+    const payload = buildLongbridgeSdkOrderPayload({
       pendingOrderId: order.id,
       confirmationId: 'longbridge-confirm-test',
       intent: order.intent,
     })
 
-    expect(command.slice(0, 4)).toEqual(['order', 'buy', 'AAPL.US', '1'])
-    expect(command).toContain('--yes')
-    expect(command).toContain('--format')
-    expect(command).toContain('json')
-    expect(command).toContain('--order-type')
-    expect(command).toContain('LO')
-    expect(command).toContain('--price')
-    expect(command).toContain('100.00')
-    expect(command).toContain('--outside-rth')
-    expect(command).toContain('RTH_ONLY')
+    expect(payload).toMatchObject({
+      symbol: 'AAPL.US',
+      side: 'BUY',
+      quantity: 1,
+      orderType: 'LO',
+      limitPrice: 100,
+      orderSession: 'RTH',
+    })
+    expect(payload.remark.length).toBeLessThanOrEqual(64)
   })
 
   it('待确认订单费用使用提交前估算而不是 unavailable', () => {

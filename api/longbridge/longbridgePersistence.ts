@@ -105,6 +105,11 @@ class LongbridgePersistence {
     return [...this.pendingOrders]
   }
 
+  latestSubmittedOrders() {
+    if (!PERSISTENCE_DISABLED) return this.readLatest('submitted_orders', MAX_ITEMS)
+    return []
+  }
+
   activePendingOrders() {
     return this.latestPendingOrders().filter((order) => order.status === 'PENDING_CONFIRMATION' || order.status === 'CONFIRMED_SUBMITTING')
   }

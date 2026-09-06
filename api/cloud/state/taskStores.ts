@@ -27,6 +27,15 @@ export async function enqueueJob(
   return String(row?.id ?? '')
 }
 
+export async function getJob(id: string): Promise<JobRow | null> {
+  return queryOne<JobRow>(
+    `SELECT id, job_type, payload, status, claimed_by, attempts, last_error, result, created_at, updated_at
+     FROM cloud_jobs
+     WHERE id = $1`,
+    [id],
+  )
+}
+
 export type ClaimedJob = {
   id: string
   jobType: string

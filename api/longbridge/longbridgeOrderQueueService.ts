@@ -2,6 +2,7 @@ import type { LiveOrderConfirmation, LiveOrderResult, LivePendingOrder } from '.
 import { ensureLongbridgeEstimatedFee, ensureLongbridgeEstimatedFees } from './longbridgeFeeService.js'
 import { submitLongbridgeLiveOrder } from './longbridgeLiveOrderService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
+import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
 
 class LongbridgeOrderQueueService {
   createPendingOrder(order: LivePendingOrder) {
@@ -119,6 +120,7 @@ class LongbridgeOrderQueueService {
     }
     longbridgePersistence.replacePendingOrder(next)
     longbridgePersistence.appendSubmittedOrder(result)
+    await registerSubmittedManagedOrder('longbridge', result, order.llmDecision)
     return {
       ok: result.ok,
       order: next,

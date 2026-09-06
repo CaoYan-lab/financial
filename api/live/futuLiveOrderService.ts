@@ -1,4 +1,10 @@
-import type { FutuLiveOrder, FutuLiveOrdersResponse, LiveOrderResult } from '../../shared/types.js'
+import type {
+  FutuLiveOrder,
+  FutuLiveOrderDetailResponse,
+  FutuLiveOrdersResponse,
+  LiveOrderResult,
+} from '../../shared/types.js'
+import type { ManagedCancelBrokerResponse } from '../../shared/managedOrderTypes.js'
 import { runPythonBridge } from '../utils/runPythonBridge.js'
 import { loadActualOrderFees, mergeFeeContext } from './liveFeeService.js'
 
@@ -14,6 +20,67 @@ type QueryInput = {
 
 const CACHE_TTL_MS = 10_000
 let cached: { key: string; expiresAt: number; response: FutuLiveOrdersResponse } | undefined
+
+export async function cancelFutuLiveOrder(input: {
+  accountId: string
+  orderId: string
+  ticker: string
+  submittedAt?: string
+}): Promise<ManagedCancelBrokerResponse> {
+  const bridge = await runPythonBridge<{
+    ok: boolean
+    accepted: boolean
+    orderId: string
+    brokerStatus?: string
+    order?: unknown
+    rawResponse?: unknown
+    error?: string
+  }>('futu_live_cancel_order.py', {
+    host: process.env.FUTU_OPEND_HOST || '127.0.0.1',
+    port: Number(process.env.FUTU_OPEND_PORT || 11111),
+    ...input,
+  })
+  const response = bridge.data
+  if (!bridge.ok || !response?.ok) {
+    return {
+      ok: false,
+      accepted: false,
+      platform: 'futu',
+      orderId: input.orderId,
+      error: response?.error ?? bridge.error ?? 'Futu REAL cancel bridge failed.',
+    }
+  }
+  return {
+    ok: true,
+    accepted: response.accepted,
+    platform: 'futu',
+    orderId: input.orderId,
+    rawResponse: response.rawResponse ?? response.order,
+    error: response.accepted ? undefined : '订单当前状态不可撤。',
+  }
+}
+
+export async function loadFutuLiveOrderDetail(input: {
+  accountId: string
+  orderId: string
+  ticker?: string
+  submittedAt?: string
+}): Promise<FutuLiveOrderDetailResponse> {
+  const bridge = await runPythonBridge<FutuLiveOrderDetailResponse>('futu_live_order_detail.py', {
+    host: process.env.FUTU_OPEND_HOST || '127.0.0.1',
+    port: Number(process.env.FUTU_OPEND_PORT || 11111),
+    accountId: input.accountId,
+    orderId: input.orderId,
+    ticker: input.ticker,
+    submittedAt: input.submittedAt,
+  })
+  if (bridge.ok && bridge.data) return bridge.data
+  return {
+    ok: false,
+    error: `Futu REAL order detail bridge failed: ${bridge.error ?? 'unknown error'}`,
+    warnings: [bridge.stderr ?? ''].filter(Boolean),
+  }
+}
 
 export async function loadFutuLiveOrders(input: QueryInput): Promise<FutuLiveOrdersResponse> {
   const page = clampInt(input.page, 1, 1_000_000, 1)
