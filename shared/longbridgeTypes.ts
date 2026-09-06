@@ -1,4 +1,5 @@
 import type { LiveCandidatePoolSnapshot, LiveEngineStatus, LivePendingOrder, LiveSignalHistoryItem, LlmModelOption, LlmRuntimeConfig, LlmTradingDecision, RealtimeBar, RealtimeOrderBookLevel, RealtimePoint, SimulationHistoryPage, TradeStrategyConfigResponse } from './types'
+import type { ManagedOrder, ManagedOrderEvent } from './managedOrderTypes'
 
 export type LongbridgeAuthStatus = 'authenticated' | 'not_authenticated' | 'unknown'
 
@@ -154,6 +155,52 @@ export type LongbridgeOrderCharge = {
   currency: string
 }
 
+export type LongbridgeBrokerOrder = {
+  orderId: string
+  symbol: string
+  stockName: string
+  status: number
+  statusLabel: string
+  side: number
+  sideLabel: string
+  orderType: number
+  orderTypeLabel: string
+  quantity: string
+  executedQuantity: string
+  price: string | null
+  executedPrice: string | null
+  currency: string
+  submittedAt: string
+  updatedAt: string | null
+  outsideRthLabel: string
+  message: string
+  remark: string
+}
+
+export type LongbridgeBrokerOrderStatusFilter =
+  | 'ALL'
+  | 'PENDING'
+  | 'FILLED'
+  | 'PARTIALLY_FILLED'
+  | 'CANCELED'
+  | 'REJECTED'
+  | 'EXPIRED'
+
+export type LongbridgeBrokerOrderSideFilter = 'ALL' | 'BUY' | 'SELL'
+
+export type LongbridgeBrokerOrdersResponse = {
+  ok: boolean
+  orders: LongbridgeBrokerOrder[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  startDate: string
+  endDate: string
+  warnings: string[]
+  error?: string
+}
+
 export type LongbridgeOrderDetailResponse =
   | {
       ok: false
@@ -189,6 +236,16 @@ export type LongbridgeOrderDetailResponse =
       history: LongbridgeOrderHistoryItem[]
       checkedAt: string
     }
+
+export type LongbridgeCombinedOrderDetailResponse = {
+  ok: boolean
+  orderId: string
+  systemOrder?: LivePendingOrder
+  brokerOrder?: Extract<LongbridgeOrderDetailResponse, { ok: true }>
+  managedOrder?: ManagedOrder
+  managedEvents: ManagedOrderEvent[]
+  error?: string
+}
 
 export type LongbridgeHistoryKind = 'signals' | 'pending-orders' | 'candidate-pool'
 

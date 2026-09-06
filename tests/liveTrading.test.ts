@@ -203,9 +203,9 @@ describe('live trading guardrails', () => {
     expect(selectOrderTypeForDecision({ action: 'BUY' }, position('AMD', -5), 'RTH')).toBe('MARKET')
   })
 
-  it('实盘夜盘映射到 Futu OVERNIGHT 会话', () => {
-    expect(orderSessionForMarket({ state: 'OVERNIGHT', labelZh: '夜盘', labelEn: 'Overnight', tradable: true, allowsExtendedHours: true, updatedAt: new Date().toISOString() })).toBe('OVERNIGHT')
-    expect(orderSessionForMarket({ state: 'NIGHT_OPEN', labelZh: '夜盘', labelEn: 'Overnight', tradable: true, allowsExtendedHours: true, updatedAt: new Date().toISOString() })).toBe('OVERNIGHT')
+  it('实盘夜盘只允许策略研究，不生成真实订单时段', () => {
+    expect(orderSessionForMarket({ state: 'OVERNIGHT', labelZh: '夜盘', labelEn: 'Overnight', tradable: true, allowsExtendedHours: true, updatedAt: new Date().toISOString() })).toBeUndefined()
+    expect(orderSessionForMarket({ state: 'NIGHT_OPEN', labelZh: '夜盘', labelEn: 'Overnight', tradable: true, allowsExtendedHours: true, updatedAt: new Date().toISOString() })).toBeUndefined()
   })
 
     it('组合策略港股休市推进记录为提交失败原因', () => {

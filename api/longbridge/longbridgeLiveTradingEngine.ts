@@ -4,7 +4,7 @@ import { requestLivePortfolioReviewDecision } from '../live/livePortfolioReviewD
 import { getActiveArkModel, getActiveDecisionConcurrency, getActiveLlmModelOption, getLlmRuntimeConfig } from '../simulation/llmRuntimeConfigService.js'
 import { llmRequestPacingPlan, waitForLlmRequestSlot, type LlmRequestPacingBatch } from '../simulation/llmRequestPacing.js'
 import { llmSimulationTickers } from '../simulation/simulationUniverse.js'
-import { llmMarketSessionSkipReason } from '../simulation/usOvernightLlmGate.js'
+import { llmMarketSessionSkipReason, orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
 import { getActiveLivePortfolioReviewPrompt, getTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
 import { logger } from '../utils/logger.js'
 import { loadLongbridgeLiveAccountDashboard, loadLongbridgeSourceStatus } from './longbridgeAdapter.js'
@@ -189,11 +189,14 @@ class LongbridgeLiveTradingEngine {
       trendContext,
       managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === marketData.ticker.toUpperCase()),
     })
+    const orderSession = orderSessionForMarketState(marketData.marketState)
     const managedConflict = hasManagedOrderConflict(managedOpenOrders, marketData.ticker)
     const riskRejectionReason = managedConflict
       ? `存在未终态系统挂单 ${managedConflict.orderId}，本轮禁止生成重复或反向订单。`
       : decision.ok && decision.approved && decision.action !== 'HOLD' && decision.orderQuantity > 0
-        ? longbridgeOpeningRiskRejectionReason(account, decision, decision.limitPrice || marketData.lastPrice, getTradeStrategyRuntimeConfig('live').activeStrategy)
+        ? orderSession
+          ? longbridgeOpeningRiskRejectionReason(account, decision, decision.limitPrice || marketData.lastPrice, getTradeStrategyRuntimeConfig('live').activeStrategy)
+          : `当前市场状态 ${marketData.marketState || '不可用'} 只允许策略研究，不允许生成真实订单。`
         : undefined
     const signal = signalFromDecision(decision, marketData, trendContext, riskRejectionReason)
     longbridgePersistence.appendSignal(signal)
@@ -207,14 +210,19 @@ class LongbridgeLiveTradingEngine {
             const promoted = await this.reviewCandidatePool(account)
             for (const promotedCandidate of promoted) {
               const candidateMarketData = promotedCandidate.marketData?.ok ? promotedCandidate.marketData : marketData
-              const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(promotedCandidate.decision as LlmTradingDecision, promotedCandidate.signal, candidateMarketData), promotedCandidate)
+              const promotedOrderSession = orderSessionForMarketState(candidateMarketData.marketState)
+              if (!promotedOrderSession) {
+                recordLongbridgeSkipped(promotedCandidate.ticker, `组合裁决已推进，但当前市场状态 ${candidateMarketData.marketState || '不可用'} 不允许生成真实订单。`)
+                continue
+              }
+              const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(promotedCandidate.decision as LlmTradingDecision, promotedCandidate.signal, candidateMarketData, promotedOrderSession), promotedCandidate)
               await this.createOrAutoSubmitPendingOrder(pending)
             }
         } else {
           warnings.push(`候选 ${candidate.candidateId} 已进入长桥候选池，但当前没有可裁决候选。`)
         }
       } else {
-        await this.createOrAutoSubmitPendingOrder(pendingOrderFromDecision(decision, signal, marketData))
+        await this.createOrAutoSubmitPendingOrder(pendingOrderFromDecision(decision, signal, marketData, orderSession!))
       }
     }
 
@@ -405,7 +413,12 @@ class LongbridgeLiveTradingEngine {
           .then(async (promoted) => {
           for (const candidate of promoted) {
             if (!candidate.marketData?.ok) continue
-            const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(candidate.decision as LlmTradingDecision, candidate.signal, candidate.marketData), candidate)
+            const orderSession = orderSessionForMarketState(candidate.marketData.marketState)
+            if (!orderSession) {
+              recordLongbridgeSkipped(candidate.ticker, `组合裁决已推进，但当前市场状态 ${candidate.marketData.marketState || '不可用'} 不允许生成真实订单。`)
+              continue
+            }
+            const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(candidate.decision as LlmTradingDecision, candidate.signal, candidate.marketData, orderSession), candidate)
             await this.createOrAutoSubmitPendingOrder(pending)
           }
           this.markRun(this.currentRunIntervalMs())
@@ -461,14 +474,19 @@ function signalFromDecision(decision: LlmTradingDecision, marketData: Extract<Aw
   }
 }
 
-function pendingOrderFromDecision(decision: LlmTradingDecision, signal: LiveSignalHistoryItem, marketData: Extract<Awaited<ReturnType<typeof loadLongbridgeRealtimeStrategyMarketData>>, { ok: true }>): LivePendingOrder {
+function pendingOrderFromDecision(
+  decision: LlmTradingDecision,
+  signal: LiveSignalHistoryItem,
+  marketData: Extract<Awaited<ReturnType<typeof loadLongbridgeRealtimeStrategyMarketData>>, { ok: true }>,
+  orderSession: LiveOrderIntent['orderSession'],
+): LivePendingOrder {
   const now = new Date().toISOString()
   const intent: LiveOrderIntent = {
     ticker: decision.ticker,
     side: decision.action as Exclude<LlmTradingDecision['action'], 'HOLD'>,
     quantity: decision.orderQuantity,
-    orderType: 'LIMIT',
-    orderSession: 'RTH',
+    orderType: 'MARKETABLE_LIMIT',
+    orderSession,
     limitPrice: decision.limitPrice || marketData.lastPrice,
     strategy: STRATEGY,
     signalId: signal.id,

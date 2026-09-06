@@ -3,6 +3,8 @@ import { livePersistence } from './livePersistence.js'
 import { loadLiveAccountDashboard } from './liveAccountService.js'
 import { submitLiveOrder } from './futuLiveOrderService.js'
 import { registerSubmittedManagedOrder } from './managedOrderSupervisor.js'
+import { loadMarketSessions } from '../simulation/marketSessionService.js'
+import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
 
 const MAX_ITEMS = 500
 const ORDER_COOLDOWN_MS = 15 * 60 * 1000
@@ -155,6 +157,21 @@ class LiveOrderQueueService {
         order,
         error: '未找到可确认的待确认实盘订单。',
         blockedByGate: false,
+      }
+    }
+
+    const marketSession = (await loadMarketSessions([order.intent.ticker]))[order.intent.ticker.toUpperCase()]
+    const sessionFailure = orderSubmissionSessionFailureReason({
+      ticker: order.intent.ticker,
+      marketState: marketSession?.state,
+      orderSession: order.intent.orderSession,
+    })
+    if (sessionFailure) {
+      return {
+        ok: false,
+        order,
+        error: sessionFailure,
+        blockedByGate: true,
       }
     }
 

@@ -21,7 +21,11 @@ import {
   updateLongbridgeLiveSettings,
 } from '../../longbridge/longbridgeLiveSettings.js'
 import { longbridgeOrderQueueService } from '../../longbridge/longbridgeOrderQueueService.js'
-import { loadLongbridgeOrderDetail } from '../../longbridge/longbridgeLiveOrderService.js'
+import {
+  loadLongbridgeBrokerOrders,
+  loadLongbridgeCombinedOrderDetail,
+} from '../../longbridge/longbridgeLiveOrderService.js'
+import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter } from '../../../shared/longbridgeTypes.js'
 import { requestManagedOrderCancel } from '../../live/managedOrderSupervisor.js'
 
 export type JobResult = { ok: boolean; summary?: Record<string, unknown>; error?: string }
@@ -200,9 +204,23 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
   }
 
   if (jobType === 'longbridge_live.order_detail') {
-    const result = await loadLongbridgeOrderDetail({
+    const result = await loadLongbridgeCombinedOrderDetail({
       orderId: typeof payload.orderId === 'string' ? payload.orderId : '',
+      pendingOrderId: typeof payload.pendingOrderId === 'string' ? payload.pendingOrderId : undefined,
       submittedAt: typeof payload.submittedAt === 'string' ? payload.submittedAt : undefined,
+    })
+    return { ok: true, summary: { response: result } }
+  }
+
+  if (jobType === 'longbridge_live.orders') {
+    const result = await loadLongbridgeBrokerOrders({
+      page: Number(payload.page),
+      pageSize: Number(payload.pageSize),
+      startDate: typeof payload.startDate === 'string' ? payload.startDate : undefined,
+      endDate: typeof payload.endDate === 'string' ? payload.endDate : undefined,
+      ticker: typeof payload.ticker === 'string' ? payload.ticker : undefined,
+      status: typeof payload.status === 'string' ? payload.status as LongbridgeBrokerOrderStatusFilter : undefined,
+      side: typeof payload.side === 'string' ? payload.side as LongbridgeBrokerOrderSideFilter : undefined,
     })
     return { ok: true, summary: { response: result } }
   }
@@ -275,6 +293,8 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
         startDate: typeof payload.startDate === 'string' ? payload.startDate : undefined,
         endDate: typeof payload.endDate === 'string' ? payload.endDate : undefined,
         ticker: typeof payload.ticker === 'string' ? payload.ticker : undefined,
+        status: typeof payload.status === 'string' ? payload.status : undefined,
+        side: typeof payload.side === 'string' ? payload.side : undefined,
       })
       logger.info({ event: 'cloud.worker.futu_orders.succeeded', accountId }, 'Futu 实盘订单查询完成')
       return { ok: true, summary: { orders } }

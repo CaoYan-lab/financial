@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import AppNav from '@/components/common/AppNav'
 import Badge from '@/components/common/Badge'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
-import { displayOrderPriceWithType, displaySignalModel, displaySide } from '@/utils/simulationDisplay'
+import { displayManagedOrderEventDetail, displayOrderPriceWithType, displayOrderSession, displayOrderType, displayPendingOrderStatus, displaySignalModel, displaySide } from '@/utils/simulationDisplay'
 
 export default function LiveOrderDetailView() {
   const { orderId = '' } = useParams()
@@ -11,6 +11,7 @@ export default function LiveOrderDetailView() {
   const {
     data,
     error,
+    history,
     futuOrders,
     futuOrderDetail,
     loadingFutuOrderDetailId,
@@ -19,8 +20,17 @@ export default function LiveOrderDetailView() {
     loadFutuOrderDetail,
     clearFutuOrderDetail,
   } = useLiveTrading()
-  const pending = data?.pendingOrders.find((order) => order.id === orderId || order.signal.id === orderId)
-  const submitted = data?.submittedOrders.find((order) => order.pendingOrderId === orderId || order.orderId === orderId || order.signalId === orderId)
+  const pending =
+    data?.pendingOrders.find((order) => order.id === orderId || order.signal.id === orderId)
+    ?? history['pending-orders']?.items.find(
+      (order) =>
+        order.id === orderId
+        || order.signal.id === orderId
+        || order.submittedOrder?.orderId === orderId,
+    )
+  const submitted =
+    data?.submittedOrders.find((order) => order.pendingOrderId === orderId || order.orderId === orderId || order.signalId === orderId)
+    ?? pending?.submittedOrder
   const signal = pending?.signal ?? data?.latestSignals.find((item) => item.id === submitted?.signalId)
   const listedFutuOrder = futuOrders?.orders.find((order) => order.orderId === orderId || order.orderId === submitted?.orderId)
   const brokerOrderId =
@@ -40,17 +50,19 @@ export default function LiveOrderDetailView() {
     ?? searchParams.get('submittedAt')
     ?? listedFutuOrder?.createTime
   const liveDetail = futuOrderDetail?.ok ? futuOrderDetail : undefined
+  const submitFailed = submitted?.ok === false
   const managedEvents = managedOrders?.events.filter((event) => event.orderId === brokerOrderId) ?? []
 
   useEffect(() => {
-    if (!brokerOrderId || !brokerTicker || brokerOrderId === 'unavailable') return
+    clearFutuOrderDetail()
+    if (submitFailed || !brokerOrderId || !brokerTicker || brokerOrderId === 'unavailable') return
     void loadFutuOrderDetail({
       orderId: brokerOrderId,
       ticker: brokerTicker,
       submittedAt: brokerSubmittedAt,
     })
     return clearFutuOrderDetail
-  }, [brokerOrderId, brokerSubmittedAt, brokerTicker, clearFutuOrderDetail, loadFutuOrderDetail])
+  }, [brokerOrderId, brokerSubmittedAt, brokerTicker, clearFutuOrderDetail, loadFutuOrderDetail, submitFailed])
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-stone-50 via-amber-50 to-orange-50 text-stone-950">
@@ -82,7 +94,7 @@ export default function LiveOrderDetailView() {
                   <p className="mt-2 text-stone-600">
                     <span className={sideTone(pending.intent.side, pending.intent.reason || pending.signal.reason)}>{sideLabel(pending.intent.side, pending.intent.reason || pending.signal.reason)}</span>
                     {' · '}
-                    {pending.status} · {pending.intent.quantity} 股 · {displayOrderPriceWithType(`$${pending.intent.limitPrice.toFixed(2)}`, pending.intent.orderType, 'zh')}
+                    {displayPendingOrderStatus(pending.status)} · {pending.intent.quantity} 股 · {displayOrderPriceWithType(`$${pending.intent.limitPrice.toFixed(2)}`, pending.intent.orderType, 'zh')}
                   </p>
               </>
             ) : '订单已不在当前待确认队列，可能已提交或被拒绝。'}
@@ -127,6 +139,28 @@ export default function LiveOrderDetailView() {
             {futuOrderDetailError}
           </section>
         ) : null}
+        {submitFailed && submitted ? (
+          <section className="rounded-3xl border border-rose-200 bg-white/90 p-6">
+            <div className="border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+              <p className="font-semibold">订单提交失败，券商未生成可查询的真实订单。</p>
+              <p className="mt-2 whitespace-pre-wrap">{submitted.error ?? 'Futu 未返回具体失败原因。'}</p>
+            </div>
+            <div className="mt-5 grid overflow-hidden rounded-2xl border border-stone-200 sm:grid-cols-2 lg:grid-cols-4">
+              <DetailField label="订单状态" value="提交失败" />
+              <DetailField label="标的" value={submitted.ticker || pending?.intent.ticker || '无'} />
+              <DetailField label="方向" value={sideLabel(submitted.side, pending?.intent.reason)} />
+              <DetailField label="订单类型" value={displayOrderType(submitted.orderType || pending?.intent.orderType || '', 'zh')} />
+              <DetailField label="委托数量" value={`${submitted.quantity || pending?.intent.quantity || 0} 股`} />
+              <DetailField label="委托价格" value={submitted.limitPrice || String(pending?.intent.limitPrice ?? '无')} />
+              <DetailField label="交易时段" value={displayOrderSession(submitted.orderSession || pending?.intent.orderSession, 'zh')} />
+              <DetailField label="失败时间" value={formatDateTime(submitted.submittedAt)} />
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <DetailField label="确认编号" value={pending?.confirmation?.confirmationId ?? '无'} />
+              <DetailField label="信号编号" value={submitted.signalId} />
+            </div>
+          </section>
+        ) : null}
         {liveDetail ? (
           <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -147,8 +181,8 @@ export default function LiveOrderDetailView() {
             </div>
 
             <div className="mt-5 grid overflow-hidden rounded-2xl border border-stone-200 sm:grid-cols-2 lg:grid-cols-4">
-              <DetailField label="方向" value={liveDetail.order.side} />
-              <DetailField label="订单类型" value={liveDetail.order.orderType} />
+              <DetailField label="方向" value={displaySide(liveDetail.order.side, 'zh')} />
+              <DetailField label="订单类型" value={displayOrderType(liveDetail.order.orderType, 'zh')} />
               <DetailField label="成交均价" value={liveDetail.order.filledAveragePrice} />
               <DetailField label="成交金额" value={liveDetail.order.dealtAmount} />
               <DetailField label="剩余数量" value={`${liveDetail.order.remainingQuantity} 股`} />
@@ -172,7 +206,7 @@ export default function LiveOrderDetailView() {
                   {liveDetail.deals.map((deal) => (
                     <tr key={deal.dealId}>
                       <td className="px-4 py-3">{deal.dealId}</td>
-                      <td className="px-4 py-3">{deal.side}</td>
+                      <td className="px-4 py-3">{displaySide(deal.side, 'zh')}</td>
                       <td className="px-4 py-3">{deal.quantity}</td>
                       <td className="px-4 py-3">{deal.price}</td>
                       <td className="px-4 py-3">{formatDateTime(deal.createdAt)}</td>
@@ -205,7 +239,7 @@ export default function LiveOrderDetailView() {
                 <div key={event.id ?? `${event.eventType}-${event.createdAt}`} className="grid gap-2 py-3 text-sm sm:grid-cols-[180px_180px_1fr]">
                   <span className="text-stone-500">{formatDateTime(event.createdAt)}</span>
                   <span>{managedEventLabel(event.eventType)}</span>
-                  <span className="break-words text-stone-600">{JSON.stringify(event.detail)}</span>
+                  <span className="break-words text-stone-600">{displayManagedOrderEventDetail(event.detail)}</span>
                 </div>
               ))}
             </div>

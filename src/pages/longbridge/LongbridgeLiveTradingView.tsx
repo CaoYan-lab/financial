@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { AlertTriangle, CheckCircle2, ChevronDown, Eye, RefreshCw, ShieldAlert, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { AlertTriangle, CheckCircle2, ChevronDown, Eye, RefreshCw, ShieldAlert } from 'lucide-react'
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
+import BrokerOrdersTable from '@/components/BrokerOrdersTable'
 import { useLongbridgeLiveTradingConfig } from '@/hooks/useLongbridgeLiveTradingConfig'
 import { useLongbridgeLiveTrading } from '@/hooks/useLongbridgeLiveTrading'
 import { useLongbridgeWorkbench } from '@/hooks/useLongbridgeWorkbench'
 import { useUiStore } from '@/stores/uiStore'
 import { maskAssetValue } from '@/utils/displayText'
 import type { LiveCandidatePoolHistoryFilter, LiveCandidatePoolItem, LiveCandidatePoolSnapshot, LiveOrderFeeContext, LivePendingOrder, LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalHistoryItem, LiveSignalLifecycleFilter, SimulationHistoryPage, TradeExecutionMode, UpdateTradeStrategyConfigRequest } from '../../../shared/types'
-import type { LongbridgeOrderDetailResponse } from '../../../shared/longbridgeTypes'
-import type { ManagedOrderEvent } from '../../../shared/managedOrderTypes'
+import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter } from '../../../shared/longbridgeTypes'
+import { localizeLongbridgeOrderError } from '../../../shared/orderErrorMessages'
 import LongbridgeWorkbenchNav from './LongbridgeWorkbenchNav'
 
 const PENDING_STATUS_FILTERS: Array<{ value: LivePendingOrderStatusFilter; label: string }> = [
@@ -59,6 +61,20 @@ const CANDIDATE_POOL_HISTORY_FILTERS: Array<{ value: LiveCandidatePoolHistoryFil
 ]
 
 const ALL_TICKER_FILTER = [{ value: 'ALL', label: '全部标的' }]
+const BROKER_ORDER_STATUS_FILTERS: Array<{ value: LongbridgeBrokerOrderStatusFilter; label: string }> = [
+  { value: 'ALL', label: '全部' },
+  { value: 'PENDING', label: '进行中' },
+  { value: 'FILLED', label: '全部成交' },
+  { value: 'PARTIALLY_FILLED', label: '部分成交' },
+  { value: 'CANCELED', label: '已撤单' },
+  { value: 'REJECTED', label: '已拒绝' },
+  { value: 'EXPIRED', label: '已过期' },
+]
+const BROKER_ORDER_SIDE_FILTERS: Array<{ value: LongbridgeBrokerOrderSideFilter; label: string }> = [
+  { value: 'ALL', label: '全部' },
+  { value: 'BUY', label: '买入' },
+  { value: 'SELL', label: '卖出' },
+]
 
 export default function LongbridgeLiveTradingView() {
   const { dashboard, loading, refresh } = useLongbridgeWorkbench()
@@ -67,7 +83,6 @@ export default function LongbridgeLiveTradingView() {
   const assetPrivacyHidden = useUiStore((state) => state.assetPrivacyHidden)
   const [candidateExpanded, setCandidateExpanded] = useState(false)
   const [confirmingOrder, setConfirmingOrder] = useState<LivePendingOrder>()
-  const [viewingOrder, setViewingOrder] = useState<LivePendingOrder>()
   const [selectedModel, setSelectedModel] = useState('')
   const [selectedConcurrency, setSelectedConcurrency] = useState(1)
   const [disableUsOvernightLlm, setDisableUsOvernightLlm] = useState(true)
@@ -81,14 +96,25 @@ export default function LongbridgeLiveTradingView() {
   const signalCount = longbridgeLive.history.signals?.total ?? longbridgeLive.data?.signals.length ?? (longbridgeLive.lastRun?.signal ? 1 : 0)
   const pendingOrderCount = longbridgeLive.history['pending-orders']?.total ?? longbridgeLive.data?.pendingOrders.length ?? longbridgeLive.lastRun?.pendingOrders.length ?? 0
   const engineRunning = Boolean(longbridgeLive.data?.engine.running)
-  const universeTickers = longbridgeLive.data?.engine.universe ?? []
+  const universeTickers = useMemo(
+    () => longbridgeLive.data?.engine.universe ?? [],
+    [longbridgeLive.data?.engine.universe],
+  )
+  const pendingOrderItems = longbridgeLive.history['pending-orders']?.items
   const signalTickerFilterItems = useMemo(
     () => tickerFilterItems([...universeTickers, ...(longbridgeLive.history.signals?.items.map((signal) => signal.ticker) ?? [])]),
     [longbridgeLive.history.signals?.items, universeTickers],
   )
   const pendingTickerFilterItems = useMemo(
-    () => tickerFilterItems([...universeTickers, ...(longbridgeLive.history['pending-orders']?.items.map((order) => order.intent.ticker) ?? [])]),
-    [longbridgeLive.history, universeTickers],
+    () => tickerFilterItems([...universeTickers, ...(pendingOrderItems?.map((order) => order.intent.ticker) ?? [])]),
+    [pendingOrderItems, universeTickers],
+  )
+  const brokerTickerFilterItems = useMemo(
+    () => tickerFilterItems([
+      ...universeTickers,
+      ...(longbridgeLive.brokerOrders?.orders.map((order) => order.symbol) ?? []),
+    ]),
+    [longbridgeLive.brokerOrders?.orders, universeTickers],
   )
   const accountMetric = useMemo(
     () => Object.fromEntries((dashboard?.accountMetrics ?? []).map((item) => [item.label, item.value])),
@@ -180,6 +206,8 @@ export default function LongbridgeLiveTradingView() {
 
         <ManagedOrdersPanel
           platformLabel="长桥"
+          accent="sky"
+          detailBasePath="/longbridge/live-trading/orders"
           data={longbridgeLive.managedOrders}
           autoCancelEnabled={autoCancelEnabled}
           saving={longbridgeLive.savingSettings}
@@ -199,9 +227,9 @@ export default function LongbridgeLiveTradingView() {
         ) : null}
 
         <section className="grid gap-4 md:grid-cols-5">
-          <Metric label="真实账户" value={authReady ? '长桥账户' : 'unavailable'} note="长桥实盘" />
-          <Metric label="美金总览" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['美金总览'] ?? 'unavailable'} note="账户净资产，USD" action={<AssetPrivacyToggle />} />
-          <Metric label="最大购买力" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['最大购买力'] ?? 'unavailable'} note="开仓风控输入，USD" />
+          <Metric label="真实账户" value={authReady ? '长桥账户' : '不可用'} note="长桥实盘" />
+          <Metric label="美金总览" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['美金总览'] ?? '不可用'} note="账户净资产，美元" action={<AssetPrivacyToggle />} />
+          <Metric label="最大购买力" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['最大购买力'] ?? '不可用'} note="开仓风控输入，美元" />
           <Metric label="历史策略信号" value={String(signalCount)} note="长桥独立信号库" />
           <Metric label="待确认订单" value={String(pendingOrderCount)} note="已提交 0" />
         </section>
@@ -297,29 +325,63 @@ export default function LongbridgeLiveTradingView() {
             onPageChange={(page) => longbridgeLive.setHistoryPage('signals', page)}
           />
 
-          <LongbridgePendingOrdersPanel
-            page={longbridgeLive.history['pending-orders']}
-            statusFilter={longbridgeLive.pendingOrderStatusFilter}
-            tickerFilter={longbridgeLive.pendingOrderTickerFilter}
-            tickerFilterItems={pendingTickerFilterItems}
-            sideFilter={longbridgeLive.pendingOrderSideFilter}
-            confirmingOrderId={longbridgeLive.confirmingOrderId}
+          <div className="min-w-0 space-y-6">
+            <LongbridgePendingOrdersPanel
+              page={longbridgeLive.history['pending-orders']}
+              statusFilter={longbridgeLive.pendingOrderStatusFilter}
+              tickerFilter={longbridgeLive.pendingOrderTickerFilter}
+              tickerFilterItems={pendingTickerFilterItems}
+              sideFilter={longbridgeLive.pendingOrderSideFilter}
+              confirmingOrderId={longbridgeLive.confirmingOrderId}
               rejectingOrderId={longbridgeLive.rejectingOrderId}
               expiringPendingOrders={longbridgeLive.expiringPendingOrders}
-            onStatusFilterChange={longbridgeLive.setPendingOrderStatusFilter}
-            onTickerFilterChange={longbridgeLive.setPendingOrderTickerFilter}
-            onSideFilterChange={longbridgeLive.setPendingOrderSideFilter}
-            onPageChange={(page) => longbridgeLive.setHistoryPage('pending-orders', page)}
+              onStatusFilterChange={longbridgeLive.setPendingOrderStatusFilter}
+              onTickerFilterChange={longbridgeLive.setPendingOrderTickerFilter}
+              onSideFilterChange={longbridgeLive.setPendingOrderSideFilter}
+              onPageChange={(page) => longbridgeLive.setHistoryPage('pending-orders', page)}
               onOpenConfirm={setConfirmingOrder}
-              onOpenDetail={(order) => {
-                setViewingOrder(order)
-                const submitted = order.submittedOrder
-                if (submitted?.orderId) {
-                  void longbridgeLive.loadOrderDetail(submitted.orderId, submitted.submittedAt)
-                }
-              }}
               onBatchExpire={longbridgeLive.batchExpirePendingOrders}
-          />
+            />
+
+            <BrokerOrdersTable
+              platform="长桥"
+              compact
+              filters={{
+                ticker: longbridgeLive.brokerOrderTickerFilter,
+                status: longbridgeLive.brokerOrderStatusFilter,
+                side: longbridgeLive.brokerOrderSideFilter,
+                tickerItems: brokerTickerFilterItems,
+                statusItems: BROKER_ORDER_STATUS_FILTERS,
+                sideItems: BROKER_ORDER_SIDE_FILTERS,
+                onChange: (patch) => void longbridgeLive.setBrokerOrderFilters({
+                  ...(patch.ticker !== undefined ? { ticker: patch.ticker } : {}),
+                  ...(patch.status !== undefined ? { status: patch.status as LongbridgeBrokerOrderStatusFilter } : {}),
+                  ...(patch.side !== undefined ? { side: patch.side as LongbridgeBrokerOrderSideFilter } : {}),
+                }),
+              }}
+              rows={(longbridgeLive.brokerOrders?.orders ?? []).map((order) => ({
+                orderId: order.orderId,
+                ticker: order.symbol,
+                name: order.stockName,
+                status: order.statusLabel,
+                side: order.sideLabel,
+                orderType: order.orderTypeLabel,
+                quantity: order.quantity,
+                filledQuantity: order.executedQuantity,
+                price: formatOrderMoney(order.price, order.currency),
+                filledPrice: formatOrderMoney(order.executedPrice, order.currency),
+                session: order.outsideRthLabel,
+                updatedAt: order.updatedAt ?? order.submittedAt,
+                detailHref: `/longbridge/live-trading/orders/${order.orderId}?submittedAt=${encodeURIComponent(order.submittedAt)}`,
+              }))}
+              page={longbridgeLive.brokerOrders?.page ?? 1}
+              totalPages={longbridgeLive.brokerOrders?.totalPages ?? 1}
+              total={longbridgeLive.brokerOrders?.total ?? 0}
+              loading={longbridgeLive.refreshing}
+              onRefresh={() => void longbridgeLive.loadBrokerOrders(longbridgeLive.brokerOrdersPage)}
+              onPageChange={longbridgeLive.setBrokerOrdersPage}
+            />
+          </div>
         </section>
 
           {confirmingOrder ? (
@@ -338,25 +400,6 @@ export default function LongbridgeLiveTradingView() {
                 const result = await longbridgeLive.rejectOrder(id)
                 if (result?.ok) setConfirmingOrder(undefined)
               }}
-            />
-          ) : null}
-          {viewingOrder?.submittedOrder?.orderId ? (
-            <LongbridgeOrderDetailDialog
-              order={viewingOrder}
-              detail={longbridgeLive.orderDetail}
-              loading={longbridgeLive.loadingOrderDetailId === viewingOrder.submittedOrder.orderId}
-              error={longbridgeLive.orderDetailError}
-              events={longbridgeLive.managedOrders?.events.filter(
-                (event) => event.orderId === viewingOrder.submittedOrder!.orderId,
-              ) ?? []}
-              onClose={() => {
-                setViewingOrder(undefined)
-                longbridgeLive.clearOrderDetail()
-              }}
-              onRefresh={() => longbridgeLive.loadOrderDetail(
-                viewingOrder.submittedOrder!.orderId,
-                viewingOrder.submittedOrder!.submittedAt,
-              )}
             />
           ) : null}
       </div>
@@ -424,12 +467,14 @@ function LongbridgeOrderConfirmDialog({
   const submitting = confirmingOrderId === order.id
   const rejecting = rejectingOrderId === order.id
   const submittedError = order.submittedOrder?.error
+    ? localizeLongbridgeOrderError(order.submittedOrder.error)
+    : undefined
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-white/95 p-4 sm:p-6">
       <div className="mx-auto my-4 max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-3xl border border-sky-200 bg-white p-6 shadow-2xl shadow-sky-200/40 sm:my-6 sm:max-h-[calc(100vh-3rem)]">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold tracking-[0.25em] text-sky-700">LONGBRIDGE ORDER CONFIRMATION</p>
+            <p className="text-xs font-semibold tracking-[0.25em] text-sky-700">长桥订单确认</p>
             <h2 className="mt-2 text-2xl font-semibold">二次确认长桥真实订单</h2>
           </div>
           <button className="text-stone-500" onClick={onClose}>关闭</button>
@@ -441,7 +486,7 @@ function LongbridgeOrderConfirmDialog({
             note={order.signal.id}
           />
           <Metric label="数量 / 价格" value={`${order.intent.quantity} 股`} note={order.intent.orderType === 'MARKET' ? 'MARKET' : `$${order.intent.limitPrice.toFixed(2)}`} />
-          <Metric label="费用" value={formatFee(order.intent.feeContext)} note={`${order.intent.feeContext?.source ?? 'unavailable'}，成交后以长桥回填为准`} />
+          <Metric label="费用" value={formatFee(order.intent.feeContext)} note={`${order.intent.feeContext?.source ?? '不可用'}，成交后以长桥回填为准`} />
           <Metric label="模型" value={order.signal.modelLabel ?? order.signal.model ?? 'Longbridge LLM'} note={order.signal.confidence} />
           <Metric label="订单来源" value={order.decisionMode === 'candidate_pool' ? '候选池裁决' : '大模型直推'} note={order.candidateId ?? formatDecisionMode(order.decisionMode)} />
           <Metric label="名义金额" value={order.intent.estimatedNotional ?? `$${(order.intent.quantity * order.intent.limitPrice).toFixed(2)}`} note={order.intent.orderSession} />
@@ -479,195 +524,6 @@ function LongbridgeOrderConfirmDialog({
         </div>
       </div>
     </div>
-  )
-}
-
-function LongbridgeOrderDetailDialog({
-  order,
-  detail,
-  loading,
-  error,
-  events,
-  onClose,
-  onRefresh,
-}: {
-  order: LivePendingOrder
-  detail?: LongbridgeOrderDetailResponse
-  loading: boolean
-  error?: string
-  events: ManagedOrderEvent[]
-  onClose: () => void
-  onRefresh: () => Promise<unknown>
-}) {
-  const liveDetail = detail?.ok ? detail : undefined
-  const submitted = order.submittedOrder
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-white/95 p-4 sm:p-6">
-      <div className="mx-auto my-4 w-full max-w-4xl border border-sky-200 bg-white p-5 shadow-2xl shadow-sky-200/40 sm:my-6 sm:p-6">
-        <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-4">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold text-sky-700">长桥订单详情</p>
-            <h2 className="mt-2 truncate text-xl font-semibold text-stone-950">
-              {liveDetail?.symbol ?? order.intent.ticker} · {liveDetail?.sideLabel ?? sideLabel(order.intent.side)}
-            </h2>
-            <p className="mt-1 break-all text-xs text-stone-500">{submitted?.orderId}</p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              className="inline-flex h-9 w-9 items-center justify-center border border-stone-200 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-50"
-              disabled={loading}
-              title="刷新订单详情"
-              onClick={() => void onRefresh()}
-            >
-              <RefreshCw className={loading ? 'animate-spin' : ''} size={16} />
-            </button>
-            <button
-              className="inline-flex h-9 w-9 items-center justify-center border border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
-              title="关闭"
-              onClick={onClose}
-            >
-              <X size={17} />
-            </button>
-          </div>
-        </div>
-
-        {loading && !liveDetail ? (
-          <div className="py-16 text-center text-sm text-stone-500">正在读取长桥订单和成交状态...</div>
-        ) : null}
-        {error ? (
-          <div className="mt-5 border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>
-        ) : null}
-
-        {liveDetail ? (
-          <div className="mt-5 space-y-6">
-            <div className="grid overflow-hidden border border-stone-200 sm:grid-cols-2 lg:grid-cols-4">
-              <OrderDetailField label="订单状态" value={liveDetail.statusLabel} />
-              <OrderDetailField label="证券名称" value={liveDetail.stockName || liveDetail.symbol} />
-              <OrderDetailField label="订单类型" value={liveDetail.orderTypeLabel} />
-              <OrderDetailField label="有效期 / 时段" value={`${liveDetail.timeInForceLabel} · ${liveDetail.outsideRthLabel}`} />
-              <OrderDetailField label="委托数量" value={`${liveDetail.quantity} 股`} />
-              <OrderDetailField label="成交数量" value={`${liveDetail.executedQuantity} 股`} />
-              <OrderDetailField label="委托价格" value={formatOrderMoney(liveDetail.price, liveDetail.currency)} />
-              <OrderDetailField label="成交均价" value={formatOrderMoney(liveDetail.executedPrice, liveDetail.currency)} />
-              <OrderDetailField label="提交时间" value={formatDateTime(liveDetail.submittedAt)} />
-              <OrderDetailField label="更新时间" value={formatDateTime(liveDetail.updatedAt ?? undefined)} />
-              <OrderDetailField label="费用合计" value={formatOrderMoney(liveDetail.totalCharge, liveDetail.chargeCurrency)} />
-              <OrderDetailField label="备注" value={liveDetail.remark || '无'} />
-            </div>
-
-            {liveDetail.message ? (
-              <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                长桥消息：{liveDetail.message}
-              </div>
-            ) : null}
-
-            <OrderDetailTable
-              title={`成交记录（${liveDetail.executions.length}）`}
-              headers={['成交编号', '数量', '成交价格', '成交时间']}
-              rows={liveDetail.executions.map((execution) => [
-                execution.tradeId,
-                `${execution.quantity} 股`,
-                formatOrderMoney(execution.price, liveDetail.currency),
-                formatDateTime(execution.tradeDoneAt),
-              ])}
-              empty="当前订单暂无成交记录。"
-            />
-
-            <OrderDetailTable
-              title={`状态时间线（${liveDetail.history.length}）`}
-              headers={['状态', '数量', '价格', '时间']}
-              rows={liveDetail.history.map((item) => [
-                item.statusLabel,
-                `${item.quantity} 股`,
-                formatOrderMoney(item.price, liveDetail.currency),
-                formatDateTime(item.time),
-              ])}
-              notes={liveDetail.history.map((item) => item.message)}
-              empty="暂无状态时间线。"
-            />
-
-            <OrderDetailTable
-              title={`费用明细（${liveDetail.charges.length}）`}
-              headers={['类别', '项目', '金额', '币种']}
-              rows={liveDetail.charges.map((charge) => [
-                charge.category,
-                charge.name,
-                charge.amount,
-                charge.currency,
-              ])}
-              empty="长桥暂未返回费用明细。"
-            />
-            {events.length ? (
-              <OrderDetailTable
-                title={`挂单监管时间线（${events.length}）`}
-                headers={['时间', '事件', '来源', '详情']}
-                rows={events.map((event) => [
-                  formatDateTime(event.createdAt),
-                  managedEventLabel(event.eventType),
-                  managedEventSourceLabel(event.source),
-                  JSON.stringify(event.detail),
-                ])}
-                empty="暂无挂单监管记录。"
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function OrderDetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 border-b border-r border-stone-200 p-4">
-      <p className="text-xs font-semibold text-stone-500">{label}</p>
-      <p className="mt-1 break-words text-sm font-semibold text-stone-950">{value || '无'}</p>
-    </div>
-  )
-}
-
-function OrderDetailTable({
-  title,
-  headers,
-  rows,
-  notes,
-  empty,
-}: {
-  title: string
-  headers: string[]
-  rows: string[][]
-  notes?: string[]
-  empty: string
-}) {
-  return (
-    <section>
-      <h3 className="text-sm font-semibold text-stone-950">{title}</h3>
-      {rows.length ? (
-        <div className="mt-3 overflow-x-auto border border-stone-200">
-          <table className="w-full min-w-[620px] text-left text-sm">
-            <thead className="bg-stone-50 text-xs text-stone-500">
-              <tr>{headers.map((header) => <th key={header} className="px-4 py-3 font-semibold">{header}</th>)}</tr>
-            </thead>
-            <tbody className="divide-y divide-stone-200">
-              {rows.map((row, rowIndex) => (
-                <tr key={`${row[0]}-${rowIndex}`}>
-                  {row.map((value, columnIndex) => (
-                    <td key={`${columnIndex}-${value}`} className="px-4 py-3 align-top text-stone-700">
-                      <span className="break-words">{value || '无'}</span>
-                      {columnIndex === 0 && notes?.[rowIndex] ? (
-                        <span className="mt-1 block text-xs text-stone-500">{notes[rowIndex]}</span>
-                      ) : null}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="mt-3 border border-stone-200 bg-stone-50 p-4 text-sm text-stone-500">{empty}</p>
-      )}
-    </section>
   )
 }
 
@@ -864,7 +720,7 @@ function LongbridgeSignalHistoryTable({
   const items = page?.items ?? []
   return (
     <section className="min-w-0 rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
-      <p className="text-xs font-semibold tracking-[0.25em] text-sky-700">SIGNALS</p>
+      <p className="text-xs font-semibold tracking-[0.25em] text-sky-700">策略信号</p>
       <h2 className="mt-2 text-2xl font-semibold">历史策略信号（{page?.total ?? 0}）</h2>
       <p className="mt-2 text-sm text-stone-500">这里展示已经提交给长桥大模型并写入实盘数据库的策略信号。观望只进入历史库；非观望如果未进入待确认队列，会显示原因。</p>
       <div className="mt-5 space-y-3">
@@ -921,7 +777,6 @@ function LongbridgePendingOrdersPanel({
   onSideFilterChange,
   onPageChange,
   onOpenConfirm,
-  onOpenDetail,
   onBatchExpire,
 }: {
   page?: SimulationHistoryPage<LivePendingOrder>
@@ -937,7 +792,6 @@ function LongbridgePendingOrdersPanel({
   onSideFilterChange: (side: LivePendingOrderSideFilter) => void
   onPageChange: (page: number) => void
   onOpenConfirm: (order: LivePendingOrder) => void
-  onOpenDetail: (order: LivePendingOrder) => void
   onBatchExpire: (input: { ticker?: string; side?: LivePendingOrderSideFilter; ids?: string[] }) => Promise<unknown>
 }) {
   const orders = page?.items ?? []
@@ -949,7 +803,7 @@ function LongbridgePendingOrdersPanel({
         <div>
           <p className="text-xs font-semibold tracking-[0.25em] text-sky-700">待确认订单</p>
           <h2 className="mt-2 text-2xl font-semibold">待确认订单队列（{page?.total ?? 0}）</h2>
-          <p className="mt-2 text-sm text-stone-600">长桥订单独立于 Futu；提交后可在当前页查看实时状态、成交、费用和状态时间线。</p>
+          <p className="mt-2 text-sm text-stone-600">长桥订单独立存储；提交后可进入组合详情页查看系统决策、券商状态、成交、费用和监管过程。</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Badge tone="cyan">人工确认</Badge>
@@ -996,14 +850,14 @@ function LongbridgePendingOrdersPanel({
                     {confirmingOrderId === order.id || rejectingOrderId === order.id ? '处理中...' : '确认弹窗'}
                   </button>
                 ) : null}
-                {order.submittedOrder?.ok && order.submittedOrder.orderId ? (
-                  <button
+                {order.submittedOrder ? (
+                  <Link
                     className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-50"
-                    onClick={() => onOpenDetail(order)}
+                    to={`/longbridge/live-trading/orders/${encodeURIComponent(order.submittedOrder.orderId)}?pendingOrderId=${encodeURIComponent(order.id)}&submittedAt=${encodeURIComponent(order.submittedOrder.submittedAt)}`}
                   >
                     <Eye size={14} />
-                    订单详情
-                  </button>
+                    组合详情
+                  </Link>
                 ) : null}
               </div>
             </div>
@@ -1015,7 +869,14 @@ function LongbridgePendingOrdersPanel({
             </div>
             <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
               <CompactField label="名义金额" value={order.intent.estimatedNotional ?? `$${(order.intent.quantity * order.intent.limitPrice).toFixed(2)}`} />
-              <CompactField label="风险提示" value={order.riskWarnings[0] ?? order.signal.riskAssessment} />
+              <CompactField
+                label="风险提示"
+                value={
+                  order.status === 'SUBMIT_FAILED'
+                    ? localizeLongbridgeOrderError(order.riskWarnings[0] ?? order.submittedOrder?.error)
+                    : order.riskWarnings[0] ?? order.signal.riskAssessment
+                }
+              />
             </div>
           </div>
         ))}
@@ -1068,7 +929,7 @@ function LongbridgeCandidateHistoryTable({
                 <td className="px-4 py-3 text-stone-600">{candidate.portfolioDecisionReason ?? candidate.confidence}</td>
               </tr>
             ))}
-            {!items.length ? <tr><td className="px-4 py-6 text-stone-500" colSpan={8}>暂无 Longbridge 候选。开启组合策略并完成评估后，非观望信号会先进入候选池。</td></tr> : null}
+            {!items.length ? <tr><td className="px-4 py-6 text-stone-500" colSpan={8}>暂无长桥候选。开启组合策略并完成评估后，非观望信号会先进入候选池。</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -1247,7 +1108,7 @@ function candidateStatusLabel(status: string) {
 }
 
 function formatDateTime(value?: string) {
-  if (!value) return 'unavailable'
+  if (!value) return '不可用'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
@@ -1265,33 +1126,6 @@ function formatOrderMoney(value: string | null, currency: string) {
   return `${symbol}${value}`
 }
 
-function managedEventLabel(value: string) {
-  const labels: Record<string, string> = {
-    registered: '纳入系统监管',
-    reconciled: '券商状态同步',
-    sync_failed: '券商状态同步失败',
-    rule_triggered: '硬规则触发',
-    model_decided: '模型复核完成',
-    cancel_requested: '撤单已请求',
-    cancel_accepted: '券商已受理',
-    cancel_rejected: '券商未受理',
-    cancel_terminal: '撤单终态确认',
-    cancel_uncertain: '撤单结果待确认',
-  }
-  return labels[value] ?? value
-}
-
-function managedEventSourceLabel(value: ManagedOrderEvent['source']) {
-  const labels: Record<ManagedOrderEvent['source'], string> = {
-    reconcile: '状态同步',
-    hard_rule: '硬规则',
-    model: '模型',
-    manual: '人工',
-    system: '系统',
-  }
-  return labels[value]
-}
-
 function formatDecisionMode(mode?: string) {
   if (mode === 'candidate_pool') return '候选池裁决'
   if (mode === 'legacy_direct') return '大模型直推'
@@ -1304,26 +1138,4 @@ function tickerFilterItems(tickers: string[]) {
     ...ALL_TICKER_FILTER,
     ...unique.sort((left, right) => left.localeCompare(right)).map((ticker) => ({ value: ticker, label: ticker })),
   ]
-}
-
-function EmptyTable({ title, columns, empty }: { title: string; columns: string[]; empty: string }) {
-  return (
-    <div className="mt-5">
-      {title ? <h3 className="text-lg font-semibold text-stone-950">{title}</h3> : null}
-      <div className="mt-3 overflow-x-auto rounded-2xl border border-stone-200">
-        <table className="min-w-[760px] w-full table-fixed divide-y divide-white/10 text-sm">
-          <thead className="bg-stone-50 text-left text-xs uppercase tracking-wider text-stone-500">
-            <tr>
-              {columns.map((column) => <th key={column} className="px-4 py-3">{column}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td className="px-4 py-6 text-stone-500" colSpan={columns.length}>{empty}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
 }

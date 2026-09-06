@@ -5,6 +5,7 @@ import LiveOrderDetailView from "@/pages/LiveOrderDetailView";
 import LiveTradingView from "@/pages/LiveTradingView";
 import LongbridgeWorkbenchPlaceholder from "@/pages/LongbridgeWorkbenchPlaceholder";
 import LongbridgeLiveTradingView from "@/pages/longbridge/LongbridgeLiveTradingView";
+import LongbridgeOrderDetailView from "@/pages/longbridge/LongbridgeOrderDetailView";
 import LongbridgeOpportunityHistoryView from "@/pages/longbridge/LongbridgeOpportunityHistoryView";
 import LongbridgePromptView from "@/pages/longbridge/LongbridgePromptView";
 import AshareWorkbenchView from "@/pages/ashare/AshareWorkbenchView";
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/a-share/live-trading" element={<AshareLiveTradingView />} />
         <Route path="/longbridge" element={<LongbridgeWorkbenchPlaceholder />} />
         <Route path="/longbridge/live-trading" element={<LongbridgeLiveTradingView />} />
+        <Route path="/longbridge/live-trading/orders/:orderId" element={<LongbridgeOrderDetailView />} />
         <Route path="/longbridge/reports" element={<LongbridgeReportHistoryView />} />
         <Route path="/longbridge/reports/:batchId" element={<LongbridgeReportView />} />
         <Route path="/longbridge/opportunities" element={<LongbridgeOpportunityHistoryView />} />

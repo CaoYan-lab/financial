@@ -124,6 +124,15 @@ class LongbridgePersistence {
     return this.pendingOrders.find((order) => order.id === id)
   }
 
+  findPendingOrderByBrokerOrderId(orderId: string) {
+    if (!orderId) return undefined
+    if (!PERSISTENCE_DISABLED) {
+      const submitted = this.findByPayloadField<LiveOrderResult>('submitted_orders', 'orderId', orderId)
+      return submitted?.pendingOrderId ? this.findPendingOrder(submitted.pendingOrderId) : undefined
+    }
+    return this.latestPendingOrders().find((order) => order.submittedOrder?.orderId === orderId)
+  }
+
   paginate<T>(items: T[], page = 1, pageSize = 20): SimulationHistoryPage<T> {
     const normalizedPage = Math.max(1, Math.floor(page) || 1)
     const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(pageSize) || 20))

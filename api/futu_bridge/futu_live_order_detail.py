@@ -15,16 +15,16 @@ def main():
     start_date, end_date = detail_date_range(payload.get("submittedAt"))
 
     if not account_id.isdigit():
-        write_json(error_response("REAL accountId is required."))
+        write_json(error_response("缺少有效的 Futu REAL 账户编号。"))
         return
     if not order_id:
-        write_json(error_response("Futu REAL orderId is required."))
+        write_json(error_response("缺少 Futu REAL 订单号。"))
         return
 
     try:
         from futu import OpenSecTradeContext, RET_OK, TrdEnv, TrdMarket
     except Exception as exc:
-        write_json(error_response(f"futu-api Python SDK unavailable: {exc}"))
+        write_json(error_response(f"Futu Python SDK 不可用：{exc}"))
         return
 
     trade_ctx = None
@@ -52,7 +52,7 @@ def main():
                 warnings,
             )
         if order is None:
-            write_json(error_response("Futu REAL order was not found.", warnings))
+            write_json(error_response("未找到对应的 Futu REAL 订单。", warnings))
             return
 
         deals = query_deals(
@@ -86,7 +86,7 @@ def main():
             }
         )
     except Exception as exc:
-        write_json(error_response(f"Futu REAL order detail query unavailable: {exc}", warnings))
+        write_json(error_response(f"Futu REAL 订单详情查询失败：{exc}", warnings))
     finally:
         if trade_ctx is not None:
             trade_ctx.close()
@@ -101,7 +101,7 @@ def query_current_order(trade_ctx, ret_ok, trd_env, account_id, order_id, code, 
         refresh_cache=True,
     )
     if ret != ret_ok or data is None:
-        warnings.append(f"order_list_query REAL failed: {data}")
+        warnings.append(f"Futu 当前订单查询失败：{data}")
         return None
     return find_order(normalize_orders(data), order_id)
 
@@ -115,7 +115,7 @@ def query_history_order(trade_ctx, ret_ok, trd_env, account_id, order_id, code, 
         acc_id=int(account_id),
     )
     if ret != ret_ok or data is None:
-        warnings.append(f"history_order_list_query REAL failed: {data}")
+        warnings.append(f"Futu 历史订单查询失败：{data}")
         return None
     return find_order(normalize_orders(data), order_id)
 
@@ -135,7 +135,7 @@ def query_deals(trade_ctx, ret_ok, trd_env, account_id, order_id, code, start_da
     if ret == ret_ok and current is not None:
         rows.extend(normalize_deals(current, order_id))
     else:
-        warnings.append(f"deal_list_query REAL failed: {current}")
+        warnings.append(f"Futu 当前成交记录查询失败：{current}")
 
     ret, history = trade_ctx.history_deal_list_query(
         code=code,
@@ -147,7 +147,7 @@ def query_deals(trade_ctx, ret_ok, trd_env, account_id, order_id, code, start_da
     if ret == ret_ok and history is not None:
         rows.extend(normalize_deals(history, order_id))
     else:
-        warnings.append(f"history_deal_list_query REAL failed: {history}")
+        warnings.append(f"Futu 历史成交记录查询失败：{history}")
 
     result = {}
     for row in rows:
@@ -192,11 +192,11 @@ def query_fee(trade_ctx, ret_ok, trd_env, account_id, order_id, currency, warnin
         acc_id=int(account_id),
     )
     if ret != ret_ok or data is None:
-        warnings.append(f"order_fee_query REAL failed: {data}")
+        warnings.append(f"Futu 真实费用查询失败：{data}")
         return unavailable_fee(order_id, currency)
     fees = normalize_fees(data, now_iso())
     if not fees:
-        warnings.append("Futu REAL fee is not available yet.")
+        warnings.append("Futu 真实费用尚未返回。")
         return unavailable_fee(order_id, currency)
     return fees[0]
 
@@ -209,7 +209,7 @@ def unavailable_fee(order_id, currency):
         "feeAmount": None,
         "feeDetails": [],
         "queriedAt": now_iso(),
-        "warning": "Futu REAL fee is not available yet.",
+        "warning": "Futu 真实费用尚未返回。",
     }
 
 

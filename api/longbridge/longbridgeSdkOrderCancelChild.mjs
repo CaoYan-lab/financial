@@ -17,10 +17,6 @@ async function main() {
     fail('', '长桥真实交易门禁关闭。')
     return
   }
-  if (!process.env.HTTPS_PROXY) {
-    fail('', '长桥订单代理未配置。')
-    return
-  }
   const encoded = process.argv[2]
   if (!encoded) {
     fail('', '长桥撤单子进程缺少请求参数。')

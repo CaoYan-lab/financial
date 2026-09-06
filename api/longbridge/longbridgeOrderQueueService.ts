@@ -3,6 +3,8 @@ import { ensureLongbridgeEstimatedFee, ensureLongbridgeEstimatedFees } from './l
 import { submitLongbridgeLiveOrder } from './longbridgeLiveOrderService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
 import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
+import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
+import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 
 class LongbridgeOrderQueueService {
   createPendingOrder(order: LivePendingOrder) {
@@ -89,6 +91,21 @@ class LongbridgeOrderQueueService {
         order,
         error: '未找到可确认的长桥待确认订单。',
         blockedByGate: false,
+      }
+    }
+
+    const marketState = longbridgeRealtimeStore.getSnapshot(order.intent.ticker)?.quote?.marketState
+    const sessionFailure = orderSubmissionSessionFailureReason({
+      ticker: order.intent.ticker,
+      marketState,
+      orderSession: order.intent.orderSession,
+    })
+    if (sessionFailure) {
+      return {
+        ok: false,
+        order,
+        error: sessionFailure,
+        blockedByGate: true,
       }
     }
 

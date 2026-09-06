@@ -72,6 +72,21 @@ function outsideRthLabel(value) {
   return '未知'
 }
 
+function localizeMessage(value) {
+  const message = String(value ?? '').trim()
+  if (!message) return ''
+  if (message.includes('602035') || /wrong bid size/i.test(message)) {
+    return '委托价格不符合该证券的最小报价单位，请调整价格（长桥错误码 602035）。'
+  }
+  if (message.includes('602065') || /has not confirmed the risk disclaimer of US short-sell/i.test(message)) {
+    return '账户尚未确认美股卖空风险声明，请先在长桥应用中完成确认（长桥错误码 602065）。'
+  }
+  if (/order amount exceeds the maximum buying power/i.test(message)) {
+    return '订单金额超过账户最大购买力。'
+  }
+  return message
+}
+
 function flattenCharges(detail) {
   if (!detail?.items) return []
   return detail.items.flatMap((item) => item.fees.map((fee) => ({
@@ -83,11 +98,6 @@ function flattenCharges(detail) {
 }
 
 async function main() {
-  if (!process.env.HTTPS_PROXY) {
-    fail('长桥订单代理未配置。')
-    return
-  }
-
   const encoded = process.argv[2]
   if (!encoded) {
     fail('长桥订单详情子进程缺少请求参数。')
@@ -141,7 +151,7 @@ async function main() {
     currency: detail.currency,
     submittedAt: iso(detail.submittedAt),
     updatedAt: iso(detail.updatedAt),
-    message: detail.msg,
+    message: localizeMessage(detail.msg),
     remark: detail.remark,
     timeInForceLabel: timeInForceLabel(detail.timeInForce),
     outsideRthLabel: outsideRthLabel(detail.outsideRth),
@@ -161,7 +171,7 @@ async function main() {
       statusLabel: ORDER_STATUS_LABELS[item.status] ?? '未知',
       quantity: decimal(item.quantity) ?? '0',
       price: decimal(item.price) ?? '0',
-      message: item.msg,
+      message: localizeMessage(item.msg),
       time: iso(item.time),
     })),
     checkedAt: new Date().toISOString(),

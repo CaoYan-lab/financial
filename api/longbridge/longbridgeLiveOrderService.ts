@@ -2,9 +2,18 @@ import { execFile } from 'node:child_process'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { LiveOrderResult, LivePendingOrder } from '../../shared/types.js'
-import type { LongbridgeOrderDetailResponse } from '../../shared/longbridgeTypes.js'
+import type {
+  LongbridgeBrokerOrderSideFilter,
+  LongbridgeBrokerOrdersResponse,
+  LongbridgeBrokerOrderStatusFilter,
+  LongbridgeCombinedOrderDetailResponse,
+  LongbridgeOrderDetailResponse,
+} from '../../shared/longbridgeTypes.js'
 import type { ManagedCancelBrokerResponse } from '../../shared/managedOrderTypes.js'
+import { localizeLongbridgeOrderError } from '../../shared/orderErrorMessages.js'
+import { getManagedOrder, listManagedOrderEvents } from '../cloud/state/managedOrderStore.js'
 import { normalizeLongbridgeSymbol } from './longbridgeMarketDataService.js'
+import { longbridgePersistence } from './longbridgePersistence.js'
 
 const execFileAsync = promisify(execFile)
 const ORDER_CHILD_PATH = resolve(
@@ -18,6 +27,12 @@ const ORDER_DETAIL_CHILD_PATH = resolve(
   'api',
   'longbridge',
   'longbridgeSdkOrderDetailChild.mjs',
+)
+const ORDERS_CHILD_PATH = resolve(
+  process.cwd(),
+  'api',
+  'longbridge',
+  'longbridgeSdkOrdersChild.mjs',
 )
 const ORDER_CANCEL_CHILD_PATH = resolve(
   process.cwd(),
@@ -45,14 +60,14 @@ export type LongbridgeSdkOrderPayload = {
 export async function cancelLongbridgeLiveOrder(
   orderId: string,
 ): Promise<ManagedCancelBrokerResponse> {
-  const proxyUrl = process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim()
-  if (!proxyUrl) {
+  const childEnv = buildLongbridgeOrderChildEnv()
+  if (!childEnv) {
     return {
       ok: false,
       accepted: false,
       platform: 'longbridge',
       orderId,
-      error: '长桥订单代理未配置。',
+      error: '云端长桥订单代理未配置。',
     }
   }
   const encoded = Buffer.from(JSON.stringify({ orderId })).toString('base64url')
@@ -60,12 +75,7 @@ export async function cancelLongbridgeLiveOrder(
     const result = await execFileAsync(process.execPath, [ORDER_CANCEL_CHILD_PATH, encoded], {
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
-      env: {
-        ...process.env,
-        HTTPS_PROXY: proxyUrl,
-        HTTP_PROXY: proxyUrl,
-        NO_PROXY: '',
-      },
+      env: childEnv,
     })
     return parseCancelChildResponse(result.stdout, orderId)
   } catch (error) {
@@ -86,9 +96,9 @@ export async function loadLongbridgeOrderDetail(input: {
   orderId: string
   submittedAt?: string
 }): Promise<LongbridgeOrderDetailResponse> {
-  const proxyUrl = process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim()
-  if (!proxyUrl) {
-    return { ok: false, error: '长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。' }
+  const childEnv = buildLongbridgeOrderChildEnv()
+  if (!childEnv) {
+    return { ok: false, error: '云端长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。' }
   }
 
   const encoded = Buffer.from(JSON.stringify(input)).toString('base64url')
@@ -96,12 +106,7 @@ export async function loadLongbridgeOrderDetail(input: {
     const result = await execFileAsync(process.execPath, [ORDER_DETAIL_CHILD_PATH, encoded], {
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
-      env: {
-        ...process.env,
-        HTTPS_PROXY: proxyUrl,
-        HTTP_PROXY: proxyUrl,
-        NO_PROXY: '',
-      },
+      env: childEnv,
     })
     return parseOrderDetailChildResponse(result.stdout)
   } catch (error) {
@@ -115,14 +120,94 @@ export async function loadLongbridgeOrderDetail(input: {
   }
 }
 
+export async function loadLongbridgeBrokerOrders(input: {
+  page?: number
+  pageSize?: number
+  startDate?: string
+  endDate?: string
+  ticker?: string
+  status?: LongbridgeBrokerOrderStatusFilter
+  side?: LongbridgeBrokerOrderSideFilter
+}): Promise<LongbridgeBrokerOrdersResponse> {
+  const page = clampInt(input.page, 1, 1_000_000, 1)
+  const pageSize = clampInt(input.pageSize, 1, 100, 12)
+  const childEnv = buildLongbridgeOrderChildEnv()
+  if (!childEnv) return emptyBrokerOrders(page, pageSize, input, '云端长桥订单代理未配置。')
+  const ticker = input.ticker?.trim().toUpperCase()
+
+  const encoded = Buffer.from(JSON.stringify({
+    ...input,
+    symbol: ticker && ticker !== 'ALL' ? normalizeLongbridgeSymbol(ticker) : undefined,
+    page,
+    pageSize,
+  })).toString('base64url')
+  try {
+    const result = await execFileAsync(process.execPath, [ORDERS_CHILD_PATH, encoded], {
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: childEnv,
+    })
+    return parseBrokerOrdersChildResponse(result.stdout, page, pageSize, input)
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; message?: string }
+    const parsed = parseBrokerOrdersChildResponse(failure.stdout, page, pageSize, input)
+    if (parsed.error !== '长桥订单清单子进程未返回内容。') return parsed
+    return emptyBrokerOrders(
+      page,
+      pageSize,
+      input,
+      failure.stderr?.trim() || failure.message || parsed.error,
+    )
+  }
+}
+
+export async function loadLongbridgeCombinedOrderDetail(input: {
+  orderId: string
+  pendingOrderId?: string
+  submittedAt?: string
+}): Promise<LongbridgeCombinedOrderDetailResponse> {
+  const systemOrder = input.pendingOrderId
+    ? longbridgePersistence.findPendingOrder(input.pendingOrderId)
+    : longbridgePersistence.findPendingOrderByBrokerOrderId(input.orderId)
+  const brokerOrderId = systemOrder?.submittedOrder?.orderId || input.orderId
+  const shouldLoadBrokerOrder = Boolean(
+    brokerOrderId
+    && systemOrder?.submittedOrder?.ok !== false,
+  )
+  const [brokerResult, managedOrder, managedEvents] = await Promise.all([
+    shouldLoadBrokerOrder
+      ? loadLongbridgeOrderDetail({
+          orderId: brokerOrderId,
+          submittedAt: systemOrder?.submittedOrder?.submittedAt ?? input.submittedAt,
+        })
+      : Promise.resolve<LongbridgeOrderDetailResponse>({
+          ok: false,
+          error: systemOrder?.submittedOrder?.error ?? '券商未生成可查询的真实订单。',
+        }),
+    getManagedOrder('longbridge', brokerOrderId),
+    listManagedOrderEvents('longbridge', brokerOrderId || undefined, 100),
+  ])
+  const brokerOrder = brokerResult.ok ? brokerResult : undefined
+  const ok = Boolean(systemOrder || brokerOrder || managedOrder)
+  return {
+    ok,
+    orderId: brokerOrderId,
+    systemOrder,
+    brokerOrder,
+    managedOrder,
+    managedEvents,
+    error: brokerResult.ok ? undefined : brokerResult.error,
+  }
+}
+
 export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<LiveOrderResult> {
   if (process.env.LONGBRIDGE_LIVE_TRADING_ENABLED !== 'true') {
     return blockedLongbridgeOrder(input, 'LONGBRIDGE_LIVE_TRADING_ENABLED=true 时才允许提交长桥真实订单。')
   }
 
-  const proxyUrl = process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim()
-  if (!proxyUrl) {
-    return blockedLongbridgeOrder(input, '长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。')
+  const childEnv = buildLongbridgeOrderChildEnv()
+  if (!childEnv) {
+    return blockedLongbridgeOrder(input, '云端长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。')
   }
 
   const payload = buildLongbridgeSdkOrderPayload(input)
@@ -137,12 +222,7 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
     const result = await execFileAsync(process.execPath, [ORDER_CHILD_PATH, encoded], {
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
-      env: {
-        ...process.env,
-        HTTPS_PROXY: proxyUrl,
-        HTTP_PROXY: proxyUrl,
-        NO_PROXY: '',
-      },
+      env: childEnv,
     })
     childResponse = parseChildResponse(result.stdout)
   } catch (error) {
@@ -155,7 +235,7 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
   if (!childResponse?.ok || !childResponse.orderId) {
     return blockedLongbridgeOrder(
       input,
-      `Longbridge SDK order failed: ${childResponse?.error || 'response missing order id'}`,
+      `长桥订单提交失败：${localizeLongbridgeOrderError(childResponse?.error || '订单响应缺少订单编号。')}`,
       childResponse?.rawResponse,
     )
   }
@@ -240,6 +320,69 @@ function parseOrderDetailChildResponse(stdout?: string): LongbridgeOrderDetailRe
       error: `长桥订单详情子进程返回内容无法解析：${stdout.trim().slice(0, 300)}`,
     }
   }
+}
+
+function parseBrokerOrdersChildResponse(
+  stdout: string | undefined,
+  page: number,
+  pageSize: number,
+  input: { startDate?: string; endDate?: string },
+): LongbridgeBrokerOrdersResponse {
+  if (!stdout?.trim()) return emptyBrokerOrders(page, pageSize, input, '长桥订单清单子进程未返回内容。')
+  try {
+    return JSON.parse(stdout.trim()) as LongbridgeBrokerOrdersResponse
+  } catch {
+    return emptyBrokerOrders(page, pageSize, input, '长桥订单清单子进程返回内容无法解析。')
+  }
+}
+
+function emptyBrokerOrders(
+  page: number,
+  pageSize: number,
+  input: { startDate?: string; endDate?: string },
+  error: string,
+): LongbridgeBrokerOrdersResponse {
+  return {
+    ok: false,
+    orders: [],
+    page,
+    pageSize,
+    total: 0,
+    totalPages: 1,
+    startDate: input.startDate ?? '',
+    endDate: input.endDate ?? '',
+    warnings: [error],
+    error,
+  }
+}
+
+function clampInt(value: number | undefined, minimum: number, maximum: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(minimum, Math.min(maximum, Math.floor(value!)))
+}
+
+function buildLongbridgeOrderChildEnv(): NodeJS.ProcessEnv | undefined {
+  const env = { ...process.env }
+  if (process.env.CLOUD_MODE === '1') {
+    const proxyUrl = process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim()
+    if (!proxyUrl) return undefined
+    env.HTTPS_PROXY = proxyUrl
+    env.HTTP_PROXY = proxyUrl
+    env.NO_PROXY = ''
+    return env
+  }
+
+  for (const name of [
+    'HTTPS_PROXY',
+    'HTTP_PROXY',
+    'ALL_PROXY',
+    'https_proxy',
+    'http_proxy',
+    'all_proxy',
+  ]) {
+    delete env[name]
+  }
+  return env
 }
 
 function parseCancelChildResponse(

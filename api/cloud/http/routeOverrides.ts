@@ -360,9 +360,22 @@ export function createRouteOverrideRouter(): Router {
       res.status(500).json({ ok: false, orders: [], events: [], error: error instanceof Error ? error.message : String(error) })
     }
   })
+  router.get('/longbridge/live-trading/orders', async (req: Request, res: Response) => {
+    return forwardBrokerControlJob(res, 'longbridge_live.orders', {
+      page: Number(req.query.page),
+      pageSize: Number(req.query.pageSize),
+      startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
+      endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
+      ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+      status: typeof req.query.status === 'string' ? req.query.status : undefined,
+      side: typeof req.query.side === 'string' ? req.query.side : undefined,
+      requestedBy: (req as Request & { user?: { username?: string } }).user?.username ?? null,
+    }, ORDER_READ_JOB_TIMEOUT_MS)
+  })
   router.get('/longbridge/live-trading/orders/:orderId/detail', async (req: Request, res: Response) => {
     return forwardBrokerControlJob(res, 'longbridge_live.order_detail', {
       orderId: req.params.orderId,
+      pendingOrderId: typeof req.query.pendingOrderId === 'string' ? req.query.pendingOrderId : undefined,
       submittedAt: typeof req.query.submittedAt === 'string' ? req.query.submittedAt : undefined,
       requestedBy: (req as Request & { user?: { username?: string } }).user?.username ?? null,
     }, ORDER_READ_JOB_TIMEOUT_MS)
@@ -470,6 +483,8 @@ export function createRouteOverrideRouter(): Router {
         startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
         endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
         ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+        status: typeof req.query.status === 'string' ? req.query.status : undefined,
+        side: typeof req.query.side === 'string' ? req.query.side : undefined,
       }
       const jobId = await enqueueJob('futu_live.orders', payload)
       const deadline = Date.now() + FUTU_ORDERS_JOB_TIMEOUT_MS

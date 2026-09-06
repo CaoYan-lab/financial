@@ -575,6 +575,7 @@ export type FutuSimulationOrder = {
   code: string
   side: string
   orderType: string
+  orderSession?: string
   orderStatus: string
   orderStatusLabel: string
   quantity: string
@@ -729,6 +730,9 @@ export type LivePendingOrder = {
   signal: QuantSignal
   llmDecision: LlmTradingDecision
   riskWarnings: string[]
+  decisionMode?: 'legacy_direct' | 'candidate_pool' | 'trading_agent'
+  candidateId?: string
+  portfolioDecisionId?: string
   confirmation?: LiveOrderConfirmation
   submittedOrder?: LiveOrderResult
 }

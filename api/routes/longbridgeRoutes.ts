@@ -9,6 +9,8 @@ import { getLongbridgeLiveSettings, updateLongbridgeLiveSettings } from '../long
 import { repairUnavailableTrendSignals } from '../longbridge/longbridgeTrendRepairService.js'
 import { listManagedOrderEvents, listManagedOrders } from '../cloud/state/managedOrderStore.js'
 import { requestManagedOrderCancel } from '../live/managedOrderSupervisor.js'
+import { loadLongbridgeBrokerOrders, loadLongbridgeCombinedOrderDetail } from '../longbridge/longbridgeLiveOrderService.js'
+import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter } from '../../shared/longbridgeTypes.js'
 import type { LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalLifecycleFilter } from '../../shared/types.js'
 
 const router = Router()
@@ -165,6 +167,35 @@ router.get('/live-trading/managed-orders', async (_req, res, next) => {
       listManagedOrderEvents('longbridge', undefined, 100),
     ])
     res.json({ ok: true, orders, events })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/live-trading/orders', async (req, res, next) => {
+  try {
+    res.json(await loadLongbridgeBrokerOrders({
+      page: Number(req.query.page),
+      pageSize: Number(req.query.pageSize),
+      startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
+      endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
+      ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+      status: typeof req.query.status === 'string' ? req.query.status as LongbridgeBrokerOrderStatusFilter : undefined,
+      side: typeof req.query.side === 'string' ? req.query.side as LongbridgeBrokerOrderSideFilter : undefined,
+    }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/live-trading/orders/:orderId/detail', async (req, res, next) => {
+  try {
+    const result = await loadLongbridgeCombinedOrderDetail({
+      orderId: req.params.orderId,
+      pendingOrderId: typeof req.query.pendingOrderId === 'string' ? req.query.pendingOrderId : undefined,
+      submittedAt: typeof req.query.submittedAt === 'string' ? req.query.submittedAt : undefined,
+    })
+    res.status(result.ok ? 200 : 400).json(result)
   } catch (error) {
     next(error)
   }

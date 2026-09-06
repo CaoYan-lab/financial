@@ -18,10 +18,6 @@ async function main() {
     fail('长桥真实提交门禁关闭。')
     return
   }
-  if (!process.env.HTTPS_PROXY) {
-    fail('长桥订单代理未配置。')
-    return
-  }
 
   const encoded = process.argv[2]
   if (!encoded) {

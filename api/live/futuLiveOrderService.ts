@@ -15,6 +15,8 @@ type QueryInput = {
   startDate?: string
   endDate?: string
   ticker?: string
+  status?: string
+  side?: string
   bypassCache?: boolean
 }
 
@@ -97,6 +99,8 @@ export async function loadFutuLiveOrders(input: QueryInput): Promise<FutuLiveOrd
     startDate: input.startDate,
     endDate: input.endDate,
     ticker: input.ticker,
+    status: input.status,
+    side: input.side,
   })
 
   const response =

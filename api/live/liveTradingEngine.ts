@@ -23,7 +23,7 @@ import { attachMarketSessions, latestMarketSessions, loadMarketSessions } from '
 import { loadStrategyMarketData } from '../simulation/realtimeDataAdapter.js'
 import { loadTrendContext } from '../simulation/trendContextService.js'
 import { LLM_SIMULATION_UNIVERSE, isInLlmSimulationUniverse, llmSimulationTickers, llmUniverseItem } from '../simulation/simulationUniverse.js'
-import { llmMarketSessionSkipReason } from '../simulation/usOvernightLlmGate.js'
+import { llmMarketSessionSkipReason, orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
 import { liveOrderQueueService } from './liveOrderQueueService.js'
 import { loadLiveAccountDashboard, parseMoney } from './liveAccountService.js'
 import { requestLiveTradingDecision } from './liveTradingDecisionService.js'
@@ -773,11 +773,7 @@ export function selectOrderTypeForDecision(
 }
 
 export function orderSessionForMarket(marketSession?: MarketSessionStatus): LiveOrderIntent['orderSession'] | undefined {
-  if (!marketSession) return undefined
-  if (marketSession.state === 'MORNING' || marketSession.state === 'AFTERNOON' || marketSession.state === 'AUCTION' || marketSession.state === 'TRADE_AT_LAST') return 'RTH'
-  if (marketSession.state === 'PRE_MARKET_BEGIN' || marketSession.state === 'PRE_MARKET_END' || marketSession.state === 'AFTER_HOURS_BEGIN' || marketSession.state === 'AFTER_HOURS_END') return 'ETH'
-  if (marketSession.state === 'OVERNIGHT' || marketSession.state === 'NIGHT' || marketSession.state === 'NIGHT_OPEN') return 'OVERNIGHT'
-  return undefined
+  return orderSessionForMarketState(marketSession?.state)
 }
 
 export function closedHongKongMarketFailureReason(ticker: string, marketSession?: MarketSessionStatus): string | undefined {

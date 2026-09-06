@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { AlertTriangle, CheckCircle2, X, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Eye, X, XCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { ManagedOrder, ManagedOrderListResponse } from '../../shared/managedOrderTypes'
+import { displaySide } from '@/utils/simulationDisplay'
 
 export default function ManagedOrdersPanel({
   platformLabel,
@@ -8,6 +10,8 @@ export default function ManagedOrdersPanel({
   autoCancelEnabled,
   saving,
   cancelingOrderId,
+  detailBasePath,
+  accent = 'sky',
   onToggleAutoCancel,
   onCancel,
 }: {
@@ -16,23 +20,40 @@ export default function ManagedOrdersPanel({
   autoCancelEnabled: boolean
   saving: boolean
   cancelingOrderId?: string
+  detailBasePath: string
+  accent?: 'amber' | 'sky'
   onToggleAutoCancel: (enabled: boolean) => Promise<unknown>
   onCancel: (orderId: string) => Promise<unknown>
 }) {
   const [confirming, setConfirming] = useState<ManagedOrder>()
   const activeOrders = data?.orders.filter((order) => !order.terminalAt) ?? []
+  const theme = accent === 'amber'
+    ? {
+        border: 'border-orange-200',
+        eyebrow: 'text-orange-700',
+        primary: 'bg-orange-600 hover:bg-orange-500',
+        icon: 'text-orange-600',
+        action: 'border-orange-200 text-orange-700 hover:bg-orange-50',
+      }
+    : {
+        border: 'border-sky-200',
+        eyebrow: 'text-sky-700',
+        primary: 'bg-sky-600 hover:bg-sky-500',
+        icon: 'text-sky-600',
+        action: 'border-sky-200 text-sky-700 hover:bg-sky-50',
+      }
   return (
-    <section className="border-y border-stone-200 bg-white/90 py-5">
+    <section className={`rounded-3xl border bg-white/90 p-6 backdrop-blur ${theme.border}`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold text-amber-700">系统挂单监管</p>
+          <p className={`text-xs font-semibold tracking-[0.25em] ${theme.eyebrow}`}>系统挂单监管</p>
           <h2 className="mt-2 text-xl font-semibold">{platformLabel} 挂单与自动撤单</h2>
           <p className="mt-2 text-sm text-stone-600">
             仅监管本系统提交的订单；模型只提供建议，后端复核券商状态后才能撤销剩余数量。
           </p>
         </div>
         <button
-          className={`px-4 py-2 text-sm font-bold text-white disabled:opacity-50 ${autoCancelEnabled ? 'bg-rose-600' : 'bg-emerald-600'}`}
+          className={`rounded-2xl px-5 py-3 text-sm font-bold text-white transition disabled:opacity-50 ${autoCancelEnabled ? 'bg-rose-600 hover:bg-rose-500' : theme.primary}`}
           disabled={saving}
           onClick={() => void onToggleAutoCancel(!autoCancelEnabled)}
         >
@@ -41,12 +62,12 @@ export default function ManagedOrdersPanel({
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <StatusItem ok={data?.supervisor?.running === true} text={data?.supervisor?.running ? '监管器运行中' : '监管器未运行'} />
-        <StatusItem ok={!autoCancelEnabled} text={autoCancelEnabled ? '高置信度建议与硬规则可自动撤单' : '影子模式，仅记录建议'} />
-        <StatusItem ok text={`非终态订单 ${activeOrders.length} 笔`} />
+        <StatusItem ok={data?.supervisor?.running === true} text={data?.supervisor?.running ? '监管器运行中' : '监管器未运行'} iconClassName={theme.icon} />
+        <StatusItem ok={!autoCancelEnabled} text={autoCancelEnabled ? '高置信度建议与硬规则可自动撤单' : '影子模式，仅记录建议'} iconClassName={theme.icon} />
+        <StatusItem ok text={`非终态订单 ${activeOrders.length} 笔`} iconClassName={theme.icon} />
       </div>
 
-      <div className="mt-5 overflow-x-auto border border-stone-200">
+      <div className="mt-5 overflow-x-auto rounded-2xl border border-stone-200">
         <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-stone-50 text-xs text-stone-500">
             <tr>
@@ -63,7 +84,7 @@ export default function ManagedOrdersPanel({
             {activeOrders.map((order) => (
               <tr key={`${order.platform}:${order.orderId}`}>
                 <td className="px-4 py-3">
-                  <strong>{order.ticker} · {order.side}</strong>
+                  <strong>{order.ticker} · {displaySide(order.side, 'zh')}</strong>
                   <span className="mt-1 block text-xs text-stone-500">{order.orderId}</span>
                 </td>
                 <td className="px-4 py-3">{managedStatusLabel(order.status)}</td>
@@ -75,14 +96,24 @@ export default function ManagedOrdersPanel({
                   {order.latestDecision?.reason ? <span className="mt-1 block truncate text-xs text-stone-500" title={order.latestDecision.reason}>{order.latestDecision.reason}</span> : null}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    className="inline-flex items-center gap-1.5 bg-rose-600 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    disabled={!order.canCancel || Boolean(order.cancelRequestId) || cancelingOrderId === order.orderId}
-                    onClick={() => setConfirming(order)}
-                  >
-                    <XCircle size={14} />
-                    {cancelingOrderId === order.orderId ? '撤单中...' : order.status === 'PARTIALLY_FILLED' ? '撤销剩余' : '撤单'}
-                  </button>
+                  <div className="flex justify-end gap-2">
+                    <Link
+                      className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-white transition ${theme.action}`}
+                      aria-label={`查看 ${order.ticker} 组合订单详情`}
+                      title="查看券商订单详情"
+                      to={`${detailBasePath}/${encodeURIComponent(order.orderId)}?ticker=${encodeURIComponent(order.ticker)}&pendingOrderId=${encodeURIComponent(order.pendingOrderId)}&submittedAt=${encodeURIComponent(order.submittedAt)}`}
+                    >
+                      <Eye size={15} />
+                    </Link>
+                    <button
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={!order.canCancel || Boolean(order.cancelRequestId) || cancelingOrderId === order.orderId}
+                      onClick={() => setConfirming(order)}
+                    >
+                      <XCircle size={14} />
+                      {cancelingOrderId === order.orderId ? '撤单中...' : order.status === 'PARTIALLY_FILLED' ? '撤销剩余' : '撤单'}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -92,7 +123,7 @@ export default function ManagedOrdersPanel({
       </div>
 
       {data?.events.length ? (
-        <details className="mt-4 border border-stone-200 p-4">
+        <details className="mt-4 rounded-2xl border border-stone-200 bg-stone-50/70 p-4">
           <summary className="cursor-pointer text-sm font-semibold">最近监管记录</summary>
           <div className="mt-3 divide-y divide-stone-200">
             {data.events.slice(0, 10).map((event) => (
@@ -108,13 +139,13 @@ export default function ManagedOrdersPanel({
 
       {confirming ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-          <div className="w-full max-w-md border border-rose-200 bg-white p-5 shadow-2xl">
+          <div className="w-full max-w-md rounded-3xl border border-rose-200 bg-white p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold text-rose-700">确认真实撤单</p>
                 <h3 className="mt-2 text-lg font-semibold">{confirming.ticker} · {confirming.orderId}</h3>
               </div>
-              <button className="grid h-9 w-9 place-items-center border border-stone-200" title="关闭" onClick={() => setConfirming(undefined)}>
+              <button className="grid h-9 w-9 place-items-center rounded-xl border border-stone-200" title="关闭" onClick={() => setConfirming(undefined)}>
                 <X size={16} />
               </button>
             </div>
@@ -122,9 +153,9 @@ export default function ManagedOrdersPanel({
               将向券商撤销尚未成交的 {confirming.remainingQuantity} 股。已经成交的 {confirming.executedQuantity} 股不会被撤回。
             </p>
             <div className="mt-5 flex justify-end gap-2">
-              <button className="border border-stone-200 px-4 py-2 text-sm font-semibold" onClick={() => setConfirming(undefined)}>取消</button>
+              <button className="rounded-xl border border-stone-200 px-4 py-2 text-sm font-semibold" onClick={() => setConfirming(undefined)}>取消</button>
               <button
-                className="bg-rose-600 px-4 py-2 text-sm font-bold text-white"
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-500"
                 onClick={async () => {
                   const target = confirming
                   setConfirming(undefined)
@@ -141,9 +172,14 @@ export default function ManagedOrdersPanel({
   )
 }
 
-function StatusItem({ ok, text }: { ok: boolean; text: string }) {
+function StatusItem({ ok, text, iconClassName }: { ok: boolean; text: string; iconClassName: string }) {
   const Icon = ok ? CheckCircle2 : AlertTriangle
-  return <div className="flex items-center gap-2 border border-stone-200 px-3 py-2 text-sm"><Icon className={ok ? 'text-emerald-600' : 'text-amber-600'} size={16} />{text}</div>
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm">
+      <Icon className={ok ? iconClassName : 'text-amber-600'} size={16} />
+      {text}
+    </div>
+  )
 }
 
 function managedStatusLabel(status: ManagedOrder['status']) {

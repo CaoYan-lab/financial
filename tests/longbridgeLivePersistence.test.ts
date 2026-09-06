@@ -9,6 +9,7 @@ process.env.LIVE_PERSIST_TEST = '1'
 
 const { longbridgePersistence } = await import('../api/longbridge/longbridgePersistence')
 const { livePersistence } = await import('../api/live/livePersistence')
+const { loadLongbridgeCombinedOrderDetail } = await import('../api/longbridge/longbridgeLiveOrderService')
 
 describe('Longbridge live SQLite persistence', () => {
   beforeEach(() => {
@@ -53,6 +54,62 @@ describe('Longbridge live SQLite persistence', () => {
     expect(page.items[0].candidateId).toBe(candidate.candidateId)
     expect(page.items[0].status).toBe('ACTIVE')
     expect(sqlCount('longbridge_live_candidate_pool')).toBe(1)
+  })
+
+  it('组合详情可通过待确认订单号关联未生成券商订单的失败记录', async () => {
+    const order = testPendingOrder()
+    order.status = 'SUBMIT_FAILED'
+    order.submittedOrder = {
+      ok: false,
+      orderId: 'blocked-by-longbridge-live-gate',
+      ticker: order.intent.ticker,
+      side: order.intent.side,
+      quantity: String(order.intent.quantity),
+      orderType: order.intent.orderType,
+      orderSession: order.intent.orderSession,
+      limitPrice: `$${order.intent.limitPrice.toFixed(2)}`,
+      submittedAt: order.updatedAt,
+      strategy: order.intent.strategy,
+      signalId: order.intent.signalId,
+      pendingOrderId: order.id,
+      error: '测试提交失败',
+    }
+    longbridgePersistence.appendPendingOrder(order)
+
+    const detail = await loadLongbridgeCombinedOrderDetail({
+      orderId: order.submittedOrder.orderId,
+      pendingOrderId: order.id,
+    })
+
+    expect(detail.ok).toBe(true)
+    expect(detail.systemOrder?.id).toBe(order.id)
+    expect(detail.brokerOrder).toBeUndefined()
+    expect(detail.error).toBe('测试提交失败')
+  })
+
+  it('可通过券商订单号反查对应的系统待确认订单', () => {
+    const order = testPendingOrder()
+    order.status = 'SUBMITTED'
+    order.submittedOrder = {
+      ok: true,
+      orderId: 'longbridge-broker-order-1',
+      ticker: order.intent.ticker,
+      side: order.intent.side,
+      quantity: String(order.intent.quantity),
+      orderType: order.intent.orderType,
+      orderSession: order.intent.orderSession,
+      limitPrice: `$${order.intent.limitPrice.toFixed(2)}`,
+      submittedAt: order.updatedAt,
+      strategy: order.intent.strategy,
+      signalId: order.intent.signalId,
+      pendingOrderId: order.id,
+    }
+    longbridgePersistence.appendPendingOrder(order)
+    longbridgePersistence.appendSubmittedOrder(order.submittedOrder)
+
+    expect(
+      longbridgePersistence.findPendingOrderByBrokerOrderId(order.submittedOrder.orderId)?.id,
+    ).toBe(order.id)
   })
 })
 

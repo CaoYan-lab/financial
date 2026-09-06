@@ -176,6 +176,8 @@ router.get('/futu-orders', async (req, res, next) => {
         startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
         endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
         ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+        status: typeof req.query.status === 'string' ? req.query.status : undefined,
+        side: typeof req.query.side === 'string' ? req.query.side : undefined,
       }),
     )
   } catch (error) {

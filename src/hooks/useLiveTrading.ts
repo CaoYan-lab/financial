@@ -30,9 +30,14 @@ type LiveHistoryState = {
 }
 
 type LiveHistoryKey = keyof LiveHistoryState
+type FutuOrderFilters = {
+  ticker: string
+  status: 'ALL' | 'PENDING' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELED' | 'FAILED'
+  side: 'ALL' | 'BUY' | 'SELL'
+}
 
 const LIVE_HISTORY_PAGE_SIZE = 12
-const FUTU_ORDERS_PAGE_SIZE = 5
+const FUTU_ORDERS_PAGE_SIZE = 12
 const AUTO_REFRESH_MS = 30_000
 const CONTROL_POLL_INTERVAL_MS = 500
 const CONTROL_POLL_ATTEMPTS = 60
@@ -74,6 +79,9 @@ export function useLiveTrading() {
   const [cancelingManagedOrderId, setCancelingManagedOrderId] = useState<string>()
   const [tradeStrategyConfig, setTradeStrategyConfig] = useState<TradeStrategyConfigResponse>()
   const [futuOrdersPage, setFutuOrdersPageState] = useState(1)
+  const [futuOrderTickerFilter, setFutuOrderTickerFilterState] = useState('ALL')
+  const [futuOrderStatusFilter, setFutuOrderStatusFilterState] = useState<FutuOrderFilters['status']>('ALL')
+  const [futuOrderSideFilter, setFutuOrderSideFilterState] = useState<FutuOrderFilters['side']>('ALL')
   const [pendingOrderStatusFilter, setPendingOrderStatusFilterState] = useState<LivePendingOrderStatusFilter>('ALL')
   const [pendingOrderTickerFilter, setPendingOrderTickerFilterState] = useState('ALL')
   const [pendingOrderSideFilter, setPendingOrderSideFilterState] = useState<LivePendingOrderSideFilter>('ALL')
@@ -92,6 +100,11 @@ export function useLiveTrading() {
   const dashboardRefreshInFlight = useRef(false)
   const historyPagesRef = useRef(historyPages)
   const futuOrdersPageRef = useRef(futuOrdersPage)
+  const futuOrderFiltersRef = useRef<FutuOrderFilters>({
+    ticker: futuOrderTickerFilter,
+    status: futuOrderStatusFilter,
+    side: futuOrderSideFilter,
+  })
   const historyFiltersRef = useRef({
     pendingOrderStatusFilter,
     pendingOrderTickerFilter,
@@ -198,10 +211,21 @@ export function useLiveTrading() {
     }
   }, [])
 
-  const loadFutuOrders = useCallback(async (page = 1, pageSize = FUTU_ORDERS_PAGE_SIZE) => {
+  const loadFutuOrders = useCallback(async (
+    page = 1,
+    pageSize = FUTU_ORDERS_PAGE_SIZE,
+    filters = futuOrderFiltersRef.current,
+  ) => {
     try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        ticker: filters.ticker,
+        status: filters.status,
+        side: filters.side,
+      })
       const response = await fetch(
-        `/api/live-trading/futu-orders?page=${page}&pageSize=${pageSize}`,
+        `/api/live-trading/futu-orders?${params.toString()}`,
         { signal: AbortSignal.timeout(30_000) },
       )
       if (!response.ok) throw new Error(`Futu 实盘订单请求失败，状态码 ${response.status}。`)
@@ -295,6 +319,17 @@ export function useLiveTrading() {
     setFutuOrdersPageState(nextPage)
     futuOrdersPageRef.current = nextPage
     return loadFutuOrders(nextPage, FUTU_ORDERS_PAGE_SIZE)
+  }, [loadFutuOrders])
+
+  const setFutuOrderFilters = useCallback((patch: Partial<FutuOrderFilters>) => {
+    const next = { ...futuOrderFiltersRef.current, ...patch }
+    futuOrderFiltersRef.current = next
+    setFutuOrderTickerFilterState(next.ticker)
+    setFutuOrderStatusFilterState(next.status)
+    setFutuOrderSideFilterState(next.side)
+    setFutuOrdersPageState(1)
+    futuOrdersPageRef.current = 1
+    return loadFutuOrders(1, FUTU_ORDERS_PAGE_SIZE, next)
   }, [loadFutuOrders])
 
   const clearPendingOrderHistory = useCallback(() => {
@@ -644,6 +679,9 @@ export function useLiveTrading() {
     signalLifecycleFilter,
     candidatePoolHistoryFilter,
     futuOrders,
+    futuOrderTickerFilter,
+    futuOrderStatusFilter,
+    futuOrderSideFilter,
     futuOrderDetail,
     loadingFutuOrderDetailId,
     futuOrderDetailError,
@@ -674,6 +712,7 @@ export function useLiveTrading() {
     setSignalLifecycleFilter,
     setCandidatePoolHistoryFilter,
     setFutuOrdersPage,
+    setFutuOrderFilters,
     saveLlmConfig,
     saveTradeStrategyConfig,
     confirmOrder,

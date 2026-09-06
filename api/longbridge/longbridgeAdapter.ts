@@ -310,15 +310,17 @@ async function loadLongbridgeSdkSourceStatus(): Promise<LongbridgeSourceStatusRe
   const missingCapabilities = [...probe.errors]
   const tokenTooCloseToExpiry =
     probe.tokenRemainingDays !== undefined && probe.tokenRemainingDays < 1
+  const cloudMode = process.env.CLOUD_MODE === '1'
   const orderProxyReady = Boolean(process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim())
+  const orderNetworkReady = !cloudMode || orderProxyReady
   if (tokenTooCloseToExpiry && !missingCapabilities.some((item) => item.includes('Access Token'))) {
     missingCapabilities.push('长桥 Access Token 剩余有效期不足 24 小时，真实交易已熔断。')
   }
   if (!probe.orderReadAvailable) {
     missingCapabilities.push('长桥订单读取权限不可用。')
   }
-  if (!orderProxyReady) {
-    missingCapabilities.push('长桥真实订单专用代理尚未配置。')
+  if (cloudMode && !orderProxyReady) {
+    missingCapabilities.push('云端长桥真实订单专用代理尚未配置。')
   }
 
   return {
@@ -344,7 +346,7 @@ async function loadLongbridgeSdkSourceStatus(): Promise<LongbridgeSourceStatusRe
       probe.accountDataAvailable
       && probe.orderReadAvailable
       && !tokenTooCloseToExpiry
-      && orderProxyReady
+      && orderNetworkReady
       && process.env.LONGBRIDGE_LIVE_TRADING_ENABLED === 'true',
     mcpFallbackConfigured: false,
     lastCheckedAt: probe.checkedAt,
