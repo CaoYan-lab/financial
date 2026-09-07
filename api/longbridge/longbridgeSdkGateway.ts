@@ -153,7 +153,7 @@ export async function probeLongbridgeSdk(
 async function collectAccountSnapshot(): Promise<LongbridgeSdkAccountSnapshot> {
   const { quote, trade } = getLongbridgeSdkContexts()
   const [balances, positionsResponse, orders] = await Promise.all([
-    trade.accountBalance(),
+    trade.accountBalance('USD'),
     trade.stockPositions(),
     trade.todayOrders(),
   ])
