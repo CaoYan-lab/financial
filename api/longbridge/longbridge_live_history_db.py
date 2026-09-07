@@ -1,3 +1,13 @@
+import os as _os
+import sys as _sys
+
+if _os.environ.get("PG_HISTORY_DRIVER") == "1":
+    _sys.path.insert(0, _os.environ.get("VOLCANO_CLOUD_PYTHONPATH", ""))
+    from pg_history_driver import run as _pg_run
+
+    _pg_run(__file__)
+    _sys.exit(0)
+
 import json
 import sqlite3
 import sys

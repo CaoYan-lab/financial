@@ -1,14 +1,23 @@
 import type { LiveCandidatePoolSnapshot, LiveEngineStatus, LivePendingOrder, LiveSignalHistoryItem, LlmModelOption, LlmRuntimeConfig, LlmTradingDecision, RealtimeBar, RealtimeOrderBookLevel, RealtimePoint, SimulationHistoryPage, TradeStrategyConfigResponse } from './types'
+import type { ManagedOrder, ManagedOrderEvent } from './managedOrderTypes'
 
 export type LongbridgeAuthStatus = 'authenticated' | 'not_authenticated' | 'unknown'
 
 export type LongbridgeSourceStatusResponse = {
   ok: boolean
+  runtimeProvider?: 'sdk' | 'cli'
+  sdkAvailable?: boolean
   cliAvailable: boolean
   cliPath: string
   cliVersion: string
   authStatus: LongbridgeAuthStatus
   authDetail: string
+  tokenExpiresAt?: string
+  tokenRemainingDays?: number
+  quotePackages?: string[]
+  accountReadAvailable?: boolean
+  positionReadAvailable?: boolean
+  orderReadAvailable?: boolean
   skillsInstalled: boolean
   installedSkills: string[]
   marketDataAvailable: boolean
@@ -101,6 +110,11 @@ export type LongbridgeLiveTradingDashboardResponse = {
   engine: LiveEngineStatus
   liveTradingEnabled: boolean
   autoSubmitEnabled: boolean
+  autoCancelEnabled: boolean
+  marketableLimitTimeoutSeconds: number
+  limitTimeoutSeconds: number
+  brokerSyncIntervalSeconds: number
+  modelReviewIntervalSeconds: number
   signals: LiveSignalHistoryItem[]
   pendingOrders: LivePendingOrder[]
   candidatePool: LiveCandidatePoolSnapshot
@@ -114,6 +128,123 @@ export type LongbridgeConfirmOrderResponse = {
   result?: unknown
   error?: string
   blockedByGate: boolean
+}
+
+export type LongbridgeOrderExecution = {
+  tradeId: string
+  orderId: string
+  symbol: string
+  quantity: string
+  price: string
+  tradeDoneAt: string
+}
+
+export type LongbridgeOrderHistoryItem = {
+  status: number
+  statusLabel: string
+  quantity: string
+  price: string
+  message: string
+  time: string
+}
+
+export type LongbridgeOrderCharge = {
+  category: string
+  name: string
+  amount: string
+  currency: string
+}
+
+export type LongbridgeBrokerOrder = {
+  orderId: string
+  symbol: string
+  stockName: string
+  status: number
+  statusLabel: string
+  side: number
+  sideLabel: string
+  orderType: number
+  orderTypeLabel: string
+  quantity: string
+  executedQuantity: string
+  price: string | null
+  executedPrice: string | null
+  currency: string
+  submittedAt: string
+  updatedAt: string | null
+  outsideRthLabel: string
+  message: string
+  remark: string
+}
+
+export type LongbridgeBrokerOrderStatusFilter =
+  | 'ALL'
+  | 'PENDING'
+  | 'FILLED'
+  | 'PARTIALLY_FILLED'
+  | 'CANCELED'
+  | 'REJECTED'
+  | 'EXPIRED'
+
+export type LongbridgeBrokerOrderSideFilter = 'ALL' | 'BUY' | 'SELL'
+
+export type LongbridgeBrokerOrdersResponse = {
+  ok: boolean
+  orders: LongbridgeBrokerOrder[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  startDate: string
+  endDate: string
+  warnings: string[]
+  error?: string
+}
+
+export type LongbridgeOrderDetailResponse =
+  | {
+      ok: false
+      error: string
+    }
+  | {
+      ok: true
+      error?: never
+      orderId: string
+      symbol: string
+      stockName: string
+      status: number
+      statusLabel: string
+      side: number
+      sideLabel: string
+      orderType: number
+      orderTypeLabel: string
+      quantity: string
+      executedQuantity: string
+      price: string | null
+      executedPrice: string | null
+      currency: string
+      submittedAt: string
+      updatedAt: string | null
+      message: string
+      remark: string
+      timeInForceLabel: string
+      outsideRthLabel: string
+      totalCharge: string
+      chargeCurrency: string
+      charges: LongbridgeOrderCharge[]
+      executions: LongbridgeOrderExecution[]
+      history: LongbridgeOrderHistoryItem[]
+      checkedAt: string
+    }
+
+export type LongbridgeCombinedOrderDetailResponse = {
+  ok: boolean
+  orderId: string
+  systemOrder?: LivePendingOrder
+  brokerOrder?: Extract<LongbridgeOrderDetailResponse, { ok: true }>
+  managedOrder?: ManagedOrder
+  managedEvents: ManagedOrderEvent[]
+  error?: string
 }
 
 export type LongbridgeHistoryKind = 'signals' | 'pending-orders' | 'candidate-pool'

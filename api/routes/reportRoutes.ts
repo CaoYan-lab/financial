@@ -15,36 +15,47 @@ const router = Router()
 let latestReport: ReportGenerationResult | undefined
 let activeReportBatchId: string | undefined
 
+export type ReportGenerationInput = {
+  asOfDate?: string
+  batchId?: string
+  reportWindowDays?: 30 | 60
+}
+
+export type ReportCollectedData = Awaited<ReturnType<typeof collectRawData>>
+
 export function getLatestReport(): ReportGenerationResult | undefined {
   return latestReport
 }
 
-router.post('/generate', async (req, res, next) => {
+export async function generateReport(
+  input: ReportGenerationInput = {},
+  collectedData?: ReportCollectedData,
+): Promise<ReportGenerationResult> {
   const startedAt = performance.now()
-  const batchId = `batch-${Date.now()}`
+  const batchId = input.batchId ?? `batch-${Date.now()}`
   if (activeReportBatchId) {
-    res.status(409).json({
-      message: 'report_generation_in_progress',
-      batchId: activeReportBatchId,
-    })
-    return
+    throw new Error(`report_generation_in_progress:${activeReportBatchId}`)
   }
   activeReportBatchId = batchId
   try {
     logger.info({ event: 'report.generate.started', batchId }, 'Top30 report generation started')
-    const provider = new FutuOpenDProvider()
-    logger.info({ event: 'report.generate.raw_data.started', batchId }, 'Top30 report raw data collection started')
-    const { generatedAt, rawData, dataQuality } = await collectRawData(provider, batchId, req.body?.asOfDate)
-    logger.info(
-      {
-        event: 'report.generate.raw_data.succeeded',
-        batchId,
-        rowCount: rawData.length,
-        durationMs: durationMs(startedAt),
-        unavailableSummary: dataQuality.unavailableSummary,
-      },
-      'Top30 report raw data collection succeeded',
-    )
+    let collected = collectedData
+    if (!collected) {
+      const provider = new FutuOpenDProvider()
+      logger.info({ event: 'report.generate.raw_data.started', batchId }, 'Top30 report raw data collection started')
+      collected = await collectRawData(provider, batchId, input.asOfDate)
+      logger.info(
+        {
+          event: 'report.generate.raw_data.succeeded',
+          batchId,
+          rowCount: collected.rawData.length,
+          durationMs: durationMs(startedAt),
+          unavailableSummary: collected.dataQuality.unavailableSummary,
+        },
+        'Top30 report raw data collection succeeded',
+      )
+    }
+    const { generatedAt, rawData, dataQuality } = collected
     const analysis = analyzeCompanies(batchId, generatedAt, rawData)
     const runtimeConfig = getLlmRuntimeConfig().config
     logger.info({ event: 'report.generate.market_context.started', batchId }, 'Top30 report market context collection started')
@@ -62,6 +73,7 @@ router.post('/generate', async (req, res, next) => {
     const reportBase = {
       batchId,
       generatedAt,
+      reportWindowDays: input.reportWindowDays === 60 ? 60 as const : 30 as const,
       rawData,
       dataQuality,
       analysis,
@@ -83,6 +95,7 @@ router.post('/generate', async (req, res, next) => {
       dataQuality,
       baselineAnalysis: analysis,
       marketContext,
+      reportWindowDays: reportBase.reportWindowDays,
     })
     logger.info(
       { event: 'report.generate.llm_markdown.succeeded', batchId, markdownLength: markdown.length, durationMs: durationMs(startedAt) },
@@ -95,11 +108,28 @@ router.post('/generate', async (req, res, next) => {
       'Top30 report generation completed',
     )
 
-    res.json(latestReport)
-  } catch (error) {
-    next(error)
+    return latestReport
   } finally {
     if (activeReportBatchId === batchId) activeReportBatchId = undefined
+  }
+}
+
+router.post('/generate', async (req, res, next) => {
+  try {
+    res.json(await generateReport({
+      asOfDate: typeof req.body?.asOfDate === 'string' ? req.body.asOfDate : undefined,
+      reportWindowDays: req.body?.reportWindowDays === 60 ? 60 : 30,
+    }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.startsWith('report_generation_in_progress:')) {
+      res.status(409).json({
+        message: 'report_generation_in_progress',
+        batchId: message.slice('report_generation_in_progress:'.length),
+      })
+      return
+    }
+    next(error)
   }
 })
 

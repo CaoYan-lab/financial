@@ -2,6 +2,9 @@ import type { LiveOrderConfirmation, LiveOrderResult, LivePendingOrder } from '.
 import { ensureLongbridgeEstimatedFee, ensureLongbridgeEstimatedFees } from './longbridgeFeeService.js'
 import { submitLongbridgeLiveOrder } from './longbridgeLiveOrderService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
+import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
+import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
+import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 
 class LongbridgeOrderQueueService {
   createPendingOrder(order: LivePendingOrder) {
@@ -91,6 +94,21 @@ class LongbridgeOrderQueueService {
       }
     }
 
+    const marketState = longbridgeRealtimeStore.getSnapshot(order.intent.ticker)?.quote?.marketState
+    const sessionFailure = orderSubmissionSessionFailureReason({
+      ticker: order.intent.ticker,
+      marketState,
+      orderSession: order.intent.orderSession,
+    })
+    if (sessionFailure) {
+      return {
+        ok: false,
+        order,
+        error: sessionFailure,
+        blockedByGate: true,
+      }
+    }
+
     const confirmedAt = new Date().toISOString()
     const confirmation: LiveOrderConfirmation = {
       confirmedAt,
@@ -119,6 +137,7 @@ class LongbridgeOrderQueueService {
     }
     longbridgePersistence.replacePendingOrder(next)
     longbridgePersistence.appendSubmittedOrder(result)
+    await registerSubmittedManagedOrder('longbridge', result, order.llmDecision)
     return {
       ok: result.ok,
       order: next,

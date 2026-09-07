@@ -17,8 +17,23 @@ export function shouldSkipUsOvernightLlm(input: {
   return !state || state === 'UNAVAILABLE'
 }
 
+export function shouldSkipUsClosedLlm(input: {
+  ticker: string
+  marketState?: string
+  now?: Date
+}): boolean {
+  if (!isUsTicker(input.ticker)) return false
+  const state = normalizeMarketState(input.marketState)
+  if (isClosedState(state)) return true
+  return (!state || state === 'UNAVAILABLE') && inferUsMarketState(input.now ?? new Date()) === 'CLOSED'
+}
+
 export function usOvernightLlmSkippedReason(marketState?: string): string {
   return `美股夜盘 LLM 请求已关闭，当前市场状态 ${String(marketState || 'unavailable')}，本轮让出并发给港股。`
+}
+
+export function usClosedLlmSkippedReason(marketState?: string): string {
+  return `美股当前处于周末、节假日或休市状态（${String(marketState || '不可用')}），本轮不发送 LLM 请求。`
 }
 
 export function llmMarketSessionSkipReason(input: {
@@ -28,8 +43,36 @@ export function llmMarketSessionSkipReason(input: {
   now?: Date
 }): string | undefined {
   const marketState = input.marketState ?? inferLlmGateMarketState(input.ticker, input.now)
+  if (shouldSkipUsClosedLlm({ ...input, marketState })) return usClosedLlmSkippedReason(marketState)
   if (shouldSkipUsOvernightLlm({ ...input, marketState })) return usOvernightLlmSkippedReason(marketState)
   if (shouldSkipHongKongClosedLlm({ ...input, marketState })) return hongKongClosedLlmSkippedReason(marketState)
+  return undefined
+}
+
+export function orderSessionForMarketState(marketState?: string): 'RTH' | 'ETH' | undefined {
+  const state = normalizeMarketState(marketState)
+  if (state === 'MORNING' || state === 'AFTERNOON' || state === 'AUCTION' || state === 'TRADE_AT_LAST' || state === 'RTH') return 'RTH'
+  if (state === 'PRE_MARKET_BEGIN' || state === 'PRE_MARKET_END' || state === 'AFTER_HOURS_BEGIN' || state === 'AFTER_HOURS_END') return 'ETH'
+  return undefined
+}
+
+export function orderSubmissionSessionFailureReason(input: {
+  ticker: string
+  marketState?: string
+  orderSession: string
+  now?: Date
+}): string | undefined {
+  const state = input.marketState ?? inferLlmGateMarketState(input.ticker, input.now)
+  if (shouldSkipUsClosedLlm({ ticker: input.ticker, marketState: state, now: input.now })) {
+    return `当前为美股周末、节假日或休市状态（${String(state || '不可用')}），禁止提交真实订单。`
+  }
+  const normalized = normalizeMarketState(state)
+  if (isOvernightState(normalized)) return '美股夜盘仅允许策略研究，当前版本禁止提交真实订单。'
+  const currentOrderSession = orderSessionForMarketState(normalized)
+  if (!currentOrderSession) return `当前市场状态 ${String(state || '不可用')} 不支持提交真实订单。`
+  if (currentOrderSession !== input.orderSession) {
+    return `订单时段为 ${input.orderSession}，当前市场时段要求 ${currentOrderSession}，请重新生成订单。`
+  }
   return undefined
 }
 
@@ -58,6 +101,11 @@ function isUsTicker(ticker: string): boolean {
 function isOvernightState(marketState?: string): boolean {
   const state = normalizeMarketState(marketState)
   return state === 'OVERNIGHT' || state === 'NIGHT' || state === 'NIGHT_OPEN'
+}
+
+function isClosedState(marketState?: string): boolean {
+  const state = normalizeMarketState(marketState)
+  return state === 'CLOSED' || state === 'NONE' || state === 'REST'
 }
 
 function isHongKongClosedGateTicker(ticker: string): boolean {
@@ -100,6 +148,7 @@ function normalizeMarketState(marketState?: string): string {
   if (compact.includes('POSTMARKET') || compact.includes('AFTERHOURS')) return 'AFTER_HOURS_BEGIN'
   if (compact === 'TRADING' || compact === 'NORMAL' || compact === 'REGULAR') return 'RTH'
   if (compact === '0' || compact === 'CLOSE' || compact === 'CLOSED' || compact === 'NOTOPEN') return 'CLOSED'
+  if (compact === 'NONE') return 'NONE'
   if (compact === 'UNAVAILABLE') return 'UNAVAILABLE'
   if (compact === 'HALFTRADE' || compact === 'REST') return 'REST'
   return raw

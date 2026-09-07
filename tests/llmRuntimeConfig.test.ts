@@ -22,7 +22,10 @@ const {
 } = await import('../api/simulation/llmRequestPacing')
 const {
   llmMarketSessionSkipReason,
+  orderSessionForMarketState,
+  orderSubmissionSessionFailureReason,
   shouldSkipHongKongClosedLlm,
+  shouldSkipUsClosedLlm,
   shouldSkipUsOvernightLlm,
 } = await import('../api/simulation/usOvernightLlmGate')
 const {
@@ -68,7 +71,7 @@ describe('llmRuntimeConfigService', () => {
     expect(shouldSkipUsOvernightLlm({ ticker: 'AAPL', marketState: 'PRE_MARKET_BEGIN', disableUsOvernightLlm: true })).toBe(false)
     expect(shouldSkipUsOvernightLlm({ ticker: 'AAPL', marketState: 'PRE_MARKET_END', disableUsOvernightLlm: true })).toBe(false)
     expect(shouldSkipUsOvernightLlm({ ticker: 'AAPL', marketState: 'OVERNIGHT', disableUsOvernightLlm: false })).toBe(false)
-    expect(shouldSkipUsOvernightLlm({ ticker: 'AAPL', marketState: 'OVERNIGHT', disableUsOvernightLlm: true, now: new Date('2026-06-24T08:30:00.000Z') })).toBe(false)
+    expect(shouldSkipUsOvernightLlm({ ticker: 'AAPL', marketState: 'OVERNIGHT', disableUsOvernightLlm: true, now: new Date('2026-06-24T08:30:00.000Z') })).toBe(true)
     expect(shouldSkipUsOvernightLlm({ ticker: '09660', marketState: 'MORNING', disableUsOvernightLlm: true })).toBe(false)
     expect(shouldSkipUsOvernightLlm({ ticker: '07709', marketState: 'PRE_MARKET_HK', disableUsOvernightLlm: true })).toBe(false)
   })
@@ -105,7 +108,44 @@ describe('llmRuntimeConfigService', () => {
       marketState: 'OVERNIGHT',
       disableUsOvernightLlm: true,
       now: new Date('2026-06-24T08:30:00.000Z'),
-    })).toBeUndefined()
+    })).toContain('美股夜盘')
+  })
+
+  it('美股周末和休市始终跳过评估，不受夜盘开关影响', () => {
+    const sunday = new Date('2026-09-06T07:00:00.000Z')
+    expect(shouldSkipUsClosedLlm({ ticker: 'AAPL', marketState: 'CLOSED', now: sunday })).toBe(true)
+    expect(llmMarketSessionSkipReason({
+      ticker: 'AAPL',
+      marketState: 'CLOSED',
+      disableUsOvernightLlm: false,
+      now: sunday,
+    })).toContain('周末、节假日或休市')
+    expect(llmMarketSessionSkipReason({
+      ticker: 'AAPL',
+      disableUsOvernightLlm: false,
+      now: sunday,
+    })).toContain('周末、节假日或休市')
+  })
+
+  it('订单时段只映射盘中和盘前盘后，夜盘与休市禁止真实提交', () => {
+    expect(orderSessionForMarketState('MORNING')).toBe('RTH')
+    expect(orderSessionForMarketState('NORMAL')).toBe('RTH')
+    expect(orderSessionForMarketState('PRE_MARKET_BEGIN')).toBe('ETH')
+    expect(orderSessionForMarketState('PostMarket')).toBe('ETH')
+    expect(orderSessionForMarketState('OVERNIGHT')).toBeUndefined()
+    expect(orderSessionForMarketState('CLOSED')).toBeUndefined()
+    expect(orderSubmissionSessionFailureReason({
+      ticker: 'AAPL',
+      marketState: 'OVERNIGHT',
+      orderSession: 'ETH',
+      now: new Date('2026-06-24T07:30:00.000Z'),
+    })).toContain('夜盘')
+    expect(orderSubmissionSessionFailureReason({
+      ticker: 'AAPL',
+      marketState: 'PRE_MARKET_BEGIN',
+      orderSession: 'RTH',
+      now: new Date('2026-06-24T12:30:00.000Z'),
+    })).toContain('请重新生成订单')
   })
 
   it('Longbridge preflight 缺少 quote 状态时按交易所时区推断 gate', () => {

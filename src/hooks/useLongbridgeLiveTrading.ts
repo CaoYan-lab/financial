@@ -10,7 +10,16 @@ import type {
   LiveSignalLifecycleFilter,
   SimulationHistoryPage,
 } from '../../shared/types'
-import type { LongbridgeLiveRunOnceResponse, LongbridgeLiveTradingDashboardResponse } from '../../shared/longbridgeTypes'
+import type {
+  LongbridgeBrokerOrderSideFilter,
+  LongbridgeBrokerOrdersResponse,
+  LongbridgeBrokerOrderStatusFilter,
+  LongbridgeCombinedOrderDetailResponse,
+  LongbridgeLiveRunOnceResponse,
+  LongbridgeLiveTradingDashboardResponse,
+} from '../../shared/longbridgeTypes'
+import type { ManagedOrderListResponse } from '../../shared/managedOrderTypes'
+import { localizeLongbridgeOrderError } from '../../shared/orderErrorMessages'
 
 type LongbridgeHistoryState = {
   signals?: SimulationHistoryPage<LiveSignalHistoryItem>
@@ -19,9 +28,48 @@ type LongbridgeHistoryState = {
 }
 
 type LongbridgeHistoryKey = keyof LongbridgeHistoryState
+type BrokerOrderFilters = {
+  ticker: string
+  status: LongbridgeBrokerOrderStatusFilter
+  side: LongbridgeBrokerOrderSideFilter
+}
 
 const HISTORY_PAGE_SIZE = 12
+const BROKER_ORDERS_PAGE_SIZE = 12
 const AUTO_REFRESH_MS = 30_000
+const CONTROL_POLL_INTERVAL_MS = 500
+const CONTROL_POLL_ATTEMPTS = 60
+
+function isDashboardResponse(payload: unknown): payload is LongbridgeLiveTradingDashboardResponse {
+  if (!payload || typeof payload !== 'object') return false
+  const dashboard = payload as Partial<LongbridgeLiveTradingDashboardResponse>
+  return Boolean(
+    dashboard.engine
+    && Array.isArray(dashboard.signals)
+    && Array.isArray(dashboard.pendingOrders)
+    && dashboard.candidatePool,
+  )
+}
+
+function isQueuedResponse(payload: unknown): payload is { enqueued: true } {
+  return Boolean(
+    payload
+    && typeof payload === 'object'
+    && (payload as { enqueued?: unknown }).enqueued === true,
+  )
+}
+
+function responseError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const error = (payload as { error?: unknown }).error
+  return typeof error === 'string' ? error : undefined
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds)
+  })
+}
 
 export function useLongbridgeLiveTrading() {
   const [data, setData] = useState<LongbridgeLiveTradingDashboardResponse>()
@@ -43,10 +91,26 @@ export function useLongbridgeLiveTrading() {
   const [rejectingOrderId, setRejectingOrderId] = useState<string>()
   const [expiringPendingOrders, setExpiringPendingOrders] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [orderDetail, setOrderDetail] = useState<LongbridgeCombinedOrderDetailResponse>()
+  const [loadingOrderDetailId, setLoadingOrderDetailId] = useState<string>()
+  const [orderDetailError, setOrderDetailError] = useState<string>()
+  const [brokerOrders, setBrokerOrders] = useState<LongbridgeBrokerOrdersResponse>()
+  const [brokerOrdersPage, setBrokerOrdersPageState] = useState(1)
+  const [brokerOrderTickerFilter, setBrokerOrderTickerFilterState] = useState('ALL')
+  const [brokerOrderStatusFilter, setBrokerOrderStatusFilterState] = useState<LongbridgeBrokerOrderStatusFilter>('ALL')
+  const [brokerOrderSideFilter, setBrokerOrderSideFilterState] = useState<LongbridgeBrokerOrderSideFilter>('ALL')
+  const [managedOrders, setManagedOrders] = useState<ManagedOrderListResponse>()
+  const [cancelingManagedOrderId, setCancelingManagedOrderId] = useState<string>()
   const [running, setRunning] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string>()
   const dashboardRefreshInFlight = useRef(false)
+  const brokerOrdersPageRef = useRef(brokerOrdersPage)
+  const brokerOrderFiltersRef = useRef<BrokerOrderFilters>({
+    ticker: brokerOrderTickerFilter,
+    status: brokerOrderStatusFilter,
+    side: brokerOrderSideFilter,
+  })
   const historyPagesRef = useRef(historyPages)
   const historyFiltersRef = useRef({
     pendingOrderStatusFilter,
@@ -65,11 +129,26 @@ export function useLongbridgeLiveTrading() {
 
   const refreshDashboard = useCallback(async () => {
     const response = await fetch('/api/longbridge/live-trading/dashboard')
-    const payload = await response.json()
-    if (!response.ok) throw new Error(payload?.error ?? `Longbridge live dashboard request failed with HTTP ${response.status}.`)
-    setData(payload as LongbridgeLiveTradingDashboardResponse)
+    const payload: unknown = await response.json()
+    if (!response.ok) throw new Error(responseError(payload) ?? `Longbridge live dashboard request failed with HTTP ${response.status}.`)
+    if (!isDashboardResponse(payload)) throw new Error('长桥实盘看板返回内容不完整。')
+    setData(payload)
     setError(undefined)
-    return payload as LongbridgeLiveTradingDashboardResponse
+    return payload
+  }, [])
+
+  const waitForDashboard = useCallback(async (expectedRunning?: boolean) => {
+    for (let attempt = 0; attempt < CONTROL_POLL_ATTEMPTS; attempt += 1) {
+      await wait(CONTROL_POLL_INTERVAL_MS)
+      const response = await fetch('/api/longbridge/live-trading/dashboard')
+      if (!response.ok) continue
+      const payload: unknown = await response.json().catch(() => undefined)
+      if (!isDashboardResponse(payload)) continue
+      if (expectedRunning !== undefined && payload.engine.running !== expectedRunning) continue
+      setData(payload)
+      return payload
+    }
+    throw new Error('长桥控制指令已提交，但等待状态更新超时。')
   }, [])
 
   const loadHistory = useCallback(async (kind: LongbridgeHistoryKey, page = 1, pageSize = HISTORY_PAGE_SIZE) => {
@@ -104,6 +183,66 @@ export function useLongbridgeLiveTrading() {
     }
   }, [])
 
+  const loadManagedOrders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/longbridge/live-trading/managed-orders')
+      const payload = await response.json() as ManagedOrderListResponse
+      if (!response.ok || !payload.ok) throw new Error(payload.error ?? '长桥系统挂单读取失败。')
+      setManagedOrders(payload)
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '长桥系统挂单读取失败。')
+      return undefined
+    }
+  }, [])
+
+  const loadBrokerOrders = useCallback(async (
+    page = 1,
+    pageSize = BROKER_ORDERS_PAGE_SIZE,
+    filters = brokerOrderFiltersRef.current,
+  ) => {
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        ticker: filters.ticker,
+        status: filters.status,
+        side: filters.side,
+      })
+      const response = await fetch(`/api/longbridge/live-trading/orders?${params.toString()}`, {
+        signal: AbortSignal.timeout(30_000),
+      })
+      const payload = await response.json().catch(() => undefined) as LongbridgeBrokerOrdersResponse | undefined
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? '长桥券商订单清单加载失败。')
+      setBrokerOrders(payload)
+      setError(undefined)
+      return payload
+    } catch (requestError) {
+      setError(localizeLongbridgeOrderError(
+        requestError instanceof Error ? requestError.message : '长桥券商订单清单加载失败。',
+      ))
+      return undefined
+    }
+  }, [])
+
+  const setBrokerOrdersPage = useCallback((page: number) => {
+    const nextPage = Math.max(1, page)
+    brokerOrdersPageRef.current = nextPage
+    setBrokerOrdersPageState(nextPage)
+    return loadBrokerOrders(nextPage, BROKER_ORDERS_PAGE_SIZE)
+  }, [loadBrokerOrders])
+
+  const setBrokerOrderFilters = useCallback((patch: Partial<BrokerOrderFilters>) => {
+    const next = { ...brokerOrderFiltersRef.current, ...patch }
+    brokerOrderFiltersRef.current = next
+    setBrokerOrderTickerFilterState(next.ticker)
+    setBrokerOrderStatusFilterState(next.status)
+    setBrokerOrderSideFilterState(next.side)
+    brokerOrdersPageRef.current = 1
+    setBrokerOrdersPageState(1)
+    return loadBrokerOrders(1, BROKER_ORDERS_PAGE_SIZE, next)
+  }, [loadBrokerOrders])
+
   const refreshAll = useCallback(async () => {
     if (dashboardRefreshInFlight.current) return undefined
     dashboardRefreshInFlight.current = true
@@ -112,10 +251,12 @@ export function useLongbridgeLiveTrading() {
       const payload = await refreshDashboard()
       const currentHistoryPages = historyPagesRef.current
       await Promise.all([
+        loadManagedOrders(),
         loadHistory('signals', currentHistoryPages.signals, HISTORY_PAGE_SIZE),
         loadHistory('pending-orders', currentHistoryPages['pending-orders'], HISTORY_PAGE_SIZE),
         loadHistory('candidate-pool', currentHistoryPages['candidate-pool'], HISTORY_PAGE_SIZE),
       ])
+      await loadBrokerOrders(brokerOrdersPageRef.current, BROKER_ORDERS_PAGE_SIZE)
       return payload
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '长桥实盘状态加载失败。')
@@ -124,7 +265,7 @@ export function useLongbridgeLiveTrading() {
       dashboardRefreshInFlight.current = false
       setRefreshing(false)
     }
-  }, [loadHistory, refreshDashboard])
+  }, [loadBrokerOrders, loadHistory, loadManagedOrders, refreshDashboard])
 
   const runOnce = useCallback(async (symbol = 'AAPL.US') => {
     setRunning(true)
@@ -137,6 +278,11 @@ export function useLongbridgeLiveTrading() {
       })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload?.error ?? `Longbridge live run-once request failed with HTTP ${response.status}.`)
+      if (isQueuedResponse(payload)) {
+        await waitForDashboard()
+        await refreshAll()
+        return undefined
+      }
       const result = payload as LongbridgeLiveRunOnceResponse
       setLastRun(result)
       await refreshAll()
@@ -151,16 +297,21 @@ export function useLongbridgeLiveTrading() {
     } finally {
       setRunning(false)
     }
-  }, [refreshAll])
+  }, [refreshAll, waitForDashboard])
 
   const start = useCallback(async () => {
     setRunning(true)
     setError(undefined)
     try {
       const response = await fetch('/api/longbridge/live-trading/start', { method: 'POST' })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload?.error ?? `Longbridge live start request failed with HTTP ${response.status}.`)
-      const result = payload as LongbridgeLiveTradingDashboardResponse
+      const payload: unknown = await response.json()
+      if (!response.ok) throw new Error(responseError(payload) ?? `Longbridge live start request failed with HTTP ${response.status}.`)
+      const result = isDashboardResponse(payload)
+        ? payload
+        : isQueuedResponse(payload)
+          ? await waitForDashboard(true)
+          : undefined
+      if (!result) throw new Error('长桥实盘启动接口返回内容不完整。')
       setData(result)
       await refreshAll()
       if (!result.engine.running && result.engine.lastError) setError(result.engine.lastError)
@@ -171,25 +322,31 @@ export function useLongbridgeLiveTrading() {
     } finally {
       setRunning(false)
     }
-  }, [refreshAll])
+  }, [refreshAll, waitForDashboard])
 
   const stop = useCallback(async () => {
     setRunning(true)
     setError(undefined)
     try {
       const response = await fetch('/api/longbridge/live-trading/stop', { method: 'POST' })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload?.error ?? `Longbridge live stop request failed with HTTP ${response.status}.`)
-      setData(payload as LongbridgeLiveTradingDashboardResponse)
+      const payload: unknown = await response.json()
+      if (!response.ok) throw new Error(responseError(payload) ?? `Longbridge live stop request failed with HTTP ${response.status}.`)
+      const result = isDashboardResponse(payload)
+        ? payload
+        : isQueuedResponse(payload)
+          ? await waitForDashboard(false)
+          : undefined
+      if (!result) throw new Error('长桥实盘停止接口返回内容不完整。')
+      setData(result)
       await refreshAll()
-      return payload as LongbridgeLiveTradingDashboardResponse
+      return result
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '长桥实盘评估停止失败。')
       return undefined
     } finally {
       setRunning(false)
     }
-  }, [refreshAll])
+  }, [refreshAll, waitForDashboard])
 
   const setHistoryPage = useCallback((kind: LongbridgeHistoryKey, page: number) => {
     const nextPage = Math.max(1, page)
@@ -294,12 +451,43 @@ export function useLongbridgeLiveTrading() {
       await refreshAll()
       return payload
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '长桥订单确认失败。')
+      setError(localizeLongbridgeOrderError(
+        requestError instanceof Error ? requestError.message : '长桥订单确认失败。',
+      ))
       return undefined
     } finally {
       setConfirmingOrderId(undefined)
     }
   }, [refreshAll])
+
+  const loadOrderDetail = useCallback(async (orderId: string, submittedAt?: string) => {
+    setLoadingOrderDetailId(orderId)
+    setOrderDetail(undefined)
+    setOrderDetailError(undefined)
+    try {
+      const params = new URLSearchParams()
+      if (submittedAt) params.set('submittedAt', submittedAt)
+      const suffix = params.size ? `?${params.toString()}` : ''
+      const response = await fetch(`/api/longbridge/live-trading/orders/${encodeURIComponent(orderId)}/detail${suffix}`)
+      const payload = await response.json().catch(() => undefined) as LongbridgeCombinedOrderDetailResponse | undefined
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? `长桥订单详情请求失败，HTTP ${response.status}。`)
+      }
+      setOrderDetail(payload)
+      return payload
+    } catch (requestError) {
+      setOrderDetailError(requestError instanceof Error ? requestError.message : '长桥订单详情加载失败。')
+      return undefined
+    } finally {
+      setLoadingOrderDetailId(undefined)
+    }
+  }, [])
+
+  const clearOrderDetail = useCallback(() => {
+    setOrderDetail(undefined)
+    setOrderDetailError(undefined)
+    setLoadingOrderDetailId(undefined)
+  }, [])
 
   const rejectOrder = useCallback(async (id: string) => {
     setRejectingOrderId(id)
@@ -349,7 +537,26 @@ export function useLongbridgeLiveTrading() {
       })
       const payload = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(payload?.error ?? `Longbridge live settings update failed with HTTP ${response.status}.`)
-      await refreshAll()
+      if (
+        payload
+        && typeof payload === 'object'
+        && typeof payload.autoSubmitEnabled === 'boolean'
+      ) {
+        setData((current) => current
+          ? {
+              ...current,
+              autoSubmitEnabled: payload.autoSubmitEnabled,
+              liveTradingEnabled:
+                typeof payload.liveTradingEnabled === 'boolean'
+                  ? payload.liveTradingEnabled
+                  : current.liveTradingEnabled,
+              updatedAt:
+                typeof payload.updatedAt === 'string'
+                  ? payload.updatedAt
+                  : current.updatedAt,
+            }
+          : current)
+      }
       setError(undefined)
       return payload
     } catch (requestError) {
@@ -358,7 +565,59 @@ export function useLongbridgeLiveTrading() {
     } finally {
       setSavingSettings(false)
     }
-  }, [refreshAll])
+  }, [])
+
+  const updateAutoCancel = useCallback(async (autoCancelEnabled: boolean) => {
+    setSavingSettings(true)
+    try {
+      const response = await fetch('/api/longbridge/live-trading/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoSubmitEnabled: data?.autoSubmitEnabled === true,
+          autoCancelEnabled,
+        }),
+      })
+      const payload = await response.json().catch(() => undefined)
+      if (!response.ok) throw new Error(payload?.error ?? `长桥自动撤单设置失败，状态码 ${response.status}。`)
+      setData((current) => current
+        ? {
+            ...current,
+            autoCancelEnabled: payload?.autoCancelEnabled === true,
+            updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : current.updatedAt,
+          }
+        : current)
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '长桥自动撤单开关更新失败。')
+      return undefined
+    } finally {
+      setSavingSettings(false)
+    }
+  }, [data?.autoSubmitEnabled])
+
+  const cancelManagedOrder = useCallback(async (orderId: string) => {
+    setCancelingManagedOrderId(orderId)
+    try {
+      const response = await fetch(`/api/longbridge/live-trading/orders/${encodeURIComponent(orderId)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cancelRequestId: crypto.randomUUID(),
+          reason: '用户在系统挂单监管页面手工撤单',
+        }),
+      })
+      const payload = await response.json().catch(() => undefined)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? '长桥撤单失败。')
+      await loadManagedOrders()
+      return payload
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '长桥撤单失败。')
+      return undefined
+    } finally {
+      setCancelingManagedOrderId(undefined)
+    }
+  }, [loadManagedOrders])
 
   useEffect(() => {
     refreshAll().catch(() => undefined)
@@ -380,6 +639,16 @@ export function useLongbridgeLiveTrading() {
     rejectingOrderId,
     expiringPendingOrders,
     savingSettings,
+    orderDetail,
+    loadingOrderDetailId,
+    orderDetailError,
+    managedOrders,
+    brokerOrders,
+    brokerOrdersPage,
+    brokerOrderTickerFilter,
+    brokerOrderStatusFilter,
+    brokerOrderSideFilter,
+    cancelingManagedOrderId,
     running,
     refreshing,
     error,
@@ -403,8 +672,15 @@ export function useLongbridgeLiveTrading() {
     setSignalLifecycleFilter,
     setCandidatePoolHistoryFilter,
     confirmOrder,
+    loadOrderDetail,
+    loadBrokerOrders,
+    setBrokerOrdersPage,
+    setBrokerOrderFilters,
+    clearOrderDetail,
     rejectOrder,
     batchExpirePendingOrders,
     updateAutoSubmit,
+    updateAutoCancel,
+    cancelManagedOrder,
   }
 }

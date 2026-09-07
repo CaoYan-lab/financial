@@ -1,14 +1,26 @@
-let autoSubmitEnabled = process.env.LONGBRIDGE_AUTO_SUBMIT_ENABLED === 'true'
+import type { BrokerExecutionSettings } from '../../shared/managedOrderTypes.js'
+import {
+  defaultBrokerExecutionSettings,
+  loadBrokerExecutionSettings,
+  saveBrokerExecutionSettings,
+} from '../cloud/state/brokerExecutionSettingsStore.js'
+
+let controls = defaultBrokerExecutionSettings('longbridge')
 
 export function getLongbridgeLiveSettings() {
   return {
     liveTradingEnabled: process.env.LONGBRIDGE_LIVE_TRADING_ENABLED === 'true',
-    autoSubmitEnabled,
+    ...controls,
     updatedAt: new Date().toISOString(),
   }
 }
 
-export function updateLongbridgeLiveSettings(input: { autoSubmitEnabled?: boolean }) {
-  if (typeof input.autoSubmitEnabled === 'boolean') autoSubmitEnabled = input.autoSubmitEnabled
+export async function hydrateLongbridgeLiveSettings() {
+  controls = await loadBrokerExecutionSettings('longbridge')
+  return getLongbridgeLiveSettings()
+}
+
+export async function updateLongbridgeLiveSettings(input: Partial<BrokerExecutionSettings>) {
+  controls = await saveBrokerExecutionSettings('longbridge', { ...controls, ...input })
   return getLongbridgeLiveSettings()
 }

@@ -21,7 +21,7 @@ export default function LongbridgeWorkbenchPlaceholder() {
                 长桥 · 独立数据适配器
               </span>
               <h1 className="mt-5 text-5xl font-black tracking-[-0.06em] text-slate-950 md:text-6xl">
-                Longbridge 量化交易工作台
+                长桥量化交易工作台
               </h1>
               <p className="mt-5 text-lg leading-8 text-slate-600">
                 界面结构对齐 Futu 工作台，但数据链路完全独立：行情、K 线、盘口、持仓、账户和订单能力只从 Longbridge Skill / CLI / MCP Adapter 进入。
@@ -38,7 +38,7 @@ export default function LongbridgeWorkbenchPlaceholder() {
                 刷新长桥数据
               </button>
               <div className={`rounded-2xl border px-4 py-3 text-sm font-bold ${authReady ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
-                {authReady ? 'OAuth 已登录，真实数据可用' : '等待 Longbridge OAuth 授权'}
+                {authReady ? '账户授权已就绪，真实数据可用' : '等待长桥账户授权'}
               </div>
             </div>
           </div>
@@ -151,9 +151,9 @@ function PanelLink({ to, label }: { to: string; label: string }) {
 }
 
 function PositionsTable({ positions, loading, accountReady }: { positions: LongbridgePosition[]; loading: boolean; accountReady: boolean }) {
-  if (loading) return <EmptyState title="正在读取 Longbridge Adapter" description="加载 CLI、OAuth、Skill 状态和账户数据。" />
-  if (!accountReady) return <EmptyState title="持仓未授权" description="Longbridge OAuth 未登录或账户权限不可用，暂时无法读取 positions。" />
-  if (!positions.length) return <EmptyState title="暂无持仓" description="Longbridge positions 已授权并返回成功，当前账户没有股票持仓。" />
+  if (loading) return <EmptyState title="正在读取长桥账户" description="加载 SDK 授权状态和账户数据。" />
+  if (!accountReady) return <EmptyState title="持仓未授权" description="长桥账户授权或持仓读取权限不可用。" />
+  if (!positions.length) return <EmptyState title="暂无持仓" description="长桥持仓接口已授权并返回成功，当前账户没有股票持仓。" />
 
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-100">

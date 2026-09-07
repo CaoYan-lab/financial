@@ -23,7 +23,7 @@ import { attachMarketSessions, latestMarketSessions, loadMarketSessions } from '
 import { loadStrategyMarketData } from '../simulation/realtimeDataAdapter.js'
 import { loadTrendContext } from '../simulation/trendContextService.js'
 import { LLM_SIMULATION_UNIVERSE, isInLlmSimulationUniverse, llmSimulationTickers, llmUniverseItem } from '../simulation/simulationUniverse.js'
-import { llmMarketSessionSkipReason } from '../simulation/usOvernightLlmGate.js'
+import { llmMarketSessionSkipReason, orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
 import { liveOrderQueueService } from './liveOrderQueueService.js'
 import { loadLiveAccountDashboard, parseMoney } from './liveAccountService.js'
 import { requestLiveTradingDecision } from './liveTradingDecisionService.js'
@@ -32,6 +32,8 @@ import { buildRiskModelDescription, getActiveLivePortfolioReviewPrompt, getTrade
 import { liveCandidatePoolService } from './liveCandidatePoolService.js'
 import { requestLivePortfolioReviewDecision } from './livePortfolioReviewDecisionService.js'
 import { getFutuLiveSettings } from './liveSettings.js'
+import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
+import { hasManagedOrderConflict } from './managedOrderPolicy.js'
 
 const DEFAULT_RUN_INTERVAL_MS = 60_000
 const LIVE_TIMER_PHASE_OFFSET_MS = Number(process.env.LIVE_TRADING_TIMER_OFFSET_MS || 30_000)
@@ -63,8 +65,7 @@ class LiveTradingEngine {
       submittedOrders: liveOrderQueueService.latestSubmittedOrders(),
       skippedTickers: liveOrderQueueService.skippedTickers(),
       warnings: account.warnings,
-      liveTradingEnabled: getFutuLiveSettings().liveTradingEnabled,
-      autoSubmitEnabled: getFutuLiveSettings().autoSubmitEnabled,
+      ...getFutuLiveSettings(),
       candidatePool: liveCandidatePoolService.snapshot(executionMode),
     }
   }
@@ -121,8 +122,7 @@ class LiveTradingEngine {
         submittedOrders: liveOrderQueueService.latestSubmittedOrders(),
         skippedTickers: liveOrderQueueService.skippedTickers(),
         warnings: account.warnings,
-        liveTradingEnabled: getFutuLiveSettings().liveTradingEnabled,
-        autoSubmitEnabled: getFutuLiveSettings().autoSubmitEnabled,
+        ...getFutuLiveSettings(),
         candidatePool: liveCandidatePoolService.snapshot(executionMode),
       }
     })
@@ -166,6 +166,7 @@ class LiveTradingEngine {
       )
     }
     const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
+    const managedOpenOrders = await listManagedOrders('futu', true)
     const positions = stockPositionsByTicker(account.positions)
     const decisionConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
     const tradeStrategyConfig = getTradeStrategyRuntimeConfig('live')
@@ -257,6 +258,7 @@ class LiveTradingEngine {
         dataWindow: tickerDataWindow,
         riskModel: buildRiskModelDescription('live'),
         trendContext,
+        managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === ticker.toUpperCase()),
       })
       logger.info(
         {
@@ -304,6 +306,16 @@ class LiveTradingEngine {
       )
       if (!decision.approved || decision.action === 'HOLD') {
         logger.info({ event: 'live.order.not_created', ...decisionLogMeta(ticker), signalId: signal.id, action: decision.action, approved: decision.approved, reason: !decision.approved ? 'LLM decision not approved' : 'HOLD decision' }, 'Live order not created')
+        continue
+      }
+      const managedConflict = hasManagedOrderConflict(managedOpenOrders, ticker)
+      if (managedConflict) {
+        liveOrderQueueService.recordSkipped(
+          ticker,
+          `存在未终态系统挂单 ${managedConflict.orderId}，本轮禁止生成重复或反向订单。`,
+          { signalId: signal.id, side: decision.action },
+        )
+        skippedCount += 1
         continue
       }
       if (executionMode === 'candidate_pool') {
@@ -394,12 +406,23 @@ class LiveTradingEngine {
           candidates: reviewCandidates,
           account,
           positions: account.positions,
-          pendingOrders: liveOrderQueueService.activePendingOrders().map((order) => ({
-            id: order.id,
-            ticker: order.intent.ticker,
-            side: order.intent.side,
-            createdAt: order.createdAt,
-          })),
+          pendingOrders: [
+            ...liveOrderQueueService.activePendingOrders().map((order) => ({
+              id: order.id,
+              ticker: order.intent.ticker,
+              side: order.intent.side,
+              createdAt: order.createdAt,
+            })),
+            ...managedOpenOrders.map((order) => ({
+              id: `${order.platform}:${order.orderId}`,
+              ticker: order.ticker,
+              side: order.side,
+              createdAt: order.submittedAt,
+              brokerOrderId: order.orderId,
+              status: order.status,
+              remainingQuantity: order.remainingQuantity,
+            })),
+          ],
           constraints: {
             maxPromotedOrdersPerReview: portfolioPreset.maxPromotedOrdersPerReview,
             minSignalConfirmations: portfolioPreset.minSignalConfirmations,
@@ -750,11 +773,7 @@ export function selectOrderTypeForDecision(
 }
 
 export function orderSessionForMarket(marketSession?: MarketSessionStatus): LiveOrderIntent['orderSession'] | undefined {
-  if (!marketSession) return undefined
-  if (marketSession.state === 'MORNING' || marketSession.state === 'AFTERNOON' || marketSession.state === 'AUCTION' || marketSession.state === 'TRADE_AT_LAST') return 'RTH'
-  if (marketSession.state === 'PRE_MARKET_BEGIN' || marketSession.state === 'PRE_MARKET_END' || marketSession.state === 'AFTER_HOURS_BEGIN' || marketSession.state === 'AFTER_HOURS_END') return 'ETH'
-  if (marketSession.state === 'OVERNIGHT' || marketSession.state === 'NIGHT' || marketSession.state === 'NIGHT_OPEN') return 'OVERNIGHT'
-  return undefined
+  return orderSessionForMarketState(marketSession?.state)
 }
 
 export function closedHongKongMarketFailureReason(ticker: string, marketSession?: MarketSessionStatus): string | undefined {

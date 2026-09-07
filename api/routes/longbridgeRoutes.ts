@@ -7,6 +7,10 @@ import { longbridgeOrderQueueService } from '../longbridge/longbridgeOrderQueueS
 import { longbridgePersistence } from '../longbridge/longbridgePersistence.js'
 import { getLongbridgeLiveSettings, updateLongbridgeLiveSettings } from '../longbridge/longbridgeLiveSettings.js'
 import { repairUnavailableTrendSignals } from '../longbridge/longbridgeTrendRepairService.js'
+import { listManagedOrderEvents, listManagedOrders } from '../cloud/state/managedOrderStore.js'
+import { requestManagedOrderCancel } from '../live/managedOrderSupervisor.js'
+import { loadLongbridgeBrokerOrders, loadLongbridgeCombinedOrderDetail } from '../longbridge/longbridgeLiveOrderService.js'
+import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter } from '../../shared/longbridgeTypes.js'
 import type { LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalLifecycleFilter } from '../../shared/types.js'
 
 const router = Router()
@@ -65,8 +69,12 @@ router.get('/live-trading/settings', (_req, res) => {
   res.json(getLongbridgeLiveSettings())
 })
 
-router.put('/live-trading/settings', (req, res) => {
-  res.json(updateLongbridgeLiveSettings({ autoSubmitEnabled: req.body?.autoSubmitEnabled === true }))
+router.put('/live-trading/settings', async (req, res, next) => {
+  try {
+    res.json(await updateLongbridgeLiveSettings(executionSettingsPatch(req.body)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 router.post('/live-trading/start', async (_req, res, next) => {
@@ -152,6 +160,68 @@ router.post('/live-trading/pending-orders/batch-expire', (req, res) => {
   res.json({ ok: true, expiredCount: expired.length, orders: expired })
 })
 
+router.get('/live-trading/managed-orders', async (_req, res, next) => {
+  try {
+    const [orders, events] = await Promise.all([
+      listManagedOrders('longbridge'),
+      listManagedOrderEvents('longbridge', undefined, 100),
+    ])
+    res.json({ ok: true, orders, events })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/live-trading/orders', async (req, res, next) => {
+  try {
+    res.json(await loadLongbridgeBrokerOrders({
+      page: Number(req.query.page),
+      pageSize: Number(req.query.pageSize),
+      startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
+      endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
+      ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+      status: typeof req.query.status === 'string' ? req.query.status as LongbridgeBrokerOrderStatusFilter : undefined,
+      side: typeof req.query.side === 'string' ? req.query.side as LongbridgeBrokerOrderSideFilter : undefined,
+    }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/live-trading/orders/:orderId/detail', async (req, res, next) => {
+  try {
+    const result = await loadLongbridgeCombinedOrderDetail({
+      orderId: req.params.orderId,
+      pendingOrderId: typeof req.query.pendingOrderId === 'string' ? req.query.pendingOrderId : undefined,
+      submittedAt: typeof req.query.submittedAt === 'string' ? req.query.submittedAt : undefined,
+    })
+    res.status(result.ok ? 200 : 400).json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/live-trading/orders/:orderId/cancel', async (req, res, next) => {
+  try {
+    const result = await requestManagedOrderCancel({
+      platform: 'longbridge',
+      orderId: req.params.orderId,
+      requestId:
+        typeof req.body?.cancelRequestId === 'string'
+          ? req.body.cancelRequestId
+          : undefined,
+      source: 'manual',
+      reason:
+        typeof req.body?.reason === 'string'
+          ? req.body.reason
+          : '用户手工撤单',
+    })
+    res.status(result.ok ? 200 : 400).json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.put('/live-trading/llm-config', (req, res) => {
   const concurrency = Number(req.body?.concurrency)
   res.json(
@@ -179,3 +249,26 @@ router.put('/live-trading/trade-strategy-config', (req, res, next) => {
 })
 
 export default router
+
+function executionSettingsPatch(body: Record<string, unknown> | undefined) {
+  return {
+    ...(typeof body?.autoSubmitEnabled === 'boolean'
+      ? { autoSubmitEnabled: body.autoSubmitEnabled }
+      : {}),
+    ...(typeof body?.autoCancelEnabled === 'boolean'
+      ? { autoCancelEnabled: body.autoCancelEnabled }
+      : {}),
+    ...(typeof body?.marketableLimitTimeoutSeconds === 'number'
+      ? { marketableLimitTimeoutSeconds: body.marketableLimitTimeoutSeconds }
+      : {}),
+    ...(typeof body?.limitTimeoutSeconds === 'number'
+      ? { limitTimeoutSeconds: body.limitTimeoutSeconds }
+      : {}),
+    ...(typeof body?.brokerSyncIntervalSeconds === 'number'
+      ? { brokerSyncIntervalSeconds: body.brokerSyncIntervalSeconds }
+      : {}),
+    ...(typeof body?.modelReviewIntervalSeconds === 'number'
+      ? { modelReviewIntervalSeconds: body.modelReviewIntervalSeconds }
+      : {}),
+  }
+}

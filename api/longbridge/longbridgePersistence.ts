@@ -105,6 +105,11 @@ class LongbridgePersistence {
     return [...this.pendingOrders]
   }
 
+  latestSubmittedOrders() {
+    if (!PERSISTENCE_DISABLED) return this.readLatest('submitted_orders', MAX_ITEMS)
+    return []
+  }
+
   activePendingOrders() {
     return this.latestPendingOrders().filter((order) => order.status === 'PENDING_CONFIRMATION' || order.status === 'CONFIRMED_SUBMITTING')
   }
@@ -117,6 +122,15 @@ class LongbridgePersistence {
   findPendingOrder(id: string) {
     if (!PERSISTENCE_DISABLED) return this.findByPayloadField<LivePendingOrder>('pending_orders', 'id', id)
     return this.pendingOrders.find((order) => order.id === id)
+  }
+
+  findPendingOrderByBrokerOrderId(orderId: string) {
+    if (!orderId) return undefined
+    if (!PERSISTENCE_DISABLED) {
+      const submitted = this.findByPayloadField<LiveOrderResult>('submitted_orders', 'orderId', orderId)
+      return submitted?.pendingOrderId ? this.findPendingOrder(submitted.pendingOrderId) : undefined
+    }
+    return this.latestPendingOrders().find((order) => order.submittedOrder?.orderId === orderId)
   }
 
   paginate<T>(items: T[], page = 1, pageSize = 20): SimulationHistoryPage<T> {

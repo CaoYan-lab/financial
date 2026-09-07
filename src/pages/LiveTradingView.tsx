@@ -5,11 +5,13 @@ import { AlertTriangle, CheckCircle2, ChevronDown, RefreshCw, ShieldAlert } from
 import AppNav from '@/components/common/AppNav'
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import Badge from '@/components/common/Badge'
+import BrokerOrdersTable from '@/components/BrokerOrdersTable'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
+import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
 import { useUiStore } from '@/stores/uiStore'
 import { maskAssetValue } from '@/utils/displayText'
-import { displayOrderPriceWithType, displayOrderSession, displaySignalModel, displaySide } from '@/utils/simulationDisplay'
+import { displayOrderPriceWithType, displayOrderSession, displayOrderType, displaySignalModel, displaySide } from '@/utils/simulationDisplay'
 import type { LiveCandidatePoolHistoryFilter, LiveCandidatePoolItem, LiveCandidatePoolSnapshot, LivePendingOrder, LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalHistoryItem, LiveSignalLifecycleFilter, LiveSkippedTicker, SimulationHistoryPage, TradeExecutionMode, UpdateTradeStrategyConfigRequest } from '../../shared/types'
 
 const PENDING_STATUS_FILTERS: Array<{ value: LivePendingOrderStatusFilter; label: string }> = [
@@ -55,6 +57,19 @@ const CANDIDATE_POOL_HISTORY_FILTERS: Array<{ value: LiveCandidatePoolHistoryFil
   { value: 'ACTIVE', label: '生效中' },
   { value: 'INACTIVE', label: '已失效' },
 ]
+const FUTU_ORDER_STATUS_FILTERS = [
+  { value: 'ALL', label: '全部' },
+  { value: 'PENDING', label: '进行中' },
+  { value: 'FILLED', label: '全部成交' },
+  { value: 'PARTIALLY_FILLED', label: '部分成交' },
+  { value: 'CANCELED', label: '已撤单' },
+  { value: 'FAILED', label: '失败' },
+]
+const FUTU_ORDER_SIDE_FILTERS = [
+  { value: 'ALL', label: '全部' },
+  { value: 'BUY', label: '买入' },
+  { value: 'SELL', label: '卖出' },
+]
 
 export default function LiveTradingView() {
   const {
@@ -62,6 +77,11 @@ export default function LiveTradingView() {
     history,
     tradeStrategyConfig,
     futuOrders,
+    futuOrderTickerFilter,
+    futuOrderStatusFilter,
+    futuOrderSideFilter,
+    managedOrders,
+    cancelingManagedOrderId,
     pendingOrderStatusFilter,
     pendingOrderTickerFilter,
     pendingOrderSideFilter,
@@ -90,12 +110,16 @@ export default function LiveTradingView() {
     setSignalLifecycleFilter,
     setCandidatePoolHistoryFilter,
     setFutuOrdersPage,
+    setFutuOrderFilters,
+    loadFutuOrders,
     saveLlmConfig,
     saveTradeStrategyConfig,
     confirmOrder,
     rejectOrder,
     batchExpirePendingOrders,
     updateAutoSubmit,
+    updateAutoCancel,
+    cancelManagedOrder,
   } = useLiveTrading()
     const assetPrivacyHidden = useUiStore((state) => state.assetPrivacyHidden)
   const [selectedModel, setSelectedModel] = useState('')
@@ -108,7 +132,10 @@ export default function LiveTradingView() {
   const concurrencyValue = selectedConcurrency || runtimeConfig?.concurrency || 1
   const concurrencyOptions = useMemo(() => Array.from({ length: runtimeConfig?.maxConcurrency ?? 1 }, (_, index) => index + 1), [runtimeConfig?.maxConcurrency])
   const pendingOrdersPage = history['pending-orders']
-  const rawPendingOrders = pendingOrdersPage?.items ?? data?.pendingOrders ?? []
+  const rawPendingOrders = useMemo(
+    () => pendingOrdersPage?.items ?? data?.pendingOrders ?? [],
+    [data?.pendingOrders, pendingOrdersPage?.items],
+  )
   const pendingOrders = filterPendingOrders(rawPendingOrders, pendingOrderStatusFilter, pendingOrderTickerFilter, pendingOrderSideFilter)
   const pendingOrdersRenderKey = [
     pendingOrderStatusFilter,
@@ -122,10 +149,17 @@ export default function LiveTradingView() {
     () => pendingOrderTickerFilterItems(data?.universe ?? [], rawPendingOrders),
     [data?.universe, rawPendingOrders],
   )
-  const signalItems = history.signals?.items ?? data?.latestSignals ?? []
+  const signalItems = useMemo(
+    () => history.signals?.items ?? data?.latestSignals ?? [],
+    [data?.latestSignals, history.signals?.items],
+  )
   const signalTickerFilterItems = useMemo(
     () => historySignalTickerFilterItems(data?.universe ?? [], signalItems),
     [data?.universe, signalItems],
+  )
+  const futuOrderTickerFilterItems = useMemo(
+    () => brokerOrderTickerFilterItems(data?.universe ?? [], futuOrders?.orders ?? []),
+    [data?.universe, futuOrders?.orders],
   )
   const activePendingOrders = pendingOrders.filter((order) => order.status === 'PENDING_CONFIRMATION' || order.status === 'CONFIRMED_SUBMITTING')
   const visibleExpirablePendingOrders = pendingOrders.filter((order) => order.status === 'PENDING_CONFIRMATION')
@@ -134,6 +168,7 @@ export default function LiveTradingView() {
   const actionBusy = loading || refreshing
   const liveEnabled = Boolean(data?.liveTradingEnabled)
   const autoSubmitEnabled = Boolean(data?.autoSubmitEnabled)
+  const autoCancelEnabled = Boolean(data?.autoCancelEnabled)
 
   useEffect(() => {
     if (!runtimeConfig) return
@@ -201,6 +236,18 @@ export default function LiveTradingView() {
             <Guard ok={Boolean(data?.account.ok)}>Futu REAL 账户 {data?.account.ok ? '可用' : '不可用'}</Guard>
           </div>
         </section>
+
+        <ManagedOrdersPanel
+          platformLabel="Futu"
+          accent="amber"
+          detailBasePath="/live-trading/orders"
+          data={managedOrders}
+          autoCancelEnabled={autoCancelEnabled}
+          saving={savingSettings}
+          cancelingOrderId={cancelingManagedOrderId}
+          onToggleAutoCancel={updateAutoCancel}
+          onCancel={cancelManagedOrder}
+        />
 
         <section className="grid gap-4 md:grid-cols-5">
           <Metric label="真实账户" value={data?.account.selectedAccountId || 'unavailable'} note="Futu REAL" />
@@ -302,7 +349,8 @@ export default function LiveTradingView() {
             onPageChange={(page) => setHistoryPage('signals', page)}
           />
 
-          <section className="min-w-0 rounded-3xl border border-orange-300/20 bg-white/90 p-6 backdrop-blur">
+          <div className="min-w-0 space-y-6">
+            <section className="min-w-0 rounded-3xl border border-orange-300/20 bg-white/90 p-6 backdrop-blur">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold tracking-[0.25em] text-orange-700">待确认队列</p>
@@ -376,7 +424,7 @@ export default function LiveTradingView() {
                           {livePendingStatusLabel(order.status)}
                         </span>
                       )}
-                      <Link className="rounded-xl bg-white/90 px-3 py-2 text-xs font-bold text-stone-950" to={`/live-trading/orders/${order.id}`}>详情</Link>
+                      <Link className="rounded-xl bg-white/90 px-3 py-2 text-xs font-bold text-stone-950" to={liveOrderDetailPath(order)}>详情</Link>
                     </div>
                   </div>
                   <div className="mt-3 grid gap-3 border-t border-stone-200 pt-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
@@ -411,34 +459,47 @@ export default function LiveTradingView() {
               total={pendingOrdersPage?.total ?? pendingOrders.length}
               onPageChange={(page) => setHistoryPage('pending-orders', page)}
             />
-          </section>
-        </section>
+            </section>
 
-        <section className="grid gap-6 xl:grid-cols-1">
-          <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
-            <p className="text-xs font-semibold tracking-[0.25em] text-amber-700">FUTU REAL ORDERS</p>
-            <h2 className="mt-2 text-2xl font-semibold">实盘订单状态（{futuOrders?.total ?? 0}）</h2>
-            <div className="mt-5 space-y-3">
-              {(futuOrders?.orders ?? []).map((order) => (
-                <div key={order.orderId} className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm">
-                  <div className="flex justify-between gap-3">
-                    <strong>{order.ticker} · {order.orderStatusLabel}</strong>
-                    <span className="text-stone-600">{order.orderId}</span>
-                  </div>
-                  <p className="mt-2 text-stone-600">成交 {order.filledQuantity}/{order.quantity} · {displayOrderPriceWithType(order.price, order.orderType, 'zh')}</p>
-                  <p className="mt-1 text-xs text-stone-500">创建：{formatDateTime(order.createTime)} · 更新：{formatDateTime(order.updatedTime)}</p>
-                  <p className="mt-1 text-xs text-stone-500">费用：{order.feeContext?.feeAmount === null || order.feeContext?.feeAmount === undefined ? order.feeContext?.warning ?? '等待 REAL 回填' : `$${order.feeContext.feeAmount.toFixed(2)}`}</p>
-                </div>
-              ))}
-              {!futuOrders?.orders?.length ? <p className="text-sm text-stone-500">暂无可展示的 Futu REAL 订单。</p> : null}
-            </div>
-            <PaginationControls
+            <BrokerOrdersTable
+              platform="Futu"
+              compact
+              accent="amber"
+              filters={{
+                ticker: futuOrderTickerFilter,
+                status: futuOrderStatusFilter,
+                side: futuOrderSideFilter,
+                tickerItems: futuOrderTickerFilterItems,
+                statusItems: FUTU_ORDER_STATUS_FILTERS,
+                sideItems: FUTU_ORDER_SIDE_FILTERS,
+                onChange: (patch) => void setFutuOrderFilters({
+                  ...(patch.ticker !== undefined ? { ticker: patch.ticker } : {}),
+                  ...(patch.status !== undefined ? { status: patch.status as 'ALL' | 'PENDING' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELED' | 'FAILED' } : {}),
+                  ...(patch.side !== undefined ? { side: patch.side as 'ALL' | 'BUY' | 'SELL' } : {}),
+                }),
+              }}
+              rows={(futuOrders?.orders ?? []).map((order) => ({
+                orderId: order.orderId,
+                ticker: order.ticker,
+                status: order.orderStatusLabel,
+                side: displaySide(order.side, 'zh'),
+                orderType: displayOrderType(order.orderType, 'zh'),
+                quantity: order.quantity,
+                filledQuantity: order.filledQuantity,
+                price: order.price,
+                filledPrice: Number(order.filledQuantity) > 0 ? order.filledAveragePrice : '未成交',
+                session: displayOrderSession(order.orderSession, 'zh'),
+                updatedAt: order.updatedTime,
+                detailHref: `/live-trading/orders/${order.orderId}?ticker=${encodeURIComponent(order.ticker)}&submittedAt=${encodeURIComponent(order.createTime)}`,
+              }))}
               page={futuOrders?.page ?? 1}
               totalPages={futuOrders?.totalPages ?? 1}
               total={futuOrders?.total ?? 0}
+              loading={refreshing}
+              onRefresh={() => void loadFutuOrders(futuOrders?.page ?? 1)}
               onPageChange={setFutuOrdersPage}
             />
-          </section>
+          </div>
         </section>
       </div>
 
@@ -872,6 +933,27 @@ function pendingOrderTickerFilterItems(universe: Array<{ ticker: string; label?:
   ]
 }
 
+function brokerOrderTickerFilterItems(
+  universe: Array<{ ticker: string; label?: string }>,
+  orders: Array<{ ticker: string }>,
+) {
+  const byTicker = new Map<string, string>()
+  for (const item of universe) {
+    const ticker = item.ticker.toUpperCase()
+    byTicker.set(ticker, item.label ? `${ticker} · ${item.label}` : ticker)
+  }
+  for (const order of orders) {
+    const ticker = order.ticker.toUpperCase()
+    if (!byTicker.has(ticker)) byTicker.set(ticker, ticker)
+  }
+  return [
+    { value: 'ALL', label: '全部标的' },
+    ...[...byTicker.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([value, label]) => ({ value, label })),
+  ]
+}
+
 function filterPendingOrders(
   orders: LivePendingOrder[],
   statusFilter: LivePendingOrderStatusFilter,
@@ -1005,6 +1087,13 @@ function historySideLabel(signal: { side: string; reason?: string }) {
 
 function pendingOrderSideLabel(order: LivePendingOrder) {
   return historySideLabel({ side: order.intent.side, reason: order.intent.reason || order.signal.reason })
+}
+
+function liveOrderDetailPath(order: LivePendingOrder) {
+  const params = new URLSearchParams({ ticker: order.intent.ticker })
+  if (order.submittedOrder?.orderId) params.set('brokerOrderId', order.submittedOrder.orderId)
+  if (order.submittedOrder?.submittedAt) params.set('submittedAt', order.submittedOrder.submittedAt)
+  return `/live-trading/orders/${order.id}?${params.toString()}`
 }
 
 function pendingOrderSideTone(order: LivePendingOrder) {

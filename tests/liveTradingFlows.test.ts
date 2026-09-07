@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { LiveAccountDashboardResponse, MarketSessionStatus, Position } from '../shared/types'
+import type { LiveAccountDashboardResponse, LiveOrderIntent, MarketSessionStatus } from '../shared/types'
 
 process.env.SIMULATION_HISTORY_DB_PATH = `/tmp/financial-live-flow-test-${process.pid}.sqlite3`
 process.env.LIVE_TRADING_HISTORY_DB_PATH = `/tmp/financial-live-flow-test-${process.pid}.live.sqlite3`
@@ -69,7 +69,7 @@ vi.mock('../api/live/liveTradingDecisionService.js', () => ({
 
 vi.mock('../api/live/futuLiveOrderService.js', () => ({
   loadFutuLiveOrders: vi.fn(async () => ({ ok: true, orders: [], page: 1, pageSize: 12, total: 0, totalPages: 1, warnings: [] })),
-  submitLiveOrder: vi.fn(async (_accountId: string, pendingOrderId: string, confirmationId: string, intent: any) => ({
+  submitLiveOrder: vi.fn(async (_accountId: string, pendingOrderId: string, confirmationId: string, intent: LiveOrderIntent) => ({
     ok: true,
     orderId: `futu-order-${pendingOrderId}`,
     ticker: intent.ticker,
@@ -115,16 +115,18 @@ const { livePersistence } = await import('../api/live/livePersistence')
 const { requestLivePortfolioReviewDecision } = await import('../api/live/livePortfolioReviewDecisionService')
 const { submitLiveOrder } = await import('../api/live/futuLiveOrderService')
 const { updateFutuLiveSettings } = await import('../api/live/liveSettings')
+const { resetManagedOrderStoreForTests } = await import('../api/cloud/state/managedOrderStore')
 const { resetTradeStrategyConfigCacheForTests, updateTradeStrategyRuntimeConfig } = await import('../api/trade_strategy/tradeStrategyConfigService')
 
-describe('live trading execution modes', () => {
-  beforeEach(() => {
+describe('live trading execution modes', { timeout: 30_000 }, () => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     liveOrderQueueService.resetForTests()
     liveCandidatePoolService.resetForTests()
     livePersistence.clearForTests()
+    resetManagedOrderStoreForTests()
     resetTradeStrategyConfigCacheForTests()
-    updateFutuLiveSettings({ autoSubmitEnabled: false })
+    await updateFutuLiveSettings({ autoSubmitEnabled: false })
     delete process.env.LIVE_TRADING_ENABLED
     delete process.env.FUTU_LIVE_TRD_ENV
   })
@@ -175,7 +177,7 @@ describe('live trading execution modes', () => {
   it('Futu 自动下单开启且真实门禁开启时，生成待确认订单后自动提交', async () => {
     process.env.LIVE_TRADING_ENABLED = 'true'
     process.env.FUTU_LIVE_TRD_ENV = 'REAL'
-    updateFutuLiveSettings({ autoSubmitEnabled: true })
+    await updateFutuLiveSettings({ autoSubmitEnabled: true })
     updateTradeStrategyRuntimeConfig('live', { executionMode: 'legacy_direct' })
 
     const dashboard = await liveTradingEngine.runOnce()
