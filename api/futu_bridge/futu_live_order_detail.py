@@ -219,6 +219,10 @@ def detail_date_range(value):
         submitted = datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else now - timedelta(days=30)
     except ValueError:
         submitted = now - timedelta(days=30)
+    if submitted.tzinfo is None:
+        submitted = submitted.replace(tzinfo=timezone.utc)
+    else:
+        submitted = submitted.astimezone(timezone.utc)
     start = min(submitted, now) - timedelta(days=1)
     start = max(start, now - timedelta(days=89))
     return start.date().isoformat(), now.date().isoformat()
