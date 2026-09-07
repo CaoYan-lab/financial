@@ -4,7 +4,7 @@ import { liveCandidatePoolService } from '../live/liveCandidatePoolService.js'
 import { livePersistence } from '../live/livePersistence.js'
 import { liveOrderQueueService } from '../live/liveOrderQueueService.js'
 import { loadLiveAccountDashboard } from '../live/liveAccountService.js'
-import { loadFutuLiveOrders } from '../live/futuLiveOrderService.js'
+import { loadFutuLiveOrderDetail, loadFutuLiveOrders } from '../live/futuLiveOrderService.js'
 import { requestManagedOrderCancel } from '../live/managedOrderSupervisor.js'
 import { getFutuLiveSettings, updateFutuLiveSettings } from '../live/liveSettings.js'
 import { listManagedOrderEvents, listManagedOrders } from '../cloud/state/managedOrderStore.js'
@@ -180,6 +180,21 @@ router.get('/futu-orders', async (req, res, next) => {
         side: typeof req.query.side === 'string' ? req.query.side : undefined,
       }),
     )
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/futu-orders/:orderId/detail', async (req, res, next) => {
+  try {
+    const account = await loadLiveAccountDashboard()
+    const result = await loadFutuLiveOrderDetail({
+      accountId: account.selectedAccountId,
+      orderId: req.params.orderId,
+      ticker: typeof req.query.ticker === 'string' ? req.query.ticker : undefined,
+      submittedAt: typeof req.query.submittedAt === 'string' ? req.query.submittedAt : undefined,
+    })
+    res.status(result.ok ? 200 : 400).json(result)
   } catch (error) {
     next(error)
   }

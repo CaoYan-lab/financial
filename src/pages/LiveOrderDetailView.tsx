@@ -1,7 +1,14 @@
 import { useEffect, type ReactNode } from 'react'
+import { ArrowLeft, RefreshCw } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import AppNav from '@/components/common/AppNav'
 import Badge from '@/components/common/Badge'
+import {
+  OrderDetailField,
+  OrderDetailFieldGrid,
+  OrderDetailPanel,
+  OrderDetailTable,
+} from '@/components/OrderDetailSurface'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
 import { displayManagedOrderEventDetail, displayOrderPriceWithType, displayOrderSession, displayOrderType, displayPendingOrderStatus, displaySignalModel, displaySide } from '@/utils/simulationDisplay'
 
@@ -38,7 +45,7 @@ export default function LiveOrderDetailView() {
     ?? pending?.submittedOrder?.orderId
     ?? searchParams.get('brokerOrderId')
     ?? listedFutuOrder?.orderId
-    ?? (/^\d+$/.test(orderId) ? orderId : undefined)
+    ?? (searchParams.get('ticker') ? orderId : undefined)
   const brokerTicker =
     submitted?.ticker
     ?? pending?.intent.ticker
@@ -67,16 +74,19 @@ export default function LiveOrderDetailView() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-stone-50 via-amber-50 to-orange-50 text-stone-950">
       <AppNav />
-      <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">
-        <Link className="text-sm font-semibold text-amber-700 hover:text-amber-800" to="/live-trading">返回实盘量化</Link>
-        <header className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
-          <p className="text-xs font-semibold tracking-[0.25em] text-rose-700">实盘交易</p>
-          <h1 className="mt-2 text-3xl font-semibold">实盘订单详情链路</h1>
-          <p className="mt-2 text-sm text-stone-600">策略信号 → 待确认订单 → 用户确认 → Futu REAL 订单状态 → 费用回填。</p>
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+        <Link className="inline-flex items-center gap-2 rounded-2xl border border-orange-200 bg-white/90 px-4 py-2 text-sm font-semibold text-orange-700 shadow-sm hover:bg-orange-50" to="/live-trading">
+          <ArrowLeft size={16} />
+          返回 Futu 实盘
+        </Link>
+        <header className="rounded-3xl border border-orange-300/30 bg-white/90 p-6 shadow-2xl shadow-rose-200/30 backdrop-blur">
+          <p className="text-xs font-semibold tracking-[0.25em] text-orange-700">系统订单与券商订单</p>
+          <h1 className="mt-2 text-3xl font-semibold">{brokerTicker ?? signal?.ticker ?? 'Futu'} · 组合订单详情</h1>
+          <p className="mt-2 break-all text-sm text-stone-600">券商订单号：{brokerOrderId ?? '未生成'} · 策略信号 → 待确认订单 → 用户确认 → Futu REAL 订单 → 费用回填</p>
         </header>
 
         {error ? <div className="rounded-2xl border border-rose-300/40 bg-rose-500/15 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
-        {!pending && !submitted && !signal ? <div className="rounded-3xl border border-amber-300/30 bg-amber-500/10 p-6 text-amber-800">未在当前实盘 dashboard 中找到该订单链路，请刷新或从待确认队列进入。</div> : null}
+        {!pending && !submitted && !signal && !listedFutuOrder ? <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5 text-sm text-orange-800">未找到关联的系统订单；如果该订单由 Futu 客户端或其他系统创建，仍可查看下方券商真实订单。</div> : null}
 
         <section className="grid gap-4 md:grid-cols-2">
           <Step title="1. 策略信号" active={Boolean(signal)}>
@@ -130,7 +140,7 @@ export default function LiveOrderDetailView() {
         </section>
 
         {loadingFutuOrderDetailId ? (
-          <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 text-sm text-stone-500">
+          <section className="rounded-2xl border border-orange-200 bg-white/90 p-6 text-sm text-stone-500">
             正在从 Futu OpenD 读取订单、成交和费用...
           </section>
         ) : null}
@@ -140,100 +150,97 @@ export default function LiveOrderDetailView() {
           </section>
         ) : null}
         {submitFailed && submitted ? (
-          <section className="rounded-3xl border border-rose-200 bg-white/90 p-6">
-            <div className="border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <OrderDetailPanel accent="amber" eyebrow="券商订单" title="订单提交失败">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
               <p className="font-semibold">订单提交失败，券商未生成可查询的真实订单。</p>
               <p className="mt-2 whitespace-pre-wrap">{submitted.error ?? 'Futu 未返回具体失败原因。'}</p>
             </div>
-            <div className="mt-5 grid overflow-hidden rounded-2xl border border-stone-200 sm:grid-cols-2 lg:grid-cols-4">
-              <DetailField label="订单状态" value="提交失败" />
-              <DetailField label="标的" value={submitted.ticker || pending?.intent.ticker || '无'} />
-              <DetailField label="方向" value={sideLabel(submitted.side, pending?.intent.reason)} />
-              <DetailField label="订单类型" value={displayOrderType(submitted.orderType || pending?.intent.orderType || '', 'zh')} />
-              <DetailField label="委托数量" value={`${submitted.quantity || pending?.intent.quantity || 0} 股`} />
-              <DetailField label="委托价格" value={submitted.limitPrice || String(pending?.intent.limitPrice ?? '无')} />
-              <DetailField label="交易时段" value={displayOrderSession(submitted.orderSession || pending?.intent.orderSession, 'zh')} />
-              <DetailField label="失败时间" value={formatDateTime(submitted.submittedAt)} />
+            <div className="mt-5">
+              <OrderDetailFieldGrid accent="amber" columns="sm:grid-cols-2 lg:grid-cols-4">
+                <OrderDetailField label="订单状态" value="提交失败" />
+                <OrderDetailField label="标的" value={submitted.ticker || pending?.intent.ticker || '无'} />
+                <OrderDetailField label="方向" value={sideLabel(submitted.side, pending?.intent.reason)} />
+                <OrderDetailField label="订单类型" value={displayOrderType(submitted.orderType || pending?.intent.orderType || '', 'zh')} />
+                <OrderDetailField label="委托数量" value={`${submitted.quantity || pending?.intent.quantity || 0} 股`} />
+                <OrderDetailField label="委托价格" value={submitted.limitPrice || String(pending?.intent.limitPrice ?? '无')} />
+                <OrderDetailField label="交易时段" value={displayOrderSession(submitted.orderSession || pending?.intent.orderSession, 'zh')} />
+                <OrderDetailField label="失败时间" value={formatDateTime(submitted.submittedAt)} />
+                <OrderDetailField label="确认编号" value={pending?.confirmation?.confirmationId ?? '无'} />
+                <OrderDetailField label="信号编号" value={submitted.signalId} />
+              </OrderDetailFieldGrid>
             </div>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <DetailField label="确认编号" value={pending?.confirmation?.confirmationId ?? '无'} />
-              <DetailField label="信号编号" value={submitted.signalId} />
-            </div>
-          </section>
+          </OrderDetailPanel>
         ) : null}
         {liveDetail ? (
-          <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold tracking-[0.25em] text-amber-700">Futu 实盘成交</p>
-                <h2 className="mt-2 text-2xl font-semibold">成交与费用明细</h2>
-              </div>
+          <>
+            <OrderDetailPanel
+              accent="amber"
+              eyebrow="券商订单"
+              title="Futu 真实订单详情"
+              action={(
               <button
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-orange-200 bg-white text-orange-700 transition hover:bg-orange-50"
+                aria-label="刷新 Futu 订单详情"
+                title="刷新 Futu 订单详情"
                 onClick={() => void loadFutuOrderDetail({
                   orderId: liveDetail.order.orderId,
                   ticker: liveDetail.order.ticker,
                   submittedAt: brokerSubmittedAt,
                 })}
               >
-                刷新详情
+                <RefreshCw size={16} />
               </button>
-            </div>
+              )}
+            >
+              <OrderDetailFieldGrid accent="amber" columns="sm:grid-cols-2 lg:grid-cols-4">
+                <OrderDetailField label="券商状态" value={liveDetail.order.orderStatusLabel} />
+                <OrderDetailField label="标的" value={liveDetail.order.ticker} />
+                <OrderDetailField label="方向" value={displaySide(liveDetail.order.side, 'zh')} />
+                <OrderDetailField label="订单类型" value={displayOrderType(liveDetail.order.orderType, 'zh')} />
+                <OrderDetailField label="委托 / 成交" value={`${liveDetail.order.quantity} / ${liveDetail.order.filledQuantity}`} />
+                <OrderDetailField label="委托价格" value={liveDetail.order.price} />
+                <OrderDetailField label="成交均价" value={liveDetail.order.filledAveragePrice} />
+                <OrderDetailField label="成交金额" value={liveDetail.order.dealtAmount} />
+                <OrderDetailField label="剩余数量" value={`${liveDetail.order.remainingQuantity} 股`} />
+                <OrderDetailField label="交易币种" value={liveDetail.order.currency} />
+                <OrderDetailField label="创建时间" value={formatDateTime(liveDetail.order.createTime)} />
+                <OrderDetailField label="更新时间" value={formatDateTime(liveDetail.order.updatedTime)} />
+              </OrderDetailFieldGrid>
 
-            <div className="mt-5 grid overflow-hidden rounded-2xl border border-stone-200 sm:grid-cols-2 lg:grid-cols-4">
-              <DetailField label="方向" value={displaySide(liveDetail.order.side, 'zh')} />
-              <DetailField label="订单类型" value={displayOrderType(liveDetail.order.orderType, 'zh')} />
-              <DetailField label="成交均价" value={liveDetail.order.filledAveragePrice} />
-              <DetailField label="成交金额" value={liveDetail.order.dealtAmount} />
-              <DetailField label="剩余数量" value={`${liveDetail.order.remainingQuantity} 股`} />
-              <DetailField label="交易币种" value={liveDetail.order.currency} />
-              <DetailField label="创建时间" value={formatDateTime(liveDetail.order.createTime)} />
-              <DetailField label="更新时间" value={formatDateTime(liveDetail.order.updatedTime)} />
-            </div>
+              {liveDetail.order.feeContext?.feeDetails.length ? (
+                <div className="mt-5">
+                  <OrderDetailFieldGrid accent="amber" columns="sm:grid-cols-2 lg:grid-cols-3">
+                    {liveDetail.order.feeContext.feeDetails.map((fee) => (
+                      <OrderDetailField key={fee.item} label={fee.item} value={`${liveDetail.order.feeContext?.currency ?? ''} ${fee.amount}`} />
+                    ))}
+                  </OrderDetailFieldGrid>
+                </div>
+              ) : null}
+              {liveDetail.warnings.length ? (
+                <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  {liveDetail.warnings.join('；')}
+                </div>
+              ) : null}
+            </OrderDetailPanel>
 
-            <div className="mt-6 overflow-x-auto rounded-2xl border border-stone-200">
-              <table className="w-full min-w-[680px] text-left text-sm">
-                <thead className="bg-stone-50 text-xs text-stone-500">
-                  <tr>
-                    <th className="px-4 py-3">成交编号</th>
-                    <th className="px-4 py-3">方向</th>
-                    <th className="px-4 py-3">数量</th>
-                    <th className="px-4 py-3">成交价格</th>
-                    <th className="px-4 py-3">成交时间</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-200">
-                  {liveDetail.deals.map((deal) => (
-                    <tr key={deal.dealId}>
-                      <td className="px-4 py-3">{deal.dealId}</td>
-                      <td className="px-4 py-3">{displaySide(deal.side, 'zh')}</td>
-                      <td className="px-4 py-3">{deal.quantity}</td>
-                      <td className="px-4 py-3">{deal.price}</td>
-                      <td className="px-4 py-3">{formatDateTime(deal.createdAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {!liveDetail.deals.length ? <p className="p-4 text-sm text-stone-500">当前订单暂无成交记录。</p> : null}
-            </div>
-
-            {liveDetail.order.feeContext?.feeDetails.length ? (
-              <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {liveDetail.order.feeContext.feeDetails.map((fee) => (
-                  <DetailField key={fee.item} label={fee.item} value={`${liveDetail.order.feeContext?.currency ?? ''} ${fee.amount}`} />
-                ))}
-              </div>
-            ) : null}
-            {liveDetail.warnings.length ? (
-              <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                {liveDetail.warnings.join('；')}
-              </div>
-            ) : null}
-          </section>
+            <OrderDetailTable
+              accent="amber"
+              title={`成交记录（${liveDetail.deals.length}）`}
+              headers={['成交编号', '方向', '数量', '成交价格', '成交时间']}
+              rows={liveDetail.deals.map((deal) => [
+                deal.dealId,
+                displaySide(deal.side, 'zh'),
+                deal.quantity,
+                deal.price,
+                formatDateTime(deal.createdAt),
+              ])}
+              emptyText="当前订单暂无成交记录。"
+              minWidth="min-w-[680px]"
+            />
+          </>
         ) : null}
         {managedEvents.length ? (
-          <section className="rounded-3xl border border-stone-200 bg-white/90 p-6">
-            <h2 className="text-xl font-semibold">挂单监管时间线</h2>
+          <OrderDetailPanel accent="amber" eyebrow="系统监管" title={`挂单监管时间线（${managedEvents.length}）`}>
             <div className="mt-4 divide-y divide-stone-200">
               {managedEvents.map((event) => (
                 <div key={event.id ?? `${event.eventType}-${event.createdAt}`} className="grid gap-2 py-3 text-sm sm:grid-cols-[180px_180px_1fr]">
@@ -243,19 +250,10 @@ export default function LiveOrderDetailView() {
                 </div>
               ))}
             </div>
-          </section>
+          </OrderDetailPanel>
         ) : null}
       </div>
     </main>
-  )
-}
-
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 border-b border-r border-stone-200 p-4">
-      <p className="text-xs font-semibold text-stone-500">{label}</p>
-      <p className="mt-1 break-words text-sm font-semibold text-stone-950">{value || '无'}</p>
-    </div>
   )
 }
 
@@ -312,12 +310,12 @@ function isShortCover(side: string, reason?: string) {
 
 function Step({ title, active, children }: { title: string; active: boolean; children: ReactNode }) {
   return (
-    <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <Badge tone={active ? 'emerald' : 'slate'}>{active ? '已关联' : '待补齐'}</Badge>
-      </div>
-      <div className="mt-4 text-sm text-stone-600">{children}</div>
-    </section>
+    <OrderDetailPanel
+      accent="amber"
+      title={title}
+      action={<Badge tone={active ? 'emerald' : 'slate'}>{active ? '已关联' : '待补齐'}</Badge>}
+    >
+      <div className="text-sm text-stone-600">{children}</div>
+    </OrderDetailPanel>
   )
 }
