@@ -1,29 +1,33 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2, LogOut } from 'lucide-react'
 import App from '@/App'
 import LoginView from './LoginView'
-import { useAuthStore, authEnabledOnFrontend } from './authStore'
-import { fetchCurrentUser, installCloudFetchGuard, cloudLogout } from './cloudFetch'
+import { useAuthStore } from './authStore'
+import { cloudLogout, fetchAuthConfig, fetchCurrentUser, installCloudFetchGuard } from './cloudFetch'
 
 function AuthGate() {
   const { status, username, setAuthed, setAnon, setChecking } = useAuthStore()
+  const [authRequired, setAuthRequired] = useState<boolean | null>(null)
 
   useEffect(() => {
     installCloudFetchGuard()
-    const check = () => {
+    const check = async () => {
       setChecking()
-      void fetchCurrentUser().then((name) => {
-        if (name) setAuthed(name)
-        else setAnon()
-      })
+      const enabled = await fetchAuthConfig()
+      setAuthRequired(enabled)
+      if (!enabled) return
+      const name = await fetchCurrentUser()
+      if (name) setAuthed(name)
+      else setAnon()
     }
-    check()
-    const onUnauthorized = () => setAnon()
-    window.addEventListener('cloud:unauthorized', onUnauthorized)
-    return () => window.removeEventListener('cloud:unauthorized', onUnauthorized)
+    void check()
   }, [setAuthed, setAnon, setChecking])
 
-  if (status === 'checking') {
+  if (authRequired === false) {
+    return <App />
+  }
+
+  if (authRequired === null || status === 'checking') {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,rgba(251,146,60,0.24),transparent_30rem),radial-gradient(circle_at_top_right,rgba(34,211,238,0.2),transparent_28rem),linear-gradient(135deg,#fffaf0_0%,#f8fafc_54%,#eef6ff_100%)]">
         <div className="flex items-center gap-3 text-sm font-semibold text-stone-500">
@@ -57,8 +61,5 @@ function AuthGate() {
 }
 
 export default function CloudApp() {
-  if (!authEnabledOnFrontend()) {
-    return <App />
-  }
   return <AuthGate />
 }

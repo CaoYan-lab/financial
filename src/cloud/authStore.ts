@@ -17,7 +17,3 @@ export const useAuthStore = create<AuthState>((set) => ({
   setAnon: () => set({ status: 'anon', username: null }),
   setChecking: () => set({ status: 'checking' }),
 }))
-
-export function authEnabledOnFrontend(): boolean {
-  return import.meta.env.VITE_AUTH_ENABLED === 'true'
-}

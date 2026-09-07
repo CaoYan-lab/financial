@@ -5,7 +5,7 @@ import path from 'node:path'
 import app from '../../app.js'
 import { requestLogger } from '../../middleware/requestLogger.js'
 import { login } from '../auth/authService.js'
-import { requireAuth, type AuthedRequest } from '../auth/requireAuth.js'
+import { authEnabled, requireAuth, type AuthedRequest } from '../auth/requireAuth.js'
 import { createRouteOverrideRouter } from './routeOverrides.js'
 import { logger } from '../../utils/logger.js'
 
@@ -59,6 +59,11 @@ export function createCloudApp(): express.Application {
   cloudApp.use(requestLogger)
 
   // ---- 认证接口（在 requireAuth 之前，登录本身免鉴权） ----
+  cloudApp.get('/api/auth/config', (_req: express.Request, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ enabled: authEnabled() })
+  })
+
   cloudApp.post('/api/auth/login', async (req: express.Request, res: express.Response) => {
     const ip = clientIp(req)
     if (rateLimited(ip)) {
@@ -92,6 +97,7 @@ export function createCloudApp(): express.Application {
   cloudApp.use('/api', requireAuth)
 
   cloudApp.get('/api/auth/me', (req: AuthedRequest, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-store')
     res.json({ success: true, username: req.user?.username ?? null })
   })
 

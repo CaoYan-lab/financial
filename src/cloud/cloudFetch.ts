@@ -3,9 +3,9 @@ import { useAuthStore } from './authStore'
 let installed = false
 
 /**
- * 云模式下安装全局 fetch 包装：
+ * 鉴权启用时安装全局 fetch 包装：
  * 任何 /api 请求返回 401 时，将登录态置为未登录（由 AuthGate 重新展示登录页）。
- * 仅在 VITE_AUTH_ENABLED=true 时安装，不修改任何现有请求代码。
+ * 不修改现有业务请求代码。
  */
 export function installCloudFetchGuard(): void {
   if (installed || typeof window === 'undefined') return
@@ -25,6 +25,17 @@ export type CloudLoginResult = {
   success: boolean
   username?: string
   error?: string
+}
+
+export async function fetchAuthConfig(): Promise<boolean> {
+  try {
+    const response = await fetch('/api/auth/config', { credentials: 'same-origin', cache: 'no-store' })
+    if (!response.ok) return true
+    const payload = (await response.json()) as { enabled?: boolean }
+    return payload.enabled === true
+  } catch {
+    return true
+  }
 }
 
 export async function cloudLogin(username: string, password: string): Promise<CloudLoginResult> {
@@ -47,7 +58,7 @@ export async function cloudLogout(): Promise<void> {
 
 export async function fetchCurrentUser(): Promise<string | null> {
   try {
-    const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
+    const response = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
     if (!response.ok) return null
     const payload = (await response.json()) as { username?: string | null }
     return payload.username ?? null

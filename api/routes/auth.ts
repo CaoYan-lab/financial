@@ -7,10 +7,18 @@ import { Router, type Request, type Response } from 'express'
 const router = Router()
 
 /**
+ * Local development does not require the cloud login gate.
+ * GET /api/auth/config
+ */
+router.get('/config', (_req: Request, res: Response): void => {
+  res.json({ enabled: false })
+})
+
+/**
  * User Login
  * POST /api/auth/register
  */
-router.post('/register', async (req: Request, res: Response): Promise<void> => {
+router.post('/register', async (): Promise<void> => {
   // TODO: Implement register logic
 })
 
@@ -18,7 +26,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
  * User Login
  * POST /api/auth/login
  */
-router.post('/login', async (req: Request, res: Response): Promise<void> => {
+router.post('/login', async (): Promise<void> => {
   // TODO: Implement login logic
 })
 
@@ -26,7 +34,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
  * User Logout
  * POST /api/auth/logout
  */
-router.post('/logout', async (req: Request, res: Response): Promise<void> => {
+router.post('/logout', async (): Promise<void> => {
   // TODO: Implement logout logic
 })
 
