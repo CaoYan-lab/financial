@@ -61,8 +61,12 @@ router.get('/realtime/:symbol', async (req, res, next) => {
   }
 })
 
-router.get('/live-trading/dashboard', (_req, res) => {
-  res.json(longbridgeLiveTradingEngine.dashboard())
+router.get('/live-trading/dashboard', async (_req, res, next) => {
+  try {
+    res.json(await longbridgeLiveTradingEngine.dashboard())
+  } catch (error) {
+    next(error)
+  }
 })
 
 router.get('/live-trading/settings', (_req, res) => {
@@ -85,8 +89,12 @@ router.post('/live-trading/start', async (_req, res, next) => {
   }
 })
 
-router.post('/live-trading/stop', (_req, res) => {
-  res.json(longbridgeLiveTradingEngine.stop())
+router.post('/live-trading/stop', async (_req, res, next) => {
+  try {
+    res.json(await longbridgeLiveTradingEngine.stop())
+  } catch (error) {
+    next(error)
+  }
 })
 
 router.get('/live-trading/history/signals', async (req, res, next) => {

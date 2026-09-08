@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RawCompanyData } from '../shared/types'
 import { buildOptionStrategy } from '../api/services/optionStrategyService'
 
@@ -32,6 +32,15 @@ const baseRow: RawCompanyData = {
 }
 
 describe('buildOptionStrategy', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T00:00:00.000Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('只使用 Futu 期权链和快照字段生成策略，不生成 EST 权利金', () => {
     const strategy = buildOptionStrategy(baseRow, { verdict: 'Hold', track: 'B' })
 

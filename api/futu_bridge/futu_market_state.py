@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 from futu_common import UNAVAILABLE, futu_code, now_iso, read_payload, ticker_from_futu_code, write_json
 
 
@@ -9,7 +12,7 @@ def main():
     timestamp = now_iso()
 
     try:
-        from futu import OpenQuoteContext, RET_OK
+        from futu import Market, OpenQuoteContext, RET_OK
     except Exception as exc:
         write_json({"ok": False, "states": [], "error": f"futu-api Python SDK unavailable: {exc}", "updatedAt": timestamp})
         return
@@ -23,10 +26,25 @@ def main():
             write_json({"ok": False, "states": fallback_states(tickers, timestamp), "error": f"get_market_state failed: {data}", "updatedAt": timestamp})
             return
 
+        rows_by_code = {
+            str(row.get("code", UNAVAILABLE)).upper(): str(row.get("market_state", UNAVAILABLE))
+            for _, row in data.iterrows()
+        }
+        calendar = {
+            "US": trading_date_status(quote_ctx, Market.US, "US", RET_OK),
+            "HK": trading_date_status(quote_ctx, Market.HK, "HK", RET_OK),
+        }
         states = []
-        for _, row in data.iterrows():
-            code = str(row.get("code", UNAVAILABLE))
-            state = str(row.get("market_state", UNAVAILABLE))
+        for ticker in tickers:
+            code = futu_code(ticker).upper()
+            market = market_from_code(code)
+            calendar_open = calendar[market]
+            raw_state = rows_by_code.get(code, UNAVAILABLE)
+            state = (
+                UNAVAILABLE
+                if calendar_open is None
+                else raw_state if calendar_open else "CLOSED"
+            )
             states.append(normalize_state(code, state, timestamp))
         write_json({"ok": True, "states": states, "updatedAt": timestamp})
     except Exception as exc:
@@ -38,6 +56,32 @@ def main():
 
 def fallback_states(tickers, timestamp):
     return [normalize_state(futu_code(ticker), UNAVAILABLE, timestamp) for ticker in tickers]
+
+
+def trading_date_status(quote_ctx, market_enum, market, ret_ok):
+    session_date = session_date_for_market(market)
+    ret, data = quote_ctx.request_trading_days(
+        market=market_enum,
+        start=session_date,
+        end=session_date,
+    )
+    if ret != ret_ok or data is None:
+        return None
+    records = data.to_dict("records") if hasattr(data, "to_dict") else list(data)
+    dates = {str(row.get("time", "")) for row in records if isinstance(row, dict)}
+    return session_date in dates
+
+
+def session_date_for_market(market):
+    zone = ZoneInfo("America/New_York" if market == "US" else "Asia/Hong_Kong")
+    local = datetime.now(timezone.utc).astimezone(zone)
+    if market == "US" and local.hour >= 20:
+        local += timedelta(days=1)
+    return local.date().isoformat()
+
+
+def market_from_code(code):
+    return "HK" if str(code).upper().startswith("HK.") else "US"
 
 
 def normalize_state(code, state, timestamp):

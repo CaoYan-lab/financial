@@ -8,9 +8,7 @@ import express, {
   type NextFunction,
 } from 'express'
 import cors from 'cors'
-import path from 'path'
 import dotenv from 'dotenv'
-import { fileURLToPath } from 'url'
 import accountRoutes from './routes/accountRoutes.js'
 import aShareRoutes from './routes/aShareRoutes.js'
 import authRoutes from './routes/auth.js'
@@ -24,10 +22,6 @@ import tradeRoutes from './routes/tradeRoutes.js'
 import { requestLogger } from './middleware/requestLogger.js'
 import { warmTradeStrategyConfigCatalog } from './trade_strategy/tradeStrategyConfigService.js'
 import { errorMessage, errorStack, logger } from './utils/logger.js'
-
-// for esm mode
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
 
 // load env
 dotenv.config({ path: ['.env.local', '.env'] })
@@ -59,7 +53,7 @@ app.use('/api/trade', tradeRoutes)
  */
 app.use(
   '/api/health',
-  (req: Request, res: Response, next: NextFunction): void => {
+  (_req: Request, res: Response): void => {
     res.status(200).json({
       success: true,
       message: 'ok',
@@ -70,7 +64,7 @@ app.use(
 /**
  * error handler middleware
  */
-app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   logger.error(
     {
       event: 'http.request.failed',

@@ -47,6 +47,63 @@ describe('live trading guardrails', () => {
     expect(payload.account.tradingCurrencyContext.rule).toContain('判断能否买入应优先看 buyingPowerUsd')
   })
 
+  it('Futu 港股提示词使用真实每手股数和港币购买力', () => {
+    const input = {
+      ...decisionInput(),
+      ticker: '07747',
+      account: account({
+        currency: 'HKD',
+        tradingCurrency: 'HKD',
+        totalAssetsInTradingCurrency: 'HK$771,354.99',
+        cashInTradingCurrency: 'HK$87,898.88',
+        availableFundsInTradingCurrency: 'HK$87,898.88',
+        buyingPowerInTradingCurrency: 'HK$87,898.88',
+      }),
+      allPositions: [],
+      position: undefined,
+      marketData: {
+        ...decisionInput().marketData,
+        ticker: '07747',
+        lastPrice: 82.54,
+        lotSize: 100,
+        marketState: 'MORNING',
+      },
+    }
+    const payload = JSON.parse(buildLiveDecisionPrompt(input)[1].content)
+
+    expect(payload.account.tradingCurrency).toBe('HKD')
+    expect(payload.account.buyingPower).toBe('HK$87,898.88')
+    expect(payload.account.tradingUnit.lotSize).toBe(100)
+    expect(payload.account.tradingUnit.rule).toContain('每手 100 股')
+  })
+
+  it('Futu 拒绝港股非整手开仓数量但不影响美股按股交易', () => {
+    const hkInput = {
+      ...decisionInput(),
+      ticker: '07747',
+      allPositions: [],
+      position: undefined,
+      marketData: {
+        ...decisionInput().marketData,
+        ticker: '07747',
+        lotSize: 100,
+      },
+    }
+    const blocked = parseLiveTradingDecision(
+      '{"approved":true,"action":"BUY","ticker":"07747","orderQuantity":3,"limitPrice":82.54}',
+      hkInput,
+    )
+    expect(blocked.ok).toBe(false)
+    expect(blocked.error).toContain('每手 100 股')
+
+    const accepted = parseLiveTradingDecision(
+      '{"approved":true,"action":"BUY","ticker":"AMD","orderQuantity":3,"limitPrice":100}',
+      decisionInput(),
+    )
+    expect(accepted.ok).toBe(true)
+    expect(accepted.orderQuantity).toBe(3)
+  })
+
   it('实盘 prompt 不把固定百分比集中度解释为禁止加仓或强制全平', () => {
     const prompt = buildLiveDecisionPrompt({
       ...decisionInput(),
@@ -159,6 +216,7 @@ describe('live trading guardrails', () => {
         },
         10,
         strategy({ singleNameMode: 'advisory', singleNamePct: 0.5, shortExposureMode: 'hard_block', shortExposurePct: 0.1 }),
+        100,
       )
 
       expect(reason).toBeUndefined()

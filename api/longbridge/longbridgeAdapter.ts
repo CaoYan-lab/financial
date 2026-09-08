@@ -17,6 +17,7 @@ import {
   loadLongbridgeSdkAccountSnapshot,
   longbridgeSdkCredentialsConfigured,
   probeLongbridgeSdk,
+  type LongbridgeAccountCurrency,
 } from './longbridgeSdkGateway.js'
 
 const LONGBRIDGE_SKILLS = [
@@ -103,11 +104,13 @@ export async function loadLongbridgeWorkbenchDashboard(): Promise<LongbridgeWork
   }
 }
 
-export async function loadLongbridgeLiveAccountDashboard(): Promise<LiveAccountDashboardResponse> {
+export async function loadLongbridgeLiveAccountDashboard(
+  currency: LongbridgeAccountCurrency = 'USD',
+): Promise<LiveAccountDashboardResponse> {
   const sourceStatus = await loadLongbridgeSourceStatus()
   const warnings = [...sourceStatus.missingCapabilities]
-  const assets = sourceStatus.accountDataAvailable ? await loadAssetRecord(warnings) : {}
-  const positions = sourceStatus.accountDataAvailable ? await loadPositions(warnings) : []
+  const assets = sourceStatus.accountDataAvailable ? await loadAssetRecord(warnings, currency) : {}
+  const positions = sourceStatus.accountDataAvailable ? await loadPositions(warnings, currency) : []
   const now = new Date().toISOString()
   const availableCash = assetValue(assets, 'available_cash') ?? firstCashInfoValue(assets, 'available_cash') ?? assetValue(assets, 'total_cash')
   const totalCash = assetValue(assets, 'total_cash') ?? firstCashInfoValue(assets, 'available_cash')
@@ -119,18 +122,18 @@ export async function loadLongbridgeLiveAccountDashboard(): Promise<LiveAccountD
     selectedAccountId: 'longbridge-real',
     summary: {
       accountId: 'longbridge-real',
-      currency: 'USD',
-      totalAssets: formatUsd(netAssets),
-      cash: formatUsd(totalCash),
-      availableFunds: formatUsd(availableCash),
-      buyingPower: formatUsd(buyPower),
-      tradingCurrency: 'USD',
-      totalAssetsInTradingCurrency: formatUsd(netAssets),
-      cashInTradingCurrency: formatUsd(totalCash),
-      availableFundsInTradingCurrency: formatUsd(availableCash),
-      buyingPowerInTradingCurrency: formatUsd(buyPower),
-      dailyPnL: formatUsd(assets.today_pnl),
-      totalPnL: formatUsd(assets.total_pnl),
+      currency,
+      totalAssets: formatCurrency(netAssets, currency),
+      cash: formatCurrency(totalCash, currency),
+      availableFunds: formatCurrency(availableCash, currency),
+      buyingPower: formatCurrency(buyPower, currency),
+      tradingCurrency: currency,
+      totalAssetsInTradingCurrency: formatCurrency(netAssets, currency),
+      cashInTradingCurrency: formatCurrency(totalCash, currency),
+      availableFundsInTradingCurrency: formatCurrency(availableCash, currency),
+      buyingPowerInTradingCurrency: formatCurrency(buyPower, currency),
+      dailyPnL: formatCurrency(assets.today_pnl, currency),
+      totalPnL: formatCurrency(assets.total_pnl, currency),
       source: {
         source: longbridgeSdkCredentialsConfigured()
           ? 'Longbridge SDK account'
@@ -190,14 +193,21 @@ async function loadAccountMetrics(warnings: string[]): Promise<LongbridgeMetric[
   ]
 }
 
-async function loadAssetRecord(warnings: string[]): Promise<Record<string, unknown>> {
+async function loadAssetRecord(
+  warnings: string[],
+  currency: LongbridgeAccountCurrency = 'USD',
+): Promise<Record<string, unknown>> {
   if (longbridgeSdkCredentialsConfigured()) {
     try {
-      return (await loadLongbridgeSdkAccountSnapshot()).assets
+      return (await loadLongbridgeSdkAccountSnapshot({ currency })).assets
     } catch (error) {
       warnings.push(`Longbridge SDK 账户资产读取失败：${error instanceof Error ? error.message : String(error)}`)
       return {}
     }
+  }
+  if (currency !== 'USD') {
+    warnings.push(`Longbridge CLI 无法保证 ${currency} 账户口径，已按不可用处理。`)
+    return {}
   }
 
   const assets = await runLongbridgeCli(['assets', '--format', 'json'])
@@ -209,10 +219,13 @@ async function loadAssetRecord(warnings: string[]): Promise<Record<string, unkno
   return normalizeAssetPayload(payload)
 }
 
-async function loadPositions(warnings: string[]): Promise<LongbridgePosition[]> {
+async function loadPositions(
+  warnings: string[],
+  currency: LongbridgeAccountCurrency = 'USD',
+): Promise<LongbridgePosition[]> {
   if (longbridgeSdkCredentialsConfigured()) {
     try {
-      return (await loadLongbridgeSdkAccountSnapshot()).positions
+      return (await loadLongbridgeSdkAccountSnapshot({ currency })).positions
     } catch (error) {
       warnings.push(`Longbridge SDK 持仓读取失败：${error instanceof Error ? error.message : String(error)}`)
       return []
@@ -432,6 +445,13 @@ function formatUsd(value: unknown): string {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 'unavailable'
   return `$${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function formatCurrency(value: unknown, currency: LongbridgeAccountCurrency): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 'unavailable'
+  const prefix = currency === 'HKD' ? 'HK$' : '$'
+  return `${prefix}${numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function assetValue(record: Record<string, unknown>, key: string): unknown {

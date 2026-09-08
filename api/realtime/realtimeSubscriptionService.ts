@@ -67,39 +67,39 @@ class RealtimeSubscriptionService {
     const bridgeHomeEnv = cloudPython ? (process.env.HOME || bridgeHome) : bridgeHome
     fs.mkdirSync(bridgeHome, { recursive: true })
 
-    this.child = spawn(pythonBin, [scriptPath], {
+    const child = spawn(pythonBin, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, HOME: bridgeHomeEnv, PYTHONPATH: pythonPath, PYTHONUNBUFFERED: '1' },
     })
+    this.child = child
 
-    this.child.stdout.on('data', (chunk) => this.handleStdout(chunk.toString()))
-    this.child.stderr.on('data', (chunk) => {
+    child.stdout.on('data', (chunk) => this.handleStdout(chunk.toString()))
+    child.stderr.on('data', (chunk) => {
       const message = chunk.toString().trim()
       if (message) this.lastError = message
     })
-    this.child.on('error', (error) => {
+    child.on('error', (error) => {
       this.lastError = error.message
     })
-    this.child.on('close', (code) => {
+    child.on('close', (code) => {
       if (code !== 0 && code !== null) this.lastError = `Realtime subscriber exited with code ${code}`
-      this.child = undefined
+      if (this.child === child) this.child = undefined
     })
 
-    this.child.stdin.write(
+    child.stdin.write(
       JSON.stringify({
         host: process.env.FUTU_OPEND_HOST || '127.0.0.1',
         port: Number(process.env.FUTU_OPEND_PORT || 11111),
         tickers: nextTickers,
       }),
     )
-    this.child.stdin.end()
+    child.stdin.end()
   }
 
   stop() {
-    if (this.child) {
-      this.child.kill('SIGTERM')
-      this.child = undefined
-    }
+    const child = this.child
+    this.child = undefined
+    child?.kill('SIGTERM')
   }
 
   status(): RealtimeSubscriptionStatus {

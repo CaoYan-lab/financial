@@ -4,7 +4,15 @@ import { submitLongbridgeLiveOrder } from './longbridgeLiveOrderService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
 import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
 import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
-import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
+import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
+import {
+  loadLongbridgeMarketStates,
+  normalizeLongbridgeSymbol,
+} from './longbridgeMarketSessionService.js'
+import {
+  loadLongbridgeLotSize,
+  longbridgeOpeningLotSizeFailureReason,
+} from './longbridgeLotSizeService.js'
 
 class LongbridgeOrderQueueService {
   createPendingOrder(order: LivePendingOrder) {
@@ -94,7 +102,27 @@ class LongbridgeOrderQueueService {
       }
     }
 
-    const marketState = longbridgeRealtimeStore.getSnapshot(order.intent.ticker)?.quote?.marketState
+    const symbol = normalizeLongbridgeSymbol(order.intent.ticker)
+    const quote = getLongbridgeSdkContexts().quote
+    const lotSize = await loadLongbridgeLotSize(quote, symbol)
+    const lotSizeFailure = longbridgeOpeningLotSizeFailureReason({
+      symbol,
+      action: order.intent.side,
+      quantity: order.intent.quantity,
+      lotSize,
+    })
+    if (lotSizeFailure) {
+      return {
+        ok: false,
+        order,
+        error: `长桥真实提交已拦截：${lotSizeFailure}`,
+        blockedByGate: true,
+      }
+    }
+    const marketState = (await loadLongbridgeMarketStates(
+      quote,
+      [symbol],
+    )).get(symbol)
     const sessionFailure = orderSubmissionSessionFailureReason({
       ticker: order.intent.ticker,
       marketState,

@@ -96,7 +96,7 @@ function sumMoney(values: Array<Position['todayPnL']>): number | undefined {
 
 export function parseMoney(value: string | undefined): number | undefined {
   if (!value || value === 'unavailable') return undefined
-  const numeric = Number(value.replace(/[$,%\s,]/g, ''))
+  const numeric = Number(value.replace(/[^0-9.+-]/g, ''))
   return Number.isFinite(numeric) ? numeric : undefined
 }
 

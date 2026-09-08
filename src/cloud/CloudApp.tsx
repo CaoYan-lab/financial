@@ -4,6 +4,7 @@ import App from '@/App'
 import LoginView from './LoginView'
 import { useAuthStore } from './authStore'
 import { cloudLogout, fetchAuthConfig, fetchCurrentUser, installCloudFetchGuard } from './cloudFetch'
+import MultiUserShell from '@/multiuser/MultiUserShell'
 
 function AuthGate() {
   const { status, username, setAuthed, setAnon, setChecking } = useAuthStore()
@@ -55,7 +56,9 @@ function AuthGate() {
         <LogOut className="h-3.5 w-3.5" />
         退出{username ? `（${username}）` : ''}
       </button>
-      <App />
+      <MultiUserShell>
+        <App />
+      </MultiUserShell>
     </>
   )
 }

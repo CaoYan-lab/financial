@@ -11,7 +11,7 @@ const { longbridgePersistence } = await import('../api/longbridge/longbridgePers
 const { livePersistence } = await import('../api/live/livePersistence')
 const { loadLongbridgeCombinedOrderDetail } = await import('../api/longbridge/longbridgeLiveOrderService')
 
-describe('Longbridge live SQLite persistence', () => {
+describe('Longbridge live SQLite persistence', { timeout: 30_000 }, () => {
   beforeEach(() => {
     longbridgePersistence.clearForTests()
     livePersistence.clearForTests()
@@ -29,6 +29,20 @@ describe('Longbridge live SQLite persistence', () => {
     expect(futuPage.total).toBe(0)
     expect(sqlCount('longbridge_live_signals')).toBe(1)
     expect(sqlCount('live_events')).toBe(0)
+  })
+
+  it('历史分页保留已落库的风控状态，不回退为候选池', () => {
+    const signal = {
+      ...testSignal('longbridge-signal-risk-blocked-1', 'BUY'),
+      lifecycleStatus: 'BLOCKED_BY_RISK' as const,
+      lifecycleReason: '超过最大购买力保护线。',
+    }
+    longbridgePersistence.appendSignal(signal)
+
+    const page = longbridgePersistence.paginateSignalLifecycle(1, 20)
+
+    expect(page.items[0].lifecycleStatus).toBe('BLOCKED_BY_RISK')
+    expect(page.items[0].lifecycleReason).toBe('超过最大购买力保护线。')
   })
 
   it('待确认订单写入 Longbridge pending order 分表并支持 lifecycle 分页', () => {

@@ -36,7 +36,13 @@ class RealtimeStore {
 
   applyEvent(event: RealtimeEvent) {
     const ticker = event.ticker.toUpperCase()
-    if (event.kind === 'quote') this.quoteByTicker.set(ticker, event.quote)
+    if (event.kind === 'quote') {
+      const previous = this.quoteByTicker.get(ticker)
+      this.quoteByTicker.set(ticker, {
+        ...event.quote,
+        lotSize: event.quote.lotSize ?? previous?.lotSize,
+      })
+    }
     if (event.kind === 'ticker') this.tickerByTicker.set(ticker, mergeTickerPoints(this.tickerByTicker.get(ticker) ?? [], event.points))
     if (event.kind === 'kline') this.klineByTicker.set(ticker, mergeKlineBars(this.klineByTicker.get(ticker) ?? [], event.bars))
     if (event.kind === 'orderBook') this.orderBookByTicker.set(ticker, { asks: event.asks, bids: event.bids })

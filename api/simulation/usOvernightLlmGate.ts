@@ -125,12 +125,12 @@ function normalizeGateTicker(ticker: string): string {
 
 function isClosedHongKongState(marketState?: string): boolean {
   const state = normalizeMarketState(marketState)
-  return state === 'CLOSED' || state === 'REST' || state === 'NONE' || state === 'UNAVAILABLE'
+  return state === 'CLOSED' || state === 'REST' || state === 'WAITING_OPEN' || state === 'NONE' || state === 'UNAVAILABLE'
 }
 
 function isOpenHongKongState(marketState?: string): boolean {
   const state = normalizeMarketState(marketState)
-  return state === 'WAITING_OPEN' || state === 'AUCTION' || state === 'PRE_MARKET_HK' || state === 'MORNING' || state === 'AFTERNOON'
+  return state === 'AUCTION' || state === 'PRE_MARKET_HK' || state === 'MORNING' || state === 'AFTERNOON'
 }
 
 function normalizeMarketState(marketState?: string): string {

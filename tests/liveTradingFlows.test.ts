@@ -18,7 +18,10 @@ vi.mock('../api/simulation/marketSessionService.js', () => ({
   attachMarketSessions: (items: unknown[]) => items,
   latestMarketSessions: () => ({}),
   loadMarketSessions: vi.fn(async (tickers: string[]) =>
-    Object.fromEntries(tickers.map((ticker) => [ticker.toUpperCase(), marketSession()])),
+    Object.fromEntries(tickers.map((ticker) => [
+      ticker.toUpperCase(),
+      marketSession(/^0\d{4}$/.test(ticker) ? 'MORNING' : 'PRE_MARKET_BEGIN'),
+    ])),
   ),
 }))
 
@@ -109,6 +112,7 @@ vi.mock('../api/live/livePortfolioReviewDecisionService.js', async (importOrigin
 })
 
 const { liveTradingEngine } = await import('../api/live/liveTradingEngine')
+const { loadLiveAccountDashboard } = await import('../api/live/liveAccountService')
 const { liveOrderQueueService } = await import('../api/live/liveOrderQueueService')
 const { liveCandidatePoolService } = await import('../api/live/liveCandidatePoolService')
 const { livePersistence } = await import('../api/live/livePersistence')
@@ -144,6 +148,10 @@ describe('live trading execution modes', { timeout: 30_000 }, () => {
     expect(pendingOrders[0].intent.side).toBe('BUY')
     expect(pendingOrders[0].decisionMode).toBe('legacy_direct')
     expect(pendingOrders[0].candidateId).toBeUndefined()
+    expect(vi.mocked(loadLiveAccountDashboard)).toHaveBeenCalledWith(expect.objectContaining({
+      market: 'HK',
+      tradingCurrency: 'HKD',
+    }))
   })
 
   it('老逻辑直推：同标的同方向仍保留 15 分钟待确认订单去重', async () => {
@@ -524,11 +532,11 @@ function account(): LiveAccountDashboardResponse {
   }
 }
 
-function marketSession(): MarketSessionStatus {
+function marketSession(state: MarketSessionStatus['state'] = 'PRE_MARKET_BEGIN'): MarketSessionStatus {
   return {
-    state: 'PRE_MARKET_BEGIN',
-    labelZh: '盘前',
-    labelEn: 'Pre-market',
+    state,
+    labelZh: state === 'MORNING' ? '早市' : '盘前',
+    labelEn: state === 'MORNING' ? 'Morning session' : 'Pre-market',
     tradable: true,
     allowsExtendedHours: true,
     updatedAt: '2026-06-19T10:00:00.000Z',

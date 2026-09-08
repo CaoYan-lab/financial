@@ -83,6 +83,7 @@ def normalize_quote(row, market_state=None, preserve_futu_code=False):
         "code": code,
         "name": str(row_value(row, "stock_name", "name") or ticker),
         "price": fmt_money(price),
+        "lotSize": int(safe_float(row_value(row, "lot_size", "lotSize")) or 0) or None,
         "change": fmt_signed_money(change),
         "changePercent": fmt_percent(change_rate),
         "open": fmt_money(row_value(row, "open_price", "open")),

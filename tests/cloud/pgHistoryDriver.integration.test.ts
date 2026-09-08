@@ -8,7 +8,10 @@ const venvPython = resolve(root, '.venv-cloud/bin/python')
 const driverPath = resolve(root, 'deploy/volcano/pg/python')
 const urlFile = resolve(root, '.data/cloud-pg/database_url')
 
-const pgAvailable = existsSync(venvPython) && existsSync(urlFile)
+const pgAvailable =
+  process.env.RUN_PG_INTEGRATION === '1'
+  && existsSync(venvPython)
+  && existsSync(urlFile)
 const describeIfPg = pgAvailable ? describe : describe.skip
 
 const stamp = `vitest-cloud-${process.pid}-${Date.now()}`

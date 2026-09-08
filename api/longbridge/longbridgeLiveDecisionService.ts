@@ -6,6 +6,7 @@ import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import { LLM_SIMULATION_UNIVERSE } from '../simulation/simulationUniverse.js'
 import { buildRiskModelDescription, getActivePromptPack } from '../trade_strategy/tradeStrategyConfigService.js'
 import { durationMs, logger } from '../utils/logger.js'
+import { fallbackLotSize, longbridgeOpeningLotSizeFailureReason } from './longbridgeLotSizeService.js'
 import { parseMoney } from './longbridgeRiskService.js'
 
 type DecisionInput = {
@@ -51,6 +52,9 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
   const buyingPowerNumeric = parseMoney(buyingPower)
   const availableFunds = input.account.summary.availableFundsInTradingCurrency ?? input.account.summary.availableFunds
   const availableFundsNumeric = parseMoney(availableFunds)
+  const lotSize = input.marketData.lotSize ?? fallbackLotSize(input.marketData.symbol)
+  const isHongKong = input.marketData.symbol.toUpperCase().endsWith('.HK')
+  const tradingCurrency = input.account.summary.tradingCurrency ?? (isHongKong ? 'HKD' : 'USD')
   const system = platformize(promptPack.systemPrompts.live ?? '你是长桥证券 REAL 实盘美股/港股正股与 ETF 半自动交易研究员。只能返回 JSON，不要 Markdown。')
   const task = platformize(promptPack.tasks?.live ?? '为单个标的生成本轮 Longbridge REAL 实盘候选交易决策')
   return [
@@ -85,8 +89,14 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
           buyingPowerNumeric,
           maxOpeningNotional: buyingPowerNumeric,
           orderSizingConstraint: buyingPowerNumeric !== undefined
-            ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric)}；若 1 股也超过最大购买力，必须 HOLD。`
+            ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric, tradingCurrency)}；若最小交易单位也超过最大购买力，必须 HOLD。`
             : '最大购买力不可解析；开仓 BUY / SELL_SHORT 必须 HOLD。',
+          tradingUnit: {
+            lotSize,
+            rule: isHongKong
+              ? `港股开仓 BUY / SELL_SHORT 的 orderQuantity 必须是每手 ${lotSize} 股的正整数倍；禁止返回零股、碎股或不足一手的数量。若账户无法承担至少 ${lotSize} 股，必须 HOLD。`
+              : '美股 orderQuantity 按正整数股计算，不套用港股整手约束。',
+          },
           tradingCurrencyContext: {
             rule: '交易币种必须跟随 targetInstrument.tradingCurrency。US 标的使用 USD 字段计算名义金额、权益占比和购买力；HK 标的使用对应交易币种口径，并按长桥返回的市场时段理解。availableFunds 是可用资金；buyingPower 是长桥最大购买力，判断能否买入应优先看 buyingPower。',
             totalAssetsUsd: input.account.summary.totalAssetsInTradingCurrency ?? input.account.summary.totalAssets,
@@ -102,7 +112,7 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
           derivativePositionRule: 'OPTION 持仓只作为账户风险上下文；不得把 OPTION 的负数量解释为正股空头。',
           concentrationRule: '单票集中度不是固定硬上限，不得因为超过某个固定百分比就自动禁止加仓或强制 SELL_TO_CLOSE。已有持仓是否加仓，必须结合趋势质量、波动率、流动性、已有浮盈、账户可用资金、增量风险回报和组合相关性动态判断。',
           positionQuantityConvention: contextRules.positionQuantityConvention ?? 'positionQuantity > 0 means long shares; positionQuantity < 0 means short shares; positionQuantity = 0 or null means flat.',
-          orderQuantityConvention: contextRules.orderQuantityConvention ?? 'orderQuantity is the positive integer share count for this new order only; never use a negative orderQuantity.',
+          orderQuantityConvention: `${contextRules.orderQuantityConvention ?? 'orderQuantity is the positive integer share count for this new order only; never use a negative orderQuantity.'} ${isHongKong ? `当前港股每手 ${lotSize} 股，开仓数量必须是 ${lotSize} 的正整数倍。` : '当前为美股，不套用港股整手约束。'}`,
           actionSemantics: {
             ...contextRules.actionSemantics,
             BUY: '买入；如果 targetExposure.exposureSide 为 SHORT，BUY 表示买入平仓/回补空头，orderQuantity 上限为 abs(positionQuantity)。',
@@ -180,8 +190,9 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
   ]
 }
 
-function formatMoney(value: number) {
-  return Number.isFinite(value) ? `$${value.toFixed(2)}` : 'unavailable'
+function formatMoney(value: number, currency = 'USD') {
+  const prefix = currency === 'HKD' ? 'HK$' : '$'
+  return Number.isFinite(value) ? `${prefix}${value.toFixed(2)}` : 'unavailable'
 }
 
 export function parseLongbridgeTradingDecision(text: string, input: DecisionInput): LlmTradingDecision {
@@ -190,16 +201,26 @@ export function parseLongbridgeTradingDecision(text: string, input: DecisionInpu
   const action = String(parsed.action ?? 'HOLD').toUpperCase()
   const ticker = String(parsed.ticker ?? input.marketData.ticker).toUpperCase()
   const orderQuantity = Number(parsed.orderQuantity ?? parsed.quantity ?? 0)
+  const normalizedOrderQuantity = Number.isFinite(orderQuantity) ? Math.max(0, Math.floor(orderQuantity)) : 0
   const limitPrice = Number(parsed.limitPrice ?? input.marketData.lastPrice)
   const approved = parsed.approved === true
   if (!['HOLD', 'BUY', 'SELL_SHORT', 'SELL_TO_CLOSE'].includes(action)) return blockedDecision(input, `非法交易动作：${action}`, text)
   if (ticker !== input.marketData.ticker.toUpperCase()) return blockedDecision(input, `模型返回 ticker ${ticker} 与目标 ${input.marketData.ticker} 不一致。`, text)
+  const lotSizeFailure = longbridgeOpeningLotSizeFailureReason({
+    symbol: input.marketData.symbol,
+    action: action as LlmTradingDecision['action'],
+    quantity: normalizedOrderQuantity,
+    lotSize: input.marketData.lotSize,
+  })
+  if (approved && action !== 'HOLD' && lotSizeFailure) {
+    return blockedDecision(input, `长桥实盘决策被拦截：${lotSizeFailure}`, text)
+  }
   return {
     ok: true,
     approved,
     action: action as LlmTradingDecision['action'],
     ticker,
-    orderQuantity: Number.isFinite(orderQuantity) ? Math.max(0, Math.floor(orderQuantity)) : 0,
+    orderQuantity: normalizedOrderQuantity,
     limitPrice: Number.isFinite(limitPrice) ? limitPrice : input.marketData.lastPrice,
     confidence: typeof parsed.confidence === 'string' ? parsed.confidence : 'low',
     reason: typeof parsed.reason === 'string' ? parsed.reason : '大模型未提供理由。',

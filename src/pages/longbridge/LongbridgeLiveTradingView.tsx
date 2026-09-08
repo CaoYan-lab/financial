@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, ChevronDown, Eye, RefreshCw, ShieldAlert } from 'lucide-react'
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
+import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
+import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import BrokerOrdersTable from '@/components/BrokerOrdersTable'
@@ -14,6 +16,7 @@ import { maskAssetValue } from '@/utils/displayText'
 import type { LiveCandidatePoolHistoryFilter, LiveCandidatePoolItem, LiveCandidatePoolSnapshot, LiveOrderFeeContext, LivePendingOrder, LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalHistoryItem, LiveSignalLifecycleFilter, SimulationHistoryPage, TradeExecutionMode, UpdateTradeStrategyConfigRequest } from '../../../shared/types'
 import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter } from '../../../shared/longbridgeTypes'
 import { localizeLongbridgeOrderError } from '../../../shared/orderErrorMessages'
+import { resolveLongbridgeUsdOverview } from './longbridgeAccountMetrics'
 import LongbridgeWorkbenchNav from './LongbridgeWorkbenchNav'
 
 const PENDING_STATUS_FILTERS: Array<{ value: LivePendingOrderStatusFilter; label: string }> = [
@@ -86,6 +89,7 @@ export default function LongbridgeLiveTradingView() {
   const [selectedModel, setSelectedModel] = useState('')
   const [selectedConcurrency, setSelectedConcurrency] = useState(1)
   const [disableUsOvernightLlm, setDisableUsOvernightLlm] = useState(true)
+  const [showEvaluationDetails, setShowEvaluationDetails] = useState(false)
   const authReady = dashboard?.sourceStatus.authStatus === 'authenticated'
   const liveEnabled = Boolean(dashboard?.sourceStatus.tradingAvailable || longbridgeLive.data?.liveTradingEnabled)
   const autoSubmitEnabled = Boolean(longbridgeLive.data?.autoSubmitEnabled)
@@ -120,6 +124,7 @@ export default function LongbridgeLiveTradingView() {
     () => Object.fromEntries((dashboard?.accountMetrics ?? []).map((item) => [item.label, item.value])),
     [dashboard?.accountMetrics],
   )
+  const usdOverview = resolveLongbridgeUsdOverview(accountMetric)
   const actionBusy = loading || longbridgeLive.refreshing || longbridgeLive.running
   const concurrencyOptions = useMemo(() => {
     const max = Math.max(1, runtimeConfig?.maxConcurrency ?? 1)
@@ -180,6 +185,20 @@ export default function LongbridgeLiveTradingView() {
           </div>
         </header>
 
+        <LiveEvaluationStatusBanner
+          status={longbridgeLive.data?.evaluationStatus}
+          accent="longbridge"
+          onOpenDetails={() => setShowEvaluationDetails(true)}
+        />
+        {showEvaluationDetails && longbridgeLive.data?.evaluationStatus ? (
+          <LiveEvaluationStatusDialog
+            status={longbridgeLive.data.evaluationStatus}
+            strategyConfig={liveConfig?.tradeStrategyConfig}
+            accent="longbridge"
+            onClose={() => setShowEvaluationDetails(false)}
+          />
+        ) : null}
+
         <section className="rounded-3xl border border-rose-200 bg-white/90 p-5 shadow-lg shadow-rose-100/40 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -228,7 +247,7 @@ export default function LongbridgeLiveTradingView() {
 
         <section className="grid gap-4 md:grid-cols-5">
           <Metric label="真实账户" value={authReady ? '长桥账户' : '不可用'} note="长桥实盘" />
-          <Metric label="美金总览" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['美金总览'] ?? '不可用'} note="账户净资产，美元" action={<AssetPrivacyToggle />} />
+          <Metric label="美金总览" value={assetPrivacyHidden ? maskAssetValue() : usdOverview} note="账户净资产，美元" action={<AssetPrivacyToggle />} />
           <Metric label="最大购买力" value={assetPrivacyHidden ? maskAssetValue() : accountMetric['最大购买力'] ?? '不可用'} note="开仓风控输入，美元" />
           <Metric label="历史策略信号" value={String(signalCount)} note="长桥独立信号库" />
           <Metric label="待确认订单" value={String(pendingOrderCount)} note="已提交 0" />
@@ -272,7 +291,7 @@ export default function LongbridgeLiveTradingView() {
                 {savingConfig ? '保存中' : '保存配置'}
               </button>
             </div>
-            <p className="mt-3 text-xs text-stone-500">并发越高评估越快；开启“禁用美股夜盘 LLM”后，美股夜盘只记录跳过原因，把并发留给港股盘中。</p>
+            <p className="mt-3 text-xs text-stone-500">并发越高评估越快；禁用美股夜盘评估后，夜盘状态仅在顶部提示，不生成策略信号。</p>
           </section>
 
           <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">
@@ -749,7 +768,11 @@ function LongbridgeSignalHistoryTable({
               </div>
               {lifecycleReason && signal.lifecycleStatus !== 'HOLD' ? (
                 <p className="mt-3 rounded-xl border border-sky-300/40 bg-sky-500/10 px-3 py-2 text-sky-800">
-                  {signal.lifecycleStatus === 'SUBMIT_FAILED' ? '提交失败' : '未进入待确认队列'}：{lifecycleReason}
+                  {signal.lifecycleStatus === 'SUBMIT_FAILED'
+                    ? '提交失败'
+                    : signal.lifecycleStatus === 'BLOCKED_BY_RISK' || signal.lifecycleStatus === 'SKIPPED'
+                      ? '风控拦截'
+                      : '未进入待确认队列'}：{lifecycleReason}
                 </p>
               ) : null}
               <p className="mt-2 leading-6 text-stone-600">{signal.reason}</p>
@@ -1057,7 +1080,7 @@ function pendingStatusLabel(status: string) {
     SUBMITTED: '已提交',
     REJECTED_BY_USER: '已拒绝',
     EXPIRED: '已过期',
-    BLOCKED_BY_RISK: '风控关闭',
+    BLOCKED_BY_RISK: '风控拦截',
     SUBMIT_FAILED: '提交失败',
   }
   return labels[status] ?? status

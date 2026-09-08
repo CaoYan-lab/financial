@@ -1,10 +1,10 @@
-import type { LiveAccountDashboardResponse, LiveEngineStatus, LiveOrderIntent, LivePendingOrder, LiveSignalHistoryItem, LlmDataWindowRecommendation, LlmTradingDecision, QuantStrategyName, TrendContextSummary } from '../../shared/types.js'
+import type { LiveAccountDashboardResponse, LiveEngineStatus, LiveOrderIntent, LivePendingOrder, LiveSignalHistoryItem, LlmDataWindowRecommendation, LlmTradingDecision, QuantStrategyName, TradeExecutionMode, TrendContextSummary } from '../../shared/types.js'
 import type { LongbridgeLiveRunOnceResponse, LongbridgeLiveTradingDashboardResponse, LongbridgeSourceStatusResponse } from '../../shared/longbridgeTypes.js'
 import { requestLivePortfolioReviewDecision } from '../live/livePortfolioReviewDecisionService.js'
 import { getActiveArkModel, getActiveDecisionConcurrency, getActiveLlmModelOption, getLlmRuntimeConfig } from '../simulation/llmRuntimeConfigService.js'
 import { llmRequestPacingPlan, waitForLlmRequestSlot, type LlmRequestPacingBatch } from '../simulation/llmRequestPacing.js'
 import { llmSimulationTickers } from '../simulation/simulationUniverse.js'
-import { llmMarketSessionSkipReason, orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
+import { orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
 import { getActiveLivePortfolioReviewPrompt, getTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
 import { logger } from '../utils/logger.js'
 import { loadLongbridgeLiveAccountDashboard, loadLongbridgeSourceStatus } from './longbridgeAdapter.js'
@@ -19,6 +19,16 @@ import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
 import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
 import { hasManagedOrderConflict } from '../live/managedOrderPolicy.js'
+import { buildLiveEvaluationStatus, liveEvaluationSkipReason } from '../trading/liveEvaluationStatusService.js'
+import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
+import {
+  loadLongbridgeMarketStates,
+  normalizeLongbridgeSymbol,
+} from './longbridgeMarketSessionService.js'
+import {
+  loadLongbridgeLotSize,
+  longbridgeTradingCurrency,
+} from './longbridgeLotSizeService.js'
 
 const STRATEGY: QuantStrategyName = 'LLM_AUTONOMOUS_STOCK_TRADER'
 const DEFAULT_RUN_INTERVAL_MS = 60_000
@@ -72,7 +82,7 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
-  stop(): LongbridgeLiveTradingDashboardResponse {
+  stop(): Promise<LongbridgeLiveTradingDashboardResponse> {
     if (this.scanTimer) {
       clearTimeout(this.scanTimer)
       this.scanTimer = undefined
@@ -95,16 +105,22 @@ class LongbridgeLiveTradingEngine {
       const account = await loadLongbridgeLiveAccountDashboard()
       this.account = account
       const runtimeConfig = getLlmRuntimeConfig().config
-      const marketSessionSkipped = marketSessionSkipsFromLongbridgeCache(universe, runtimeConfig.disableUsOvernightLlm)
+      const marketStates = await this.loadMarketStates(universe)
+      const marketSessionSkipped = marketSessionSkipsFromCalendar(universe, marketStates, runtimeConfig.disableUsOvernightLlm)
       const skippedByGate = new Set(marketSessionSkipped.flatMap((item) => [item.ticker, item.symbol]).map((item) => item.toUpperCase()))
       for (const skipped of marketSessionSkipped) {
-        recordLongbridgeSkipped(skipped.ticker, skipped.reason)
         logger.info(
           { event: 'longbridge.live.market_session_llm_skipped_preflight', symbol: skipped.symbol, ticker: skipped.ticker, marketState: skipped.marketState, reason: skipped.reason },
           'Longbridge live ticker skipped by market-session LLM preflight gate',
         )
       }
       const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
+      const accountByCurrency = new Map([
+        ['USD', account] as const,
+        ...(activeUniverse.some((ticker) => longbridgeTradingCurrency(ticker) === 'HKD')
+          ? [['HKD', await loadLongbridgeLiveAccountDashboard('HKD')] as const]
+          : []),
+      ])
       const llmConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
       const concurrency = Math.min(llmConcurrency, LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY)
       const llmPacingBatch = { batchStartedAt: performance.now(), totalRequests: activeUniverse.length }
@@ -121,7 +137,14 @@ class LongbridgeLiveTradingEngine {
         },
         'Longbridge live LLM batch started',
       )
-      await mapLimit(activeUniverse, concurrency, async (ticker, requestIndex) => this.runOnceDryRun(ticker, { reviewAfterCandidate: options.reviewAfterCandidate ?? false, ensureRealtime: false, account, llmPacingBatch, requestIndex }))
+      await mapLimit(activeUniverse, concurrency, async (ticker, requestIndex) => this.runOnceDryRun(ticker, {
+        reviewAfterCandidate: options.reviewAfterCandidate ?? false,
+        ensureRealtime: false,
+        account: accountByCurrency.get(longbridgeTradingCurrency(ticker)) ?? account,
+        llmPacingBatch,
+        requestIndex,
+        marketState: marketStates.get(normalizeLongbridgeSymbol(ticker)),
+      }))
       this.markRun(this.currentRunIntervalMs())
       return this.dashboard()
     } finally {
@@ -129,40 +152,66 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
-  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; account?: LiveAccountDashboardResponse; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
+  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; account?: LiveAccountDashboardResponse; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number; marketState?: string } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
     const warnings: string[] = []
-    const account = options.account ?? (await loadLongbridgeLiveAccountDashboard())
+    const accountCurrency = longbridgeTradingCurrency(symbol)
+    const account = options.account ?? (await loadLongbridgeLiveAccountDashboard(accountCurrency))
     const managedOpenOrders = await listManagedOrders('longbridge', true)
-    this.account = account
+    if (accountCurrency === 'USD') this.account = account
     warnings.push(...account.warnings)
+    const marketState = options.marketState
+      ?? (await this.loadMarketStates([symbol])).get(normalizeLongbridgeSymbol(symbol))
+      ?? 'UNAVAILABLE'
+    const preflightSkipReason = liveEvaluationSkipReason({
+      ticker: symbol,
+      marketState,
+      disableUsOvernightLlm: getLlmRuntimeConfig().config.disableUsOvernightLlm,
+    })
+    if (preflightSkipReason) {
+      logger.info(
+        { event: 'longbridge.live.market_session_llm_skipped_preflight', symbol, marketState, reason: preflightSkipReason },
+        'Longbridge live ticker skipped by market-session LLM preflight gate',
+      )
+      return {
+        ok: false,
+        symbol,
+        candidatePool: longbridgeCandidatePoolService.snapshot(getTradeStrategyRuntimeConfig('live').selection.executionMode),
+        pendingOrders: longbridgeOrderQueueService.activePendingOrders(),
+        warnings: [...warnings, preflightSkipReason],
+      }
+    }
     if (options.ensureRealtime ?? true) await ensureLongbridgeRealtimeSubscriptions([symbol], { waitForSeed: true, requiredKlineCount: DEFAULT_DATA_WINDOW.kline1mBars })
-    const marketData = await loadLongbridgeRealtimeStrategyMarketData(symbol, {
+    const loadedMarketData = await loadLongbridgeRealtimeStrategyMarketData(symbol, {
       klineCount: DEFAULT_DATA_WINDOW.kline1mBars,
       includeDepth: true,
       includeTrades: true,
     })
-    warnings.push(...marketData.warnings)
+    warnings.push(...loadedMarketData.warnings)
     const executionMode = getTradeStrategyRuntimeConfig('live').selection.executionMode
 
-    if (!marketData.ok) {
-      const reason = 'reason' in marketData ? marketData.reason : 'Longbridge market data unavailable'
+    if (!loadedMarketData.ok) {
+      const reason = 'reason' in loadedMarketData ? loadedMarketData.reason : 'Longbridge market data unavailable'
       recordLongbridgeSkipped(symbol, reason)
       logger.warn({ event: 'longbridge.live.ticker.skipped_before_llm', symbol, reason }, 'Longbridge live ticker skipped before LLM decision')
       return {
         ok: false,
         symbol,
-        marketData,
+        marketData: loadedMarketData,
         candidatePool: longbridgeCandidatePoolService.snapshot(executionMode),
         pendingOrders: longbridgeOrderQueueService.activePendingOrders(),
         warnings: [...warnings, reason],
       }
     }
 
+    const lotSize = await loadLongbridgeLotSize(
+      getLongbridgeSdkContexts().quote,
+      loadedMarketData.symbol,
+    )
+    const marketData = { ...loadedMarketData, marketState, lotSize }
     const dataWindow = effectiveDataWindow(marketData)
-    const sessionSkipReason = llmMarketSessionSkipReason({ ticker: marketData.ticker, marketState: marketData.marketState, disableUsOvernightLlm: getLlmRuntimeConfig().config.disableUsOvernightLlm })
+    const sessionSkipReason = liveEvaluationSkipReason({ ticker: marketData.ticker, marketState: marketData.marketState, disableUsOvernightLlm: getLlmRuntimeConfig().config.disableUsOvernightLlm })
     if (sessionSkipReason) {
       warnings.push(sessionSkipReason)
-      recordLongbridgeSkipped(marketData.ticker, sessionSkipReason)
       logger.info({ event: 'longbridge.live.market_session_llm_skipped', symbol: marketData.symbol, ticker: marketData.ticker, marketState: marketData.marketState, reason: sessionSkipReason }, 'Longbridge live ticker skipped by market-session LLM gate')
       return {
         ok: false,
@@ -195,10 +244,17 @@ class LongbridgeLiveTradingEngine {
       ? `存在未终态系统挂单 ${managedConflict.orderId}，本轮禁止生成重复或反向订单。`
       : decision.ok && decision.approved && decision.action !== 'HOLD' && decision.orderQuantity > 0
         ? orderSession
-          ? longbridgeOpeningRiskRejectionReason(account, decision, decision.limitPrice || marketData.lastPrice, getTradeStrategyRuntimeConfig('live').activeStrategy)
+          ? longbridgeOpeningRiskRejectionReason(
+              account,
+              decision,
+              decision.limitPrice || marketData.lastPrice,
+              getTradeStrategyRuntimeConfig('live').activeStrategy,
+              marketData.symbol,
+              marketData.lotSize,
+            )
           : `当前市场状态 ${marketData.marketState || '不可用'} 只允许策略研究，不允许生成真实订单。`
         : undefined
-    const signal = signalFromDecision(decision, marketData, trendContext, riskRejectionReason)
+    const signal = signalFromDecision(decision, marketData, trendContext, executionMode, riskRejectionReason)
     longbridgePersistence.appendSignal(signal)
 
     if (riskRejectionReason) warnings.push(riskRejectionReason)
@@ -208,11 +264,14 @@ class LongbridgeLiveTradingEngine {
         const candidate = longbridgeCandidatePoolService.upsert({ signal, decision, marketData })
           if (options.reviewAfterCandidate ?? true) {
             const promoted = await this.reviewCandidatePool(account)
+            const promotedStates = await this.loadMarketStates(promoted.map((item) => item.ticker))
             for (const promotedCandidate of promoted) {
-              const candidateMarketData = promotedCandidate.marketData?.ok ? promotedCandidate.marketData : marketData
+              const candidateMarketData = {
+                ...(promotedCandidate.marketData?.ok ? promotedCandidate.marketData : marketData),
+                marketState: promotedStates.get(normalizeLongbridgeSymbol(promotedCandidate.ticker)) ?? 'UNAVAILABLE',
+              }
               const promotedOrderSession = orderSessionForMarketState(candidateMarketData.marketState)
               if (!promotedOrderSession) {
-                recordLongbridgeSkipped(promotedCandidate.ticker, `组合裁决已推进，但当前市场状态 ${candidateMarketData.marketState || '不可用'} 不允许生成真实订单。`)
                 continue
               }
               const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(promotedCandidate.decision as LlmTradingDecision, promotedCandidate.signal, candidateMarketData, promotedOrderSession), promotedCandidate)
@@ -238,11 +297,19 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
-  dashboard(): LongbridgeLiveTradingDashboardResponse {
+  async dashboard(): Promise<LongbridgeLiveTradingDashboardResponse> {
     const executionMode = getTradeStrategyRuntimeConfig('live').selection.executionMode
+    const universe = this.engine.universe.length ? this.engine.universe : llmSimulationTickers()
+    const marketStates = await this.loadMarketStates(universe)
     return {
       ok: true,
       engine: this.getEngine(),
+      evaluationStatus: buildLiveEvaluationStatus({
+        running: this.engine.running,
+        items: longbridgeEvaluationMarketStates(universe, marketStates),
+        disableUsOvernightLlm: getLlmRuntimeConfig().config.disableUsOvernightLlm,
+        lastError: this.engine.lastError,
+      }),
       ...getLongbridgeLiveSettings(),
       signals: longbridgePersistence.latestSignals(),
       pendingOrders: longbridgeOrderQueueService.activePendingOrders(),
@@ -389,6 +456,14 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
+  private async loadMarketStates(symbols: string[]): Promise<Map<string, string>> {
+    try {
+      return await loadLongbridgeMarketStates(getLongbridgeSdkContexts().quote, symbols)
+    } catch {
+      return new Map(symbols.map((symbol) => [normalizeLongbridgeSymbol(symbol), 'UNAVAILABLE']))
+    }
+  }
+
   private scheduleNextScan(delayMs: number) {
     if (!this.engine.running) return
     const nextRunAt = new Date(Date.now() + delayMs).toISOString()
@@ -411,14 +486,15 @@ class LongbridgeLiveTradingEngine {
       this.reviewTimer = undefined
         this.reviewCandidatePool()
           .then(async (promoted) => {
+          const marketStates = await this.loadMarketStates(promoted.map((item) => item.ticker))
           for (const candidate of promoted) {
             if (!candidate.marketData?.ok) continue
-            const orderSession = orderSessionForMarketState(candidate.marketData.marketState)
+            const marketState = marketStates.get(normalizeLongbridgeSymbol(candidate.ticker)) ?? 'UNAVAILABLE'
+            const orderSession = orderSessionForMarketState(marketState)
             if (!orderSession) {
-              recordLongbridgeSkipped(candidate.ticker, `组合裁决已推进，但当前市场状态 ${candidate.marketData.marketState || '不可用'} 不允许生成真实订单。`)
               continue
             }
-            const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(candidate.decision as LlmTradingDecision, candidate.signal, candidate.marketData, orderSession), candidate)
+            const pending = longbridgeCandidatePoolService.decoratePendingOrder(pendingOrderFromDecision(candidate.decision as LlmTradingDecision, candidate.signal, { ...candidate.marketData, marketState }, orderSession), candidate)
             await this.createOrAutoSubmitPendingOrder(pending)
           }
           this.markRun(this.currentRunIntervalMs())
@@ -435,9 +511,20 @@ class LongbridgeLiveTradingEngine {
 
 export const longbridgeLiveTradingEngine = new LongbridgeLiveTradingEngine()
 
-function signalFromDecision(decision: LlmTradingDecision, marketData: Extract<Awaited<ReturnType<typeof loadLongbridgeRealtimeStrategyMarketData>>, { ok: true }>, trendContext?: TrendContextSummary, riskRejectionReason?: string): LiveSignalHistoryItem {
+function signalFromDecision(
+  decision: LlmTradingDecision,
+  marketData: Extract<Awaited<ReturnType<typeof loadLongbridgeRealtimeStrategyMarketData>>, { ok: true }>,
+  trendContext: TrendContextSummary | undefined,
+  executionMode: TradeExecutionMode,
+  riskRejectionReason?: string,
+): LiveSignalHistoryItem {
   const now = new Date().toISOString()
   const modelOption = getActiveLlmModelOption()
+  const { lifecycleStatus, lifecycleReason } = longbridgeSignalLifecycle(
+    executionMode,
+    decision.action,
+    riskRejectionReason,
+  )
   return {
     id: `longbridge-signal-${marketData.ticker}-${Date.now()}`,
     ticker: marketData.ticker,
@@ -469,8 +556,37 @@ function signalFromDecision(decision: LlmTradingDecision, marketData: Extract<Aw
     whyNotNoise: decision.whyNotNoise,
     source: marketData.source,
     rawModelOutput: decision.rawText,
-    lifecycleStatus: riskRejectionReason ? 'BLOCKED_BY_RISK' : decision.action === 'HOLD' ? 'HOLD' : 'CANDIDATE_POOL',
-    lifecycleReason: riskRejectionReason ?? (decision.action === 'HOLD' ? '模型建议 HOLD。' : '长桥 dry-run 非观望信号。'),
+    lifecycleStatus,
+    lifecycleReason,
+  }
+}
+
+export function longbridgeSignalLifecycle(
+  executionMode: TradeExecutionMode,
+  action: LlmTradingDecision['action'],
+  riskRejectionReason?: string,
+): Pick<LiveSignalHistoryItem, 'lifecycleStatus' | 'lifecycleReason'> {
+  if (riskRejectionReason) {
+    return {
+      lifecycleStatus: 'BLOCKED_BY_RISK',
+      lifecycleReason: riskRejectionReason,
+    }
+  }
+  if (action === 'HOLD') {
+    return {
+      lifecycleStatus: 'HOLD',
+      lifecycleReason: '模型建议 HOLD。',
+    }
+  }
+  if (executionMode === 'candidate_pool') {
+    return {
+      lifecycleStatus: 'CANDIDATE_POOL',
+      lifecycleReason: '已进入组合策略候选池，等待组合裁决。',
+    }
+  }
+  return {
+    lifecycleStatus: 'PENDING_CONFIRMATION',
+    lifecycleReason: '已生成待确认订单，等待人工确认。',
   }
 }
 
@@ -529,17 +645,29 @@ function effectiveWindowSize(requested: number, available: number, minimum: numb
   return Math.min(requested, Math.max(minimum, available))
 }
 
-function marketSessionSkipsFromLongbridgeCache(
+function marketSessionSkipsFromCalendar(
   symbols: string[],
+  marketStates: Map<string, string>,
   disableUsOvernightLlm: boolean,
 ): { symbol: string; ticker: string; marketState?: string; reason: string }[] {
   return symbols.flatMap((symbol) => {
     const snapshot = longbridgeRealtimeStore.getSnapshot(symbol)
     const ticker = (snapshot?.ticker ?? symbol).toUpperCase()
-    const marketState = snapshot?.quote?.marketState
-    const reason = llmMarketSessionSkipReason({ ticker, marketState, disableUsOvernightLlm })
+    const marketState = marketStates.get(normalizeLongbridgeSymbol(symbol))
+    const reason = liveEvaluationSkipReason({ ticker, marketState, disableUsOvernightLlm })
     if (!reason) return []
     return [{ symbol: (snapshot?.symbol ?? symbol).toUpperCase(), ticker, marketState, reason }]
+  })
+}
+
+function longbridgeEvaluationMarketStates(symbols: string[], marketStates: Map<string, string>) {
+  return symbols.map((symbol) => {
+    const snapshot = longbridgeRealtimeStore.getSnapshot(symbol)
+    return {
+      ticker: (snapshot?.ticker ?? symbol).toUpperCase(),
+      marketState: marketStates.get(normalizeLongbridgeSymbol(symbol)),
+      updatedAt: new Date().toISOString(),
+    }
   })
 }
 

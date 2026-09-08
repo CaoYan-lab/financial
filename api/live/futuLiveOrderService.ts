@@ -5,7 +5,10 @@ import type {
   LiveOrderResult,
 } from '../../shared/types.js'
 import type { ManagedCancelBrokerResponse } from '../../shared/managedOrderTypes.js'
+import { realtimeStore } from '../realtime/realtimeStore.js'
+import { llmUniverseItem } from '../simulation/simulationUniverse.js'
 import { runPythonBridge } from '../utils/runPythonBridge.js'
+import { openingLotSizeFailureReason } from '../longbridge/longbridgeLotSizeService.js'
 import { loadActualOrderFees, mergeFeeContext } from './liveFeeService.js'
 
 type QueryInput = {
@@ -135,6 +138,20 @@ export async function loadFutuLiveOrders(input: QueryInput): Promise<FutuLiveOrd
 export async function submitLiveOrder(accountId: string, pendingOrderId: string, confirmationId: string, intent: LiveOrderResultInput): Promise<LiveOrderResult> {
   if (process.env.LIVE_TRADING_ENABLED !== 'true' || process.env.FUTU_LIVE_TRD_ENV !== 'REAL') {
     return blockedLiveOrder(pendingOrderId, intent, 'LIVE_TRADING_ENABLED=true 且 FUTU_LIVE_TRD_ENV=REAL 时才允许提交真实订单。')
+  }
+  const isHongKong = llmUniverseItem(intent.ticker)?.market === 'HK'
+  const lotSize = realtimeStore.snapshot(intent.ticker).quote?.lotSize
+  if (isHongKong && (!Number.isFinite(lotSize) || Number(lotSize) <= 0)) {
+    return blockedLiveOrder(pendingOrderId, intent, 'Futu REAL order blocked: 无法确认港股每手股数。')
+  }
+  const lotSizeFailure = openingLotSizeFailureReason({
+    symbol: intent.ticker,
+    action: intent.side,
+    quantity: intent.quantity,
+    lotSize,
+  })
+  if (lotSizeFailure) {
+    return blockedLiveOrder(pendingOrderId, intent, `Futu REAL order blocked: ${lotSizeFailure}`)
   }
   const submittedAt = new Date().toISOString()
   const bridge = await runPythonBridge<LiveOrderResult>('futu_live_order.py', {

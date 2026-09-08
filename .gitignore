@@ -52,3 +52,7 @@ terraform.tfvars.json
 deploy/volcano/faas/out/
 crash.log
 crash.log.*
+coverage/
+playwright-report/
+test-results/
+.data/test-results/

@@ -99,19 +99,26 @@ def fetch_summary(trade_ctx, TrdEnv, source, account_id=0, target_currency="USD"
     return {
         "accountId": str(row.get("acc_id", account_id or UNAVAILABLE)),
         "currency": generic_currency,
-        "totalAssets": money(row.get("total_assets")),
-        "cash": money(row.get("cash")),
-        "availableFunds": money(row.get("avl_withdrawal_cash") or row.get("available_funds")),
-        "buyingPower": money(buying_power),
+        "totalAssets": currency_money(row.get("total_assets"), generic_currency),
+        "cash": currency_money(row.get("cash"), generic_currency),
+        "availableFunds": currency_money(row.get("avl_withdrawal_cash") or row.get("available_funds"), generic_currency),
+        "buyingPower": currency_money(buying_power, generic_currency),
         "tradingCurrency": target_currency,
-        "totalAssetsInTradingCurrency": money(total_assets_in_target),
-        "cashInTradingCurrency": money(cash_in_target),
-        "availableFundsInTradingCurrency": money(available_in_target),
-        "buyingPowerInTradingCurrency": money(buying_power_in_target),
-        "dailyPnL": money(row.get("today_pl_val")),
-        "totalPnL": money(row.get("total_pl_val")),
+        "totalAssetsInTradingCurrency": currency_money(total_assets_in_target, target_currency),
+        "cashInTradingCurrency": currency_money(cash_in_target, target_currency),
+        "availableFundsInTradingCurrency": currency_money(available_in_target, target_currency),
+        "buyingPowerInTradingCurrency": currency_money(buying_power_in_target, target_currency),
+        "dailyPnL": currency_money(row.get("today_pl_val"), generic_currency),
+        "totalPnL": currency_money(row.get("total_pl_val"), generic_currency),
         "source": source,
     }
+
+
+def currency_money(value, currency):
+    formatted = money(value)
+    if formatted == UNAVAILABLE or str(currency).upper() != "HKD":
+        return formatted
+    return f"HK{formatted}"
 
 
 def currency_specific_value(row, target_currency, kind, generic_value):

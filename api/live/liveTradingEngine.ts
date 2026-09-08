@@ -23,7 +23,7 @@ import { attachMarketSessions, latestMarketSessions, loadMarketSessions } from '
 import { loadStrategyMarketData } from '../simulation/realtimeDataAdapter.js'
 import { loadTrendContext } from '../simulation/trendContextService.js'
 import { LLM_SIMULATION_UNIVERSE, isInLlmSimulationUniverse, llmSimulationTickers, llmUniverseItem } from '../simulation/simulationUniverse.js'
-import { llmMarketSessionSkipReason, orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
+import { orderSessionForMarketState } from '../simulation/usOvernightLlmGate.js'
 import { liveOrderQueueService } from './liveOrderQueueService.js'
 import { loadLiveAccountDashboard, parseMoney } from './liveAccountService.js'
 import { requestLiveTradingDecision } from './liveTradingDecisionService.js'
@@ -34,6 +34,8 @@ import { requestLivePortfolioReviewDecision } from './livePortfolioReviewDecisio
 import { getFutuLiveSettings } from './liveSettings.js'
 import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
 import { hasManagedOrderConflict } from './managedOrderPolicy.js'
+import { buildLiveEvaluationStatus, liveEvaluationSkipReason } from '../trading/liveEvaluationStatusService.js'
+import { openingLotSizeFailureReason } from '../longbridge/longbridgeLotSizeService.js'
 
 const DEFAULT_RUN_INTERVAL_MS = 60_000
 const LIVE_TIMER_PHASE_OFFSET_MS = Number(process.env.LIVE_TRADING_TIMER_OFFSET_MS || 30_000)
@@ -53,12 +55,19 @@ class LiveTradingEngine {
   async dashboard(): Promise<LiveTradingDashboardResponse> {
     const account = this.account ?? (await loadLiveAccountDashboard())
     const marketSessions = await loadMarketSessions(llmSimulationTickers())
+    const runtimeConfig = getLlmRuntimeConfig().config
     const executionMode = getTradeStrategyRuntimeConfig('live').selection.executionMode
     return {
       account,
       engine: this.getEngine(),
+      evaluationStatus: buildLiveEvaluationStatus({
+        running: this.engine.running,
+        items: evaluationMarketStates(this.engine.universe.length ? this.engine.universe : llmSimulationTickers(), marketSessions),
+        disableUsOvernightLlm: runtimeConfig.disableUsOvernightLlm,
+        lastError: this.engine.lastError,
+      }),
       universe: attachMarketSessions(LLM_SIMULATION_UNIVERSE, marketSessions),
-      llmRuntimeConfig: getLlmRuntimeConfig().config,
+      llmRuntimeConfig: runtimeConfig,
       modelOptions: getLlmRuntimeConfig().modelOptions,
       latestSignals: liveOrderQueueService.latestSignals(),
       pendingOrders: liveOrderQueueService.activePendingOrders(),
@@ -114,6 +123,12 @@ class LiveTradingEngine {
       return {
         account,
         engine: this.getEngine(),
+        evaluationStatus: buildLiveEvaluationStatus({
+          running: false,
+          items: evaluationMarketStates(llmSimulationTickers(), latestMarketSessions()),
+          disableUsOvernightLlm: getLlmRuntimeConfig().config.disableUsOvernightLlm,
+          lastError: this.engine.lastError,
+        }),
         universe: attachMarketSessions(LLM_SIMULATION_UNIVERSE, latestMarketSessions()),
         llmRuntimeConfig: getLlmRuntimeConfig().config,
         modelOptions: getLlmRuntimeConfig().modelOptions,
@@ -159,13 +174,20 @@ class LiveTradingEngine {
     const marketSessionSkipped = marketSessionSkipsFromRealtime(universe, runtimeConfig, marketSessions)
     const skippedByGate = new Set(marketSessionSkipped.map((item) => item.ticker))
     for (const skipped of marketSessionSkipped) {
-      liveOrderQueueService.recordSkipped(skipped.ticker, skipped.reason)
       logger.info(
         { event: 'live.ticker.market_session_llm_skipped_preflight', ticker: skipped.ticker, marketState: skipped.marketState, reason: skipped.reason },
         'Live ticker skipped by market-session LLM preflight gate',
       )
     }
     const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
+    const accountByCurrency = new Map<string, LiveAccountDashboardResponse>([['USD', account]])
+    if (activeUniverse.some((ticker) => llmUniverseItem(ticker)?.market === 'HK')) {
+      accountByCurrency.set('HKD', await loadLiveAccountDashboard({
+        accountId: this.engine.accountId,
+        market: 'HK',
+        tradingCurrency: 'HKD',
+      }))
+    }
     const managedOpenOrders = await listManagedOrders('futu', true)
     const positions = stockPositionsByTicker(account.positions)
     const decisionConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
@@ -210,6 +232,7 @@ class LiveTradingEngine {
         return { ticker, skipped: marketData.reason }
       }
       const position = positions.get(ticker)
+      const tickerAccount = accountByCurrency.get(universeItem?.market === 'HK' ? 'HKD' : 'USD') ?? account
       logger.info(
         {
           event: 'live.market_data.ready',
@@ -225,10 +248,10 @@ class LiveTradingEngine {
         },
         'Live market data ready',
       )
-      const sessionSkipReason = llmMarketSessionSkipReason({ ticker, marketState: marketData.marketState, disableUsOvernightLlm: runtimeConfig.disableUsOvernightLlm })
+      const sessionSkipReason = liveEvaluationSkipReason({ ticker, marketState: marketData.marketState, disableUsOvernightLlm: runtimeConfig.disableUsOvernightLlm })
       if (sessionSkipReason) {
         logger.info({ event: 'live.ticker.market_session_llm_skipped', ...logMeta, marketState: marketData.marketState, reason: sessionSkipReason }, 'Live ticker skipped by market-session LLM gate')
-        return { ticker, skipped: sessionSkipReason }
+        return { ticker, skipped: sessionSkipReason, skipKind: 'market-session' as const }
       }
       const trendContext = await loadTrendContext(ticker, {
         lookbackTradingDays: tickerDataWindow.trendLookbackTradingDays ?? 7,
@@ -251,9 +274,9 @@ class LiveTradingEngine {
       const decision = await requestLiveTradingDecision({
         ticker,
         universe: LLM_SIMULATION_UNIVERSE,
-        account,
+        account: tickerAccount,
         marketData,
-        allPositions: account.positions,
+        allPositions: tickerAccount.positions,
         position,
         dataWindow: tickerDataWindow,
         riskModel: buildRiskModelDescription('live'),
@@ -277,19 +300,22 @@ class LiveTradingEngine {
         },
         'Live LLM decision received',
       )
-      return { ticker, marketData, position, decision, trendContext }
+      return { ticker, marketData, position, decision, trendContext, account: tickerAccount }
     })
 
     let pendingCount = 0
     let skippedCount = 0
     for (const evaluation of evaluations) {
       if (evaluation.skipped) {
-        liveOrderQueueService.recordSkipped(evaluation.ticker, evaluation.skipped)
+        const marketSessionSkip = 'skipKind' in evaluation && evaluation.skipKind === 'market-session'
+        if (!marketSessionSkip) {
+          liveOrderQueueService.recordSkipped(evaluation.ticker, evaluation.skipped)
+        }
         skippedCount += 1
         logger.warn({ event: 'live.ticker.skipped_before_llm', ticker: evaluation.ticker, reason: evaluation.skipped }, 'Live ticker skipped before LLM decision')
         continue
       }
-      const { ticker, marketData, position, decision, trendContext } = evaluation
+      const { ticker, marketData, position, decision, trendContext, account: tickerAccount } = evaluation
       const signal = signalFromDecision(decision, marketData.updatedAt, runtimeConfig, trendContext)
       liveOrderQueueService.addSignal(signal)
       this.engine = { ...this.engine, signalCount: this.engine.signalCount + 1 }
@@ -355,7 +381,7 @@ class LiveTradingEngine {
         logger.warn({ event: 'live.order.session_blocked', ...decisionLogMeta(ticker), signalId: signal.id, side: decision.action, marketState: marketSession?.state, labelZh: marketSession?.labelZh }, 'Live order blocked by market session')
         continue
       }
-      const intentResult = buildOrderIntent(decision, account, position, marketData, orderSession, signal.id, tradeStrategy)
+      const intentResult = buildOrderIntent(decision, tickerAccount, position, marketData, orderSession, signal.id, tradeStrategy)
       if (!intentResult.intent) {
         liveOrderQueueService.recordSkipped(ticker, intentResult.blockedReason ?? '大模型实盘建议未通过后端硬风控，未进入待确认队列。', {
           signalId: signal.id,
@@ -742,7 +768,13 @@ function buildOrderIntent(
     const shortQuantity = Math.abs(positionQuantity(position))
     if (decision.orderQuantity > shortQuantity) return { blockedReason: `空头回补 BUY 被拦截：建议数量 ${decision.orderQuantity} 超过空头数量 ${shortQuantity}。` }
   } else if (decision.action === 'BUY' || decision.action === 'SELL_SHORT') {
-    const blockedReason = openingRiskRejectionReason(account, decision, limitPrice, tradeStrategy)
+    const blockedReason = openingRiskRejectionReason(
+      account,
+      decision,
+      limitPrice,
+      tradeStrategy,
+      marketData.lotSize,
+    )
     if (blockedReason) return { blockedReason }
   }
   return {
@@ -757,8 +789,15 @@ function buildOrderIntent(
       signalId,
       reason: decision.reason,
       sizingReason: decision.riskAssessment,
-      estimatedNotional: formatMoney(decision.orderQuantity * limitPrice),
-      feeContext: estimatePreTradeFee(decision.orderQuantity, limitPrice),
+      estimatedNotional: formatCurrencyMoney(
+        decision.orderQuantity * limitPrice,
+        account.summary.tradingCurrency ?? 'USD',
+      ),
+      feeContext: estimatePreTradeFee(
+        decision.orderQuantity,
+        limitPrice,
+        account.summary.tradingCurrency ?? 'USD',
+      ),
     },
   }
 }
@@ -836,7 +875,24 @@ function marketableLimitPrice(decision: LlmTradingDecision, marketData: Extract<
   return roundPrice(Math.min(decision.limitPrice, reference * (1 - slippage)))
 }
 
-export function openingRiskRejectionReason(account: LiveAccountDashboardResponse, decision: LlmTradingDecision, limitPrice: number, tradeStrategy: TradeStrategyConfig): string | undefined {
+export function openingRiskRejectionReason(
+  account: LiveAccountDashboardResponse,
+  decision: LlmTradingDecision,
+  limitPrice: number,
+  tradeStrategy: TradeStrategyConfig,
+  lotSize?: number,
+): string | undefined {
+  const isHongKong = llmUniverseItem(decision.ticker)?.market === 'HK'
+  if (isHongKong && (!Number.isFinite(lotSize) || Number(lotSize) <= 0)) {
+    return '开仓风控被拦截：无法确认港股每手股数。'
+  }
+  const lotSizeFailure = openingLotSizeFailureReason({
+    symbol: decision.ticker,
+    action: decision.action,
+    quantity: decision.orderQuantity,
+    lotSize,
+  })
+  if (lotSizeFailure) return `开仓风控被拦截：${lotSizeFailure}`
   const equity = parseMoney(account.summary.totalAssetsInTradingCurrency) ?? parseMoney(account.summary.totalAssets) ?? parseMoney(account.summary.buyingPowerInTradingCurrency) ?? parseMoney(account.summary.buyingPower)
   const buyingPower = parseMoney(account.summary.buyingPowerInTradingCurrency) ?? parseMoney(account.summary.availableFundsInTradingCurrency) ?? parseMoney(account.summary.buyingPower) ?? equity
   const tradingCurrency = account.summary.tradingCurrency ?? 'USD'
@@ -845,7 +901,12 @@ export function openingRiskRejectionReason(account: LiveAccountDashboardResponse
   const singleNameHardBlock = decision.action === 'SELL_SHORT' ? controls.shortExposure?.mode === 'hard_block' : controls.singleNameExposure?.mode === 'hard_block'
   const maxSingleNamePct = decision.action === 'SELL_SHORT' ? controls.shortExposure?.maxSingleNamePctEquity : controls.singleNameExposure?.maxPctEquity
   const buyingPowerPct = controls.buyingPowerProtection?.maxPctBuyingPower ?? 0.95
-  const estimatedFee = estimatePreTradeFee(decision.orderQuantity, limitPrice).feeAmount ?? Infinity
+  const estimatedFeeContext = estimatePreTradeFee(
+    decision.orderQuantity,
+    limitPrice,
+    tradingCurrency,
+  )
+  const estimatedFee = estimatedFeeContext.feeAmount ?? Infinity
   const feeRatio = estimatedFee / notional
   const maxFeeRatio = controls.feeDrag?.maxRoundTripFeePctNotional
   const leveragedLongEtfShortBlocked = decision.action === 'SELL_SHORT' && isLeveragedLongEtf(decision.ticker)
@@ -856,7 +917,7 @@ export function openingRiskRejectionReason(account: LiveAccountDashboardResponse
     quantity: decision.orderQuantity,
     limitPrice,
     notional,
-    notionalText: formatMoney(notional),
+    notionalText: formatCurrencyMoney(notional, tradingCurrency),
     tradingCurrency,
     equity,
     buyingPower,
@@ -888,22 +949,22 @@ export function openingRiskRejectionReason(account: LiveAccountDashboardResponse
     return reason
   }
   if (controls.minNotional?.mode === 'hard_block' && notional < controls.minNotional.amount) {
-    const reason = `开仓风控被拦截：名义金额 ${formatMoney(notional)} 低于最低开仓金额 ${formatMoney(controls.minNotional.amount)}。`
+    const reason = `开仓风控被拦截：名义金额 ${formatCurrencyMoney(notional, tradingCurrency)} 低于最低开仓金额 ${formatCurrencyMoney(controls.minNotional.amount, tradingCurrency)}。`
     logger.warn({ ...context, passed: false, blockedRule: 'min_notional', reason }, 'Live opening risk blocked')
     return reason
   }
   if (singleNameHardBlock && maxSingleNamePct !== undefined && notional > equity * maxSingleNamePct) {
-    const reason = `开仓风控被拦截：名义金额 ${formatMoney(notional)} 超过当前策略 ${tradingCurrency} 单票权益硬上限 ${formatMoney(equity * maxSingleNamePct)}（${(maxSingleNamePct * 100).toFixed(2)}%）。`
+    const reason = `开仓风控被拦截：名义金额 ${formatCurrencyMoney(notional, tradingCurrency)} 超过当前策略 ${tradingCurrency} 单票权益硬上限 ${formatCurrencyMoney(equity * maxSingleNamePct, tradingCurrency)}（${(maxSingleNamePct * 100).toFixed(2)}%）。`
     logger.warn({ ...context, passed: false, blockedRule: 'single_name_hard_limit', reason }, 'Live opening risk blocked')
     return reason
   }
   if (controls.buyingPowerProtection?.mode !== 'off' && notional > buyingPower * buyingPowerPct) {
-    const reason = `开仓风控被拦截：名义金额 ${formatMoney(notional)} 超过 ${tradingCurrency} 可用购买力保护线 ${formatMoney(buyingPower * buyingPowerPct)}。`
+    const reason = `开仓风控被拦截：名义金额 ${formatCurrencyMoney(notional, tradingCurrency)} 超过 ${tradingCurrency} 可用购买力保护线 ${formatCurrencyMoney(buyingPower * buyingPowerPct, tradingCurrency)}。`
     logger.warn({ ...context, passed: false, blockedRule: 'buying_power_protection', reason }, 'Live opening risk blocked')
     return reason
   }
   if (maxFeeRatio !== undefined && controls.feeDrag?.mode !== 'off' && feeRatio > maxFeeRatio) {
-    const reason = `开仓风控被拦截：估算往返费用 ${formatMoney(estimatedFee)} 占名义金额 ${(feeRatio * 100).toFixed(2)}%，超过当前策略上限 ${(maxFeeRatio * 100).toFixed(2)}%。`
+    const reason = `开仓风控被拦截：估算往返费用 ${formatCurrencyMoney(estimatedFee, tradingCurrency)} 占名义金额 ${(feeRatio * 100).toFixed(2)}%，超过当前策略上限 ${(maxFeeRatio * 100).toFixed(2)}%。`
     logger.warn({ ...context, passed: false, blockedRule: 'fee_drag', reason }, 'Live opening risk blocked')
     return reason
   }
@@ -1054,10 +1115,26 @@ function marketSessionSkipsFromRealtime(
   return tickers.flatMap((ticker) => {
     const normalized = ticker.toUpperCase()
     const snapshot = realtimeStore.snapshot(normalized)
-    const marketState = snapshot.quote?.marketState ?? marketSessions[normalized]?.state
-    const reason = llmMarketSessionSkipReason({ ticker: normalized, marketState, disableUsOvernightLlm: runtimeConfig.disableUsOvernightLlm })
+    const marketState = marketSessions[normalized]?.state ?? snapshot.quote?.marketState
+    const reason = liveEvaluationSkipReason({ ticker: normalized, marketState, disableUsOvernightLlm: runtimeConfig.disableUsOvernightLlm })
     if (!reason) return []
     return [{ ticker: normalized, marketState, reason }]
+  })
+}
+
+function evaluationMarketStates(
+  tickers: string[],
+  marketSessions: Record<string, MarketSessionStatus>,
+) {
+  return tickers.map((ticker) => {
+    const normalized = ticker.toUpperCase()
+    const snapshot = realtimeStore.snapshot(normalized)
+    const session = marketSessions[normalized]
+    return {
+      ticker: normalized,
+      marketState: session?.state ?? snapshot.quote?.marketState,
+      updatedAt: session?.updatedAt ?? snapshot.quote?.updatedAt,
+    }
   })
 }
 
@@ -1069,6 +1146,10 @@ function positionQuantity(position?: Pick<Position, 'quantity'>): number {
 
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`
+}
+
+function formatCurrencyMoney(value: number, currency: string): string {
+  return `${currency === 'HKD' ? 'HK$' : '$'}${value.toFixed(2)}`
 }
 
 function roundPrice(value: number): number {

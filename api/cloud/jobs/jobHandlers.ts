@@ -80,7 +80,7 @@ function engines(): Record<string, EngineHandle> {
 }
 
 async function collectLongbridgeCloudSnapshot(): Promise<Record<string, unknown>> {
-  const dashboard = longbridgeLiveTradingEngine.dashboard()
+  const dashboard = await longbridgeLiveTradingEngine.dashboard()
   const [workbench, account] = await Promise.all([
     loadLongbridgeWorkbenchDashboard(),
     loadLongbridgeLiveAccountDashboard(),
@@ -335,18 +335,18 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
       case 'start': {
         const dashboard = await engine.start()
         logger.info({ event: 'cloud.worker.job.start_done', platform }, '引擎启动指令完成')
-        return { ok: true, summary: { platform, dashboard: sanitize(dashboard) } }
+        return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
       case 'stop': {
         const dashboard = engine.stop()
         logger.info({ event: 'cloud.worker.job.stop_done', platform }, '引擎停止指令完成')
-        return { ok: true, summary: { platform, dashboard: sanitize(dashboard) } }
+        return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
       case 'run_once': {
         if (!engine.runOnce) return { ok: false, error: `${platform} 不支持 run_once` }
         const dashboard = await engine.runOnce()
         logger.info({ event: 'cloud.worker.job.run_once_done', platform }, '引擎单轮评估完成')
-        return { ok: true, summary: { platform, dashboard: sanitize(dashboard) } }
+        return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
       default:
         return { ok: false, error: `未知动作: ${action}` }
@@ -392,7 +392,7 @@ export async function collectEngineSnapshots(): Promise<Record<string, unknown>>
   const registry = engines()
   for (const [key, engine] of Object.entries(registry)) {
     try {
-      snapshot[key] = sanitize(await engine.status())
+      snapshot[key] = sanitizeWorkerSnapshot(await engine.status())
     } catch (error) {
       snapshot[key] = { error: error instanceof Error ? error.message : String(error) }
     }
@@ -404,7 +404,7 @@ export async function collectEngineSnapshots(): Promise<Record<string, unknown>>
 const SNAPSHOT_MAX_CHARS = 200_000
 
 /** 快照可能含循环引用或超大字段：先 JSON 安全化，超限时递归裁剪（保留账户/连接等标量字段）。 */
-function sanitize(value: unknown): unknown {
+export function sanitizeWorkerSnapshot(value: unknown): unknown {
   let safe: unknown
   try {
     safe = JSON.parse(JSON.stringify(value))
@@ -432,11 +432,17 @@ function sanitize(value: unknown): unknown {
 }
 
 /** 递归裁剪：标量数组完整保留，对象数组只截断不混入异构标记，对象逐键递归。 */
-function trimDeep(value: unknown, arrayKeep: number, stringMax: number): unknown {
+function trimDeep(
+  value: unknown,
+  arrayKeep: number,
+  stringMax: number,
+  path: string[] = [],
+): unknown {
   if (Array.isArray(value)) {
     const scalarOnly = value.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item))
-    const items = scalarOnly ? value : value.slice(0, arrayKeep)
-    return items.map((item) => trimDeep(item, arrayKeep, stringMax))
+    const preserveMarketStates = path.at(-2) === 'evaluationStatus' && path.at(-1) === 'items'
+    const items = scalarOnly || preserveMarketStates ? value : value.slice(0, arrayKeep)
+    return items.map((item) => trimDeep(item, arrayKeep, stringMax, path))
   }
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {}
@@ -444,7 +450,7 @@ function trimDeep(value: unknown, arrayKeep: number, stringMax: number): unknown
       if (typeof v === 'string') {
         out[k] = v.length > stringMax ? `${v.slice(0, stringMax)}…(${v.length}字符)` : v
       } else {
-        out[k] = trimDeep(v, arrayKeep, stringMax)
+        out[k] = trimDeep(v, arrayKeep, stringMax, [...path, k])
       }
     }
     return out

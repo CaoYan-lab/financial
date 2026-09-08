@@ -45,6 +45,7 @@ function isDashboardResponse(payload: unknown): payload is LongbridgeLiveTrading
   const dashboard = payload as Partial<LongbridgeLiveTradingDashboardResponse>
   return Boolean(
     dashboard.engine
+    && dashboard.evaluationStatus
     && Array.isArray(dashboard.signals)
     && Array.isArray(dashboard.pendingOrders)
     && dashboard.candidatePool,

@@ -13,6 +13,7 @@ describe('realtimeStore', () => {
         code: 'US.GOOG',
         name: 'Alphabet',
         price: '$100.00',
+        lotSize: 1,
         change: '+$1.00',
         changePercent: '+1.00%',
         open: '$99.00',
@@ -45,6 +46,7 @@ describe('realtimeStore', () => {
     expect(snapshot.subscribed).toBe(true)
     expect(snapshot.source).toBe('futu-callback')
     expect(snapshot.quote?.price).toBe('$101.00')
+    expect(snapshot.quote?.lotSize).toBe(1)
     expect(snapshot.callbackStatus.quote.count).toBeGreaterThanOrEqual(2)
   })
 

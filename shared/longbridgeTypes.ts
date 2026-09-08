@@ -1,4 +1,4 @@
-import type { LiveCandidatePoolSnapshot, LiveEngineStatus, LivePendingOrder, LiveSignalHistoryItem, LlmModelOption, LlmRuntimeConfig, LlmTradingDecision, RealtimeBar, RealtimeOrderBookLevel, RealtimePoint, SimulationHistoryPage, TradeStrategyConfigResponse } from './types'
+import type { LiveCandidatePoolSnapshot, LiveEngineStatus, LiveEvaluationStatus, LivePendingOrder, LiveSignalHistoryItem, LlmModelOption, LlmRuntimeConfig, LlmTradingDecision, RealtimeBar, RealtimeOrderBookLevel, RealtimePoint, SimulationHistoryPage, TradeStrategyConfigResponse } from './types'
 import type { ManagedOrder, ManagedOrderEvent } from './managedOrderTypes'
 
 export type LongbridgeAuthStatus = 'authenticated' | 'not_authenticated' | 'unknown'
@@ -81,6 +81,7 @@ export type LongbridgeStrategyMarketData =
       bids: RealtimeOrderBookLevel[]
       bestAsk?: number
       bestBid?: number
+      lotSize?: number
       marketState?: string
       updatedAt: string
       warnings: string[]
@@ -108,6 +109,7 @@ export type LongbridgeLiveRunOnceResponse = {
 export type LongbridgeLiveTradingDashboardResponse = {
   ok: boolean
   engine: LiveEngineStatus
+  evaluationStatus: LiveEvaluationStatus
   liveTradingEnabled: boolean
   autoSubmitEnabled: boolean
   autoCancelEnabled: boolean

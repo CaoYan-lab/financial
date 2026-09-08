@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { longbridgeLiveTradingEngine } from '../api/longbridge/longbridgeLiveTradingEngine'
+import { longbridgeLiveTradingEngine, longbridgeSignalLifecycle } from '../api/longbridge/longbridgeLiveTradingEngine'
 import { buildLongbridgeSdkOrderPayload } from '../api/longbridge/longbridgeLiveOrderService'
 import { longbridgeOrderQueueService } from '../api/longbridge/longbridgeOrderQueueService'
 import { longbridgeOpeningRiskRejectionReason } from '../api/longbridge/longbridgeRiskService'
@@ -102,6 +102,77 @@ describe('Longbridge order gate', () => {
 
     expect(reason).toContain('最大购买力保护线')
     expect(reason).toContain('当前最大购买力 $2.30')
+  })
+
+  it('港股开仓数量不满足真实每手股数时被后端硬风控拦截', () => {
+    const reason = longbridgeOpeningRiskRejectionReason(
+      lowBuyingPowerAccount(),
+      {
+        ok: true,
+        approved: true,
+        action: 'BUY',
+        ticker: '09660',
+        orderQuantity: 100,
+        limitPrice: 15,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      15,
+      testStrategy(),
+      '9660.HK',
+      600,
+    )
+
+    expect(reason).toContain('每手 600 股')
+  })
+
+  it('港股名义金额与港币购买力按同一币种比较', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary = {
+      ...account.summary,
+      currency: 'HKD',
+      tradingCurrency: 'HKD',
+      totalAssets: 'HK$10,126.39',
+      buyingPower: 'HK$10,126.39',
+      totalAssetsInTradingCurrency: 'HK$10,126.39',
+      buyingPowerInTradingCurrency: 'HK$10,126.39',
+    }
+    const reason = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'BUY',
+        ticker: '07747',
+        orderQuantity: 100,
+        limitPrice: 82.54,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      82.54,
+      testStrategy(),
+      '7747.HK',
+      100,
+    )
+
+    expect(reason).toBeUndefined()
+  })
+
+  it('直推和组合策略使用各自的信号生命周期状态', () => {
+    expect(longbridgeSignalLifecycle('legacy_direct', 'BUY')).toMatchObject({
+      lifecycleStatus: 'PENDING_CONFIRMATION',
+    })
+    expect(longbridgeSignalLifecycle('candidate_pool', 'BUY')).toMatchObject({
+      lifecycleStatus: 'CANDIDATE_POOL',
+    })
+    expect(longbridgeSignalLifecycle('legacy_direct', 'BUY', '测试风控拦截')).toEqual({
+      lifecycleStatus: 'BLOCKED_BY_RISK',
+      lifecycleReason: '测试风控拦截',
+    })
   })
 })
 

@@ -258,7 +258,7 @@ export function useLiveTrading() {
       if (!response.ok) throw new Error(`Live strategy config request failed with HTTP ${response.status}.`)
       const payload = (await response.json()) as TradeStrategyConfigResponse
       setTradeStrategyConfig(payload)
-      await requestDashboard('/api/live-trading/dashboard')
+      await requestDashboard()
       setError(undefined)
       return payload
     } catch (requestError) {

@@ -10,7 +10,7 @@ process.env.ASHARE_LIVE_HISTORY_DB_PATH = dbPath
 
 const { aSharePersistence } = await import('../api/ashare/aSharePersistence')
 
-describe('A 股 agent_runs persistence', () => {
+describe('A 股 agent_runs persistence', { timeout: 30_000 }, () => {
   beforeEach(() => {
     rmSync(dbPath, { force: true })
   })

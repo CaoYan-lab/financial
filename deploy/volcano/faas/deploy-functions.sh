@@ -22,6 +22,12 @@ set -euo pipefail
 : "${RDS_DATABASE_URL:?需设置 RDS_DATABASE_URL}"
 : "${VPC_ID:?}" ; : "${SUBNET_ID:?}" ; : "${SG_FAAS_ID:?}"
 : "${AUTH_JWT_SECRET:?}" ; : "${ADMIN_USERNAME:?}" ; : "${ADMIN_PASSWORD:?}"
+if [[ -n "${IMAGE_WORKER:-}" ]]; then
+  : "${LONGBRIDGE_ORDER_PROXY_URL:?Worker 发布必须配置 LONGBRIDGE_ORDER_PROXY_URL，确保 admin 与多用户订单统一经过 HeySocks}"
+fi
+if [[ "${MULTIUSER_ENABLED:-false}" == "true" ]]; then
+  : "${MULTIUSER_CREDENTIAL_MASTER_KEY:?启用多用户时必须配置 MULTIUSER_CREDENTIAL_MASTER_KEY}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 command -v jq >/dev/null 2>&1 || { echo "需要 jq，请先安装"; exit 1; }
@@ -38,6 +44,9 @@ envs_array() {
         --arg lblive "${LONGBRIDGE_LIVE_TRADING_ENABLED:-false}" \
         --arg lbauto "${LONGBRIDGE_AUTO_SUBMIT_ENABLED:-false}" \
         --arg lbproxy "${LONGBRIDGE_ORDER_PROXY_URL:-}" \
+        --arg multiuser "${MULTIUSER_ENABLED:-false}" \
+        --arg multiowner "${MULTIUSER_OWNER_USERNAME:-$ADMIN_USERNAME}" \
+        --arg multikey "${MULTIUSER_CREDENTIAL_MASTER_KEY:-}" \
         --arg live "${LIVE_TRADING_ENABLED:-false}" \
     '([
       {Key:"CLOUD_MODE",Value:"1"},
@@ -48,6 +57,9 @@ envs_array() {
       {Key:"AUTH_JWT_SECRET",Value:$jwt},
       {Key:"ADMIN_USERNAME",Value:$admin},
       {Key:"ADMIN_PASSWORD",Value:$admink},
+      {Key:"MULTIUSER_ENABLED",Value:$multiuser},
+      {Key:"MULTIUSER_OWNER_USERNAME",Value:$multiowner},
+      {Key:"MULTIUSER_CREDENTIAL_MASTER_KEY",Value:$multikey},
       {Key:"PG_HISTORY_DRIVER",Value:"1"},
       {Key:"FUTU_PYTHON_BIN",Value:"/opt/venv/bin/python"},
       {Key:"VOLCANO_CLOUD_PYTHONPATH",Value:"/app/deploy/volcano/pg/python"}

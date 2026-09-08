@@ -8,6 +8,10 @@ import { login } from '../auth/authService.js'
 import { authEnabled, requireAuth, type AuthedRequest } from '../auth/requireAuth.js'
 import { createRouteOverrideRouter } from './routeOverrides.js'
 import { logger } from '../../utils/logger.js'
+import { createMultiUserPublicRouter } from '../multiuser/http/publicAuthRouter.js'
+import { createMultiUserPrivateRouter } from '../multiuser/http/privateRouter.js'
+import { attachMultiUserContext } from '../multiuser/auth/securityContext.js'
+import { enforceFutuAccess } from '../multiuser/futu/futuAccessPolicy.js'
 
 const COOKIE_NAME = 'fa_session'
 const COOKIE_MAX_AGE_SECONDS = 12 * 3600
@@ -58,6 +62,9 @@ export function createCloudApp(): express.Application {
   cloudApp.use(express.json({ limit: '10mb' }))
   cloudApp.use(requestLogger)
 
+  // 多用户模块优先接管认证路由；关闭开关时 next() 到原实现。
+  cloudApp.use('/api', createMultiUserPublicRouter())
+
   // ---- 认证接口（在 requireAuth 之前，登录本身免鉴权） ----
   cloudApp.get('/api/auth/config', (_req: express.Request, res: express.Response) => {
     res.setHeader('Cache-Control', 'no-store')
@@ -95,11 +102,16 @@ export function createCloudApp(): express.Application {
 
   // ---- 全部 /api 接口鉴权（health 与 login 在 requireAuth 内豁免） ----
   cloudApp.use('/api', requireAuth)
+  cloudApp.use('/api', attachMultiUserContext)
 
   cloudApp.get('/api/auth/me', (req: AuthedRequest, res: express.Response) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json({ success: true, username: req.user?.username ?? null })
   })
+
+  // 多用户私有 API 与券商租户路由必须先于旧路由；Futu 门禁在任何账户数据读取前执行。
+  cloudApp.use('/api', createMultiUserPrivateRouter())
+  cloudApp.use('/api', enforceFutuAccess)
 
   // ---- 云端拦截路由：引擎控制指令入队 + worker 状态快照（在兜底 app 之前） ----
   cloudApp.use('/api', createRouteOverrideRouter())

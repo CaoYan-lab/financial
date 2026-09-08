@@ -11,6 +11,7 @@ import type {
 } from '../../shared/longbridgeTypes.js'
 import type { ManagedCancelBrokerResponse } from '../../shared/managedOrderTypes.js'
 import { localizeLongbridgeOrderError } from '../../shared/orderErrorMessages.js'
+import { buildLongbridgeOrderChildEnvironment } from './longbridgeOrderProxy.js'
 import { getManagedOrder, listManagedOrderEvents } from '../cloud/state/managedOrderStore.js'
 import { normalizeLongbridgeSymbol } from './longbridgeMarketDataService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
@@ -60,7 +61,7 @@ export type LongbridgeSdkOrderPayload = {
 export async function cancelLongbridgeLiveOrder(
   orderId: string,
 ): Promise<ManagedCancelBrokerResponse> {
-  const childEnv = buildLongbridgeOrderChildEnv()
+  const childEnv = buildLongbridgeOrderChildEnvironment()
   if (!childEnv) {
     return {
       ok: false,
@@ -96,7 +97,7 @@ export async function loadLongbridgeOrderDetail(input: {
   orderId: string
   submittedAt?: string
 }): Promise<LongbridgeOrderDetailResponse> {
-  const childEnv = buildLongbridgeOrderChildEnv()
+  const childEnv = buildLongbridgeOrderChildEnvironment()
   if (!childEnv) {
     return { ok: false, error: '云端长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。' }
   }
@@ -131,7 +132,7 @@ export async function loadLongbridgeBrokerOrders(input: {
 }): Promise<LongbridgeBrokerOrdersResponse> {
   const page = clampInt(input.page, 1, 1_000_000, 1)
   const pageSize = clampInt(input.pageSize, 1, 100, 12)
-  const childEnv = buildLongbridgeOrderChildEnv()
+  const childEnv = buildLongbridgeOrderChildEnvironment()
   if (!childEnv) return emptyBrokerOrders(page, pageSize, input, '云端长桥订单代理未配置。')
   const ticker = input.ticker?.trim().toUpperCase()
 
@@ -205,7 +206,7 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
     return blockedLongbridgeOrder(input, 'LONGBRIDGE_LIVE_TRADING_ENABLED=true 时才允许提交长桥真实订单。')
   }
 
-  const childEnv = buildLongbridgeOrderChildEnv()
+  const childEnv = buildLongbridgeOrderChildEnvironment()
   if (!childEnv) {
     return blockedLongbridgeOrder(input, '云端长桥订单代理未配置：缺少 LONGBRIDGE_ORDER_PROXY_URL。')
   }
@@ -359,30 +360,6 @@ function emptyBrokerOrders(
 function clampInt(value: number | undefined, minimum: number, maximum: number, fallback: number) {
   if (!Number.isFinite(value)) return fallback
   return Math.max(minimum, Math.min(maximum, Math.floor(value!)))
-}
-
-function buildLongbridgeOrderChildEnv(): NodeJS.ProcessEnv | undefined {
-  const env = { ...process.env }
-  if (process.env.CLOUD_MODE === '1') {
-    const proxyUrl = process.env.LONGBRIDGE_ORDER_PROXY_URL?.trim()
-    if (!proxyUrl) return undefined
-    env.HTTPS_PROXY = proxyUrl
-    env.HTTP_PROXY = proxyUrl
-    env.NO_PROXY = ''
-    return env
-  }
-
-  for (const name of [
-    'HTTPS_PROXY',
-    'HTTP_PROXY',
-    'ALL_PROXY',
-    'https_proxy',
-    'http_proxy',
-    'all_proxy',
-  ]) {
-    delete env[name]
-  }
-  return env
 }
 
 function parseCancelChildResponse(

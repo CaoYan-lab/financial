@@ -6,6 +6,9 @@ import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import type { StrategyMarketData } from '../simulation/realtimeDataAdapter.js'
 import type { ManagedOrder } from '../../shared/managedOrderTypes.js'
 import { getActivePromptPack } from '../trade_strategy/tradeStrategyConfigService.js'
+import {
+  openingLotSizeFailureReason,
+} from '../longbridge/longbridgeLotSizeService.js'
 
 type DecisionInput = {
   ticker: string
@@ -54,6 +57,8 @@ export function buildLiveDecisionPrompt(input: DecisionInput): Array<{ role: str
   const targetExposure = summarizeTargetExposure(input.ticker, input.position)
   const promptPack = getActivePromptPack('live')
   const contextRules = promptPack.contextRules ?? {}
+  const isHongKong = targetInstrument?.market === 'HK'
+  const lotSize = isHongKong ? input.marketData.lotSize : 1
   return [
     {
       role: 'system',
@@ -85,6 +90,14 @@ export function buildLiveDecisionPrompt(input: DecisionInput): Array<{ role: str
             availableFundsUsd: input.account.summary.availableFundsInTradingCurrency ?? input.account.summary.availableFunds,
             buyingPowerUsd: input.account.summary.buyingPowerInTradingCurrency ?? input.account.summary.buyingPower,
           },
+          tradingUnit: {
+            lotSize,
+            rule: isHongKong
+              ? lotSize
+                ? `港股开仓 BUY / SELL_SHORT 的 orderQuantity 必须是每手 ${lotSize} 股的正整数倍；若账户无法承担至少一手，必须 HOLD。`
+                : '港股每手股数暂时不可用，本轮必须 HOLD。'
+              : '美股 orderQuantity 按正整数股计算，不套用港股整手约束。',
+          },
           positions: summarizePositions(input.allPositions, input.universe),
         },
         portfolioContext: {
@@ -92,7 +105,7 @@ export function buildLiveDecisionPrompt(input: DecisionInput): Array<{ role: str
           derivativePositionRule: 'OPTION 持仓只作为账户风险上下文；不得把 OPTION 的负数量解释为正股空头。SHORT_PUT 是卖空 PUT，通常代表对标的的看多/接货义务，不是 SELL_SHORT 正股。',
           concentrationRule: '单票集中度不是固定硬上限，不得因为超过某个固定百分比就自动禁止加仓或强制 SELL_TO_CLOSE。已有多头是否加仓，必须结合趋势质量、波动率、流动性、已有浮盈、账户可用资金、增量风险回报和组合相关性动态判断。SELL_TO_CLOSE 必须基于趋势转弱、止损/止盈、回撤控制、流动性恶化或其他明确风险降低理由。',
           positionQuantityConvention: contextRules.positionQuantityConvention ?? 'positionQuantity > 0 means long shares; positionQuantity < 0 means short shares; positionQuantity = 0 or null means flat.',
-          orderQuantityConvention: contextRules.orderQuantityConvention ?? 'orderQuantity is the positive integer share count for this new order only; never use a negative orderQuantity.',
+          orderQuantityConvention: `${contextRules.orderQuantityConvention ?? 'orderQuantity is the positive integer share count for this new order only; never use a negative orderQuantity.'} ${isHongKong ? lotSize ? `当前港股每手 ${lotSize} 股，开仓数量必须是 ${lotSize} 的正整数倍。` : '当前港股每手股数不可用，只允许 HOLD。' : '当前为美股，不套用港股整手约束。'}`,
           feeContextRules: {
             ...contextRules.feeContextRules,
             source: '提交前费用为后端估算值；真实费用只能在 REAL 订单产生 orderId 后通过 order_fee_query 回填。',
@@ -184,17 +197,30 @@ export function parseLiveTradingDecision(text: string, input: DecisionInput): Ll
   const action = String(parsed.action ?? 'HOLD').toUpperCase()
   const ticker = String(parsed.ticker ?? input.ticker).toUpperCase()
   const orderQuantity = Number(parsed.orderQuantity ?? parsed.quantity ?? 0)
+  const normalizedOrderQuantity = Number.isFinite(orderQuantity) ? Math.max(0, Math.floor(orderQuantity)) : 0
   const limitPrice = Number(parsed.limitPrice ?? 0)
   const approved = parsed.approved === true
   if (!['HOLD', 'BUY', 'SELL_SHORT', 'SELL_TO_CLOSE'].includes(action)) return blockedDecision(input, `非法交易动作：${action}`, text)
   if (ticker !== input.ticker.toUpperCase()) return blockedDecision(input, `模型返回 ticker ${ticker} 与目标 ${input.ticker} 不一致。`, text)
+  if (approved && action !== 'HOLD' && input.marketData.lotSize === undefined && /^\d{5}$/.test(input.ticker)) {
+    return blockedDecision(input, 'Futu 实盘决策被拦截：无法确认港股每手股数。', text)
+  }
+  const lotSizeFailure = openingLotSizeFailureReason({
+    symbol: input.ticker,
+    action: action as LlmTradingDecision['action'],
+    quantity: normalizedOrderQuantity,
+    lotSize: input.marketData.lotSize,
+  })
+  if (approved && action !== 'HOLD' && lotSizeFailure) {
+    return blockedDecision(input, `Futu 实盘决策被拦截：${lotSizeFailure}`, text)
+  }
 
   return {
     ok: true,
     approved,
     action: action as LlmTradingDecision['action'],
     ticker,
-    orderQuantity: Number.isFinite(orderQuantity) ? Math.max(0, Math.floor(orderQuantity)) : 0,
+    orderQuantity: normalizedOrderQuantity,
     limitPrice: Number.isFinite(limitPrice) ? limitPrice : 0,
     confidence: typeof parsed.confidence === 'string' ? parsed.confidence : 'low',
     reason: typeof parsed.reason === 'string' ? parsed.reason : '大模型未提供理由。',

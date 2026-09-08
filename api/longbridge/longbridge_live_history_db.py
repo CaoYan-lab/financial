@@ -344,6 +344,10 @@ def enrich_signal_lifecycle(signal, order_status_by_signal, skipped_exact, skipp
             enriched["lifecycleReason"] = submitted.get("error")
         return enriched
 
+    persisted_status = signal.get("lifecycleStatus")
+    if persisted_status and persisted_status != "CANDIDATE_POOL":
+        return enriched
+
     skipped = skipped_exact.get(signal_id) or find_fallback_skipped(signal, skipped_items)
     if skipped:
         enriched["lifecycleStatus"] = "SKIPPED"

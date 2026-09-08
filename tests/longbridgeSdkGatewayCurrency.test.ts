@@ -78,4 +78,24 @@ describe('Longbridge SDK 账户资产币种', () => {
       buy_power: '1291.52',
     })
   })
+
+  it('美元和港币账户快照按币种独立读取和缓存', async () => {
+    mocks.accountBalance.mockImplementation(async (currency: string) => [{
+      currency,
+      netAssets: currency === 'HKD' ? '10126.39' : '1291.52',
+      totalCash: currency === 'HKD' ? '10126.39' : '1291.52',
+      buyPower: currency === 'HKD' ? '10126.39' : '1291.52',
+      riskLevel: 0,
+      cashInfos: [],
+    }])
+
+    const usd = await loadLongbridgeSdkAccountSnapshot({ currency: 'USD' })
+    const hkd = await loadLongbridgeSdkAccountSnapshot({ currency: 'HKD' })
+    const cachedHkd = await loadLongbridgeSdkAccountSnapshot({ currency: 'HKD' })
+
+    expect(usd.assets).toMatchObject({ currency: 'USD', buy_power: '1291.52' })
+    expect(hkd.assets).toMatchObject({ currency: 'HKD', buy_power: '10126.39' })
+    expect(cachedHkd).toBe(hkd)
+    expect(mocks.accountBalance).toHaveBeenCalledTimes(2)
+  })
 })

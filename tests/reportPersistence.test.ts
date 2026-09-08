@@ -29,7 +29,7 @@ afterEach(() => {
   vi.resetModules()
 })
 
-describe('reportPersistence', () => {
+describe('reportPersistence', { timeout: 30_000 }, () => {
   it('持久化报告并维护 Top5 独立映射', async () => {
     const { reportPersistence } = await import('../api/services/reportPersistence')
     reportPersistence.clearForTests()

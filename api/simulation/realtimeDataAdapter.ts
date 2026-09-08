@@ -19,6 +19,7 @@ export type StrategyMarketData =
       bids: RealtimeOrderBookLevel[]
       bestAsk?: number
       bestBid?: number
+      lotSize?: number
       marketState?: string
       updatedAt: string
     }
@@ -75,6 +76,7 @@ export function loadStrategyMarketData(ticker: string, requirement: MarketDataRe
     bids: snapshot.bids,
     bestAsk: parseMoney(snapshot.asks[0]?.price),
     bestBid: parseMoney(snapshot.bids[0]?.price),
+    lotSize: snapshot.quote?.lotSize,
     marketState: snapshot.quote?.marketState,
     updatedAt: snapshot.updatedAt,
   }

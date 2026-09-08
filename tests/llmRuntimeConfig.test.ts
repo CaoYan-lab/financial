@@ -76,12 +76,12 @@ describe('llmRuntimeConfigService', () => {
     expect(shouldSkipUsOvernightLlm({ ticker: '07709', marketState: 'PRE_MARKET_HK', disableUsOvernightLlm: true })).toBe(false)
   })
 
-  it('港股休市后只跳过 07709、07747 和地平线，不影响盘前盘中', () => {
+  it('港股休市和等待开市时跳过指定标的，不影响竞价和盘中', () => {
     expect(shouldSkipHongKongClosedLlm({ ticker: '07709', marketState: 'CLOSED' })).toBe(true)
     expect(shouldSkipHongKongClosedLlm({ ticker: '07747', marketState: 'REST' })).toBe(true)
     expect(shouldSkipHongKongClosedLlm({ ticker: '09660', marketState: 'NONE' })).toBe(true)
     expect(shouldSkipHongKongClosedLlm({ ticker: '07709', marketState: 'PRE_MARKET_HK' })).toBe(false)
-    expect(shouldSkipHongKongClosedLlm({ ticker: '09660', marketState: 'WAITING_OPEN' })).toBe(false)
+    expect(shouldSkipHongKongClosedLlm({ ticker: '09660', marketState: 'WAITING_OPEN' })).toBe(true)
     expect(shouldSkipHongKongClosedLlm({ ticker: '09660', marketState: 'AUCTION' })).toBe(false)
     expect(shouldSkipHongKongClosedLlm({ ticker: '07747', marketState: 'MORNING' })).toBe(false)
     expect(shouldSkipHongKongClosedLlm({ ticker: '09660', marketState: 'AFTERNOON' })).toBe(false)

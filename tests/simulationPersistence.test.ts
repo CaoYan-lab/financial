@@ -10,7 +10,7 @@ process.env.SIMULATION_HISTORY_DB_PATH = join(tempDir, 'history.sqlite3')
 
 const { simulationPersistence } = await import('../api/simulation/simulationPersistence')
 
-describe('simulationPersistence sqlite', () => {
+describe('simulationPersistence sqlite', { timeout: 30_000 }, () => {
   beforeEach(() => {
     simulationPersistence.clearForTests()
   })

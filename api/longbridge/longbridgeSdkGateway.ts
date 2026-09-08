@@ -16,6 +16,7 @@ const AUTH_CACHE_TTL_MS = Math.max(
 
 type QuoteContextInstance = InstanceType<typeof QuoteContext>
 type TradeContextInstance = InstanceType<typeof TradeContext>
+export type LongbridgeAccountCurrency = 'USD' | 'HKD'
 
 export type LongbridgeSdkPosition = {
   symbol: string
@@ -54,10 +55,11 @@ export type LongbridgeSdkProbe = {
 let config: Config | undefined
 let quoteContext: QuoteContextInstance | undefined
 let tradeContext: TradeContextInstance | undefined
-let accountCache:
-  | { expiresAt: number; value: LongbridgeSdkAccountSnapshot }
-  | undefined
-let accountInFlight: Promise<LongbridgeSdkAccountSnapshot> | undefined
+const accountCache = new Map<LongbridgeAccountCurrency, {
+  expiresAt: number
+  value: LongbridgeSdkAccountSnapshot
+}>()
+const accountInFlight = new Map<LongbridgeAccountCurrency, Promise<LongbridgeSdkAccountSnapshot>>()
 let probeCache: { expiresAt: number; value: LongbridgeSdkProbe } | undefined
 let probeInFlight: Promise<LongbridgeSdkProbe> | undefined
 
@@ -117,20 +119,27 @@ export function getLongbridgeSdkContexts(): {
 }
 
 export async function loadLongbridgeSdkAccountSnapshot(
-  options: { force?: boolean } = {},
+  options: { force?: boolean; currency?: LongbridgeAccountCurrency } = {},
 ): Promise<LongbridgeSdkAccountSnapshot> {
-  if (!options.force && accountCache && accountCache.expiresAt > Date.now()) {
-    return accountCache.value
+  const currency = options.currency ?? 'USD'
+  const cached = accountCache.get(currency)
+  if (!options.force && cached && cached.expiresAt > Date.now()) {
+    return cached.value
   }
-  if (accountInFlight) return accountInFlight
+  const inFlight = accountInFlight.get(currency)
+  if (inFlight) return inFlight
 
-  accountInFlight = collectAccountSnapshot().then((value) => {
-    accountCache = { expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS, value }
+  const request = collectAccountSnapshot(currency).then((value) => {
+    accountCache.set(currency, {
+      expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS,
+      value,
+    })
     return value
   }).finally(() => {
-    accountInFlight = undefined
+    accountInFlight.delete(currency)
   })
-  return accountInFlight
+  accountInFlight.set(currency, request)
+  return request
 }
 
 export async function probeLongbridgeSdk(
@@ -150,14 +159,16 @@ export async function probeLongbridgeSdk(
   return probeInFlight
 }
 
-async function collectAccountSnapshot(): Promise<LongbridgeSdkAccountSnapshot> {
+async function collectAccountSnapshot(
+  currency: LongbridgeAccountCurrency,
+): Promise<LongbridgeSdkAccountSnapshot> {
   const { quote, trade } = getLongbridgeSdkContexts()
   const [balances, positionsResponse, orders] = await Promise.all([
-    trade.accountBalance('USD'),
+    trade.accountBalance(currency),
     trade.stockPositions(),
     trade.todayOrders(),
   ])
-  const balance = balances.find((item) => item.currency === 'USD') ?? balances[0]
+  const balance = balances.find((item) => item.currency === currency) ?? balances[0]
   const positions = positionsResponse.channels.flatMap((channel) =>
     channel.positions.map((position) => ({
       symbol: position.symbol,
@@ -185,7 +196,7 @@ async function collectAccountSnapshot(): Promise<LongbridgeSdkAccountSnapshot> {
     }
   })
   const cashInfo = balance?.cashInfos.find((item) => item.currency === balance.currency)
-    ?? balance?.cashInfos.find((item) => item.currency === 'USD')
+    ?? balance?.cashInfos.find((item) => item.currency === currency)
     ?? balance?.cashInfos[0]
 
   return {
@@ -273,8 +284,8 @@ export function resetLongbridgeSdkGatewayForTests(): void {
   config = undefined
   quoteContext = undefined
   tradeContext = undefined
-  accountCache = undefined
-  accountInFlight = undefined
+  accountCache.clear()
+  accountInFlight.clear()
   probeCache = undefined
   probeInFlight = undefined
 }

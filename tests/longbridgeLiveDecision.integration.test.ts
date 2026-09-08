@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { loadLongbridgeLiveAccountDashboard } from '../api/longbridge/longbridgeAdapter'
-import { buildLongbridgeLiveDecisionPrompt, requestLongbridgeLiveTradingDecision } from '../api/longbridge/longbridgeLiveDecisionService'
+import { buildLongbridgeLiveDecisionPrompt, parseLongbridgeTradingDecision, requestLongbridgeLiveTradingDecision } from '../api/longbridge/longbridgeLiveDecisionService'
 import { loadLongbridgeStrategyMarketData } from '../api/longbridge/longbridgeMarketDataService'
 import type { LiveAccountDashboardResponse, LlmDataWindowRecommendation } from '../shared/types'
 
@@ -51,6 +51,79 @@ describe('Longbridge live decision prompt context', () => {
     expect(payload.marketData.recentKlineBars).toHaveLength(1)
     expect(payload.marketData.asks).toHaveLength(1)
     expect(payload.marketData.bids).toHaveLength(1)
+  })
+
+  it('港股提示词包含真实每手股数，美股不套用港股规则', () => {
+    const hkMarketData = {
+      ok: true as const,
+      ticker: '09660',
+      symbol: '9660.HK',
+      source: 'longbridge-sdk-cache' as const,
+      lastPrice: 15,
+      bars: [],
+      tickerPoints: [],
+      asks: [],
+      bids: [],
+      lotSize: 600,
+      marketState: 'MORNING',
+      updatedAt: '2026-09-08T02:00:00.000Z',
+      warnings: [],
+    }
+    const hkPayload = JSON.parse(buildLongbridgeLiveDecisionPrompt({
+      symbol: hkMarketData.symbol,
+      account: testAccount(),
+      marketData: hkMarketData,
+      dataWindow,
+    })[1].content)
+
+    expect(hkPayload.account.tradingUnit.lotSize).toBe(600)
+    expect(hkPayload.account.tradingUnit.rule).toContain('每手 600 股')
+    expect(hkPayload.portfolioContext.orderQuantityConvention).toContain('600 的正整数倍')
+
+    const usMarketData = { ...hkMarketData, ticker: 'AAPL', symbol: 'AAPL.US', lotSize: 1 }
+    const usPayload = JSON.parse(buildLongbridgeLiveDecisionPrompt({
+      symbol: usMarketData.symbol,
+      account: testAccount(),
+      marketData: usMarketData,
+      dataWindow,
+    })[1].content)
+    expect(usPayload.account.tradingUnit.rule).toContain('不套用港股整手约束')
+  })
+
+  it('拒绝港股非整手开仓数量，并保留美股按股数量', () => {
+    const baseMarketData = {
+      ok: true as const,
+      ticker: '07709',
+      symbol: '7709.HK',
+      source: 'longbridge-sdk-cache' as const,
+      lastPrice: 44,
+      bars: [],
+      tickerPoints: [],
+      asks: [],
+      bids: [],
+      lotSize: 100,
+      marketState: 'MORNING',
+      updatedAt: '2026-09-08T02:00:00.000Z',
+      warnings: [],
+    }
+    const raw = '{"approved":true,"action":"BUY","ticker":"07709","orderQuantity":3,"limitPrice":44}'
+    const blocked = parseLongbridgeTradingDecision(raw, {
+      symbol: baseMarketData.symbol,
+      account: testAccount(),
+      marketData: baseMarketData,
+      dataWindow,
+    })
+    expect(blocked.ok).toBe(false)
+    expect(blocked.action).toBe('HOLD')
+    expect(blocked.error).toContain('每手 100 股')
+
+    const usMarketData = { ...baseMarketData, ticker: 'AAPL', symbol: 'AAPL.US', lotSize: 1 }
+    const accepted = parseLongbridgeTradingDecision(
+      '{"approved":true,"action":"BUY","ticker":"AAPL","orderQuantity":3,"limitPrice":180}',
+      { symbol: usMarketData.symbol, account: testAccount(), marketData: usMarketData, dataWindow },
+    )
+    expect(accepted.ok).toBe(true)
+    expect(accepted.orderQuantity).toBe(3)
   })
 })
 

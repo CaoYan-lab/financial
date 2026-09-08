@@ -6,6 +6,8 @@ import AppNav from '@/components/common/AppNav'
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import Badge from '@/components/common/Badge'
 import BrokerOrdersTable from '@/components/BrokerOrdersTable'
+import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
+import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
@@ -126,6 +128,7 @@ export default function LiveTradingView() {
   const [selectedConcurrency, setSelectedConcurrency] = useState(0)
   const [disableUsOvernightLlm, setDisableUsOvernightLlm] = useState(true)
   const [confirmingOrder, setConfirmingOrder] = useState<LivePendingOrder>()
+  const [showEvaluationDetails, setShowEvaluationDetails] = useState(false)
 
   const runtimeConfig = data?.llmRuntimeConfig
   const modelValue = selectedModel || runtimeConfig?.model || ''
@@ -211,6 +214,20 @@ export default function LiveTradingView() {
           </div>
         </header>
 
+        <LiveEvaluationStatusBanner
+          status={data?.evaluationStatus}
+          accent="futu"
+          onOpenDetails={() => setShowEvaluationDetails(true)}
+        />
+        {showEvaluationDetails && data?.evaluationStatus ? (
+          <LiveEvaluationStatusDialog
+            status={data.evaluationStatus}
+            strategyConfig={tradeStrategyConfig}
+            accent="futu"
+            onClose={() => setShowEvaluationDetails(false)}
+          />
+        ) : null}
+
         {error ? <div className="rounded-2xl border border-orange-300/40 bg-orange-500/15 px-4 py-3 text-sm text-orange-800">{error}</div> : null}
 
         <section className="rounded-3xl border border-rose-200 bg-white/90 p-5 shadow-lg shadow-rose-100/40 backdrop-blur">
@@ -295,7 +312,7 @@ export default function LiveTradingView() {
               </label>
               <button className="self-end rounded-2xl bg-amber-500 px-4 py-3 text-sm font-bold text-stone-950 hover:bg-amber-400" disabled={savingConfig || !modelValue} onClick={() => saveLlmConfig({ model: modelValue, concurrency: concurrencyValue, disableUsOvernightLlm })}>保存配置</button>
             </div>
-            <p className="mt-3 text-xs text-stone-500">并发越高评估越快，但受 RPM / TPM 限制；开启“禁用美股夜盘 LLM”后，美股夜盘只记录跳过原因，把并发留给港股盘中。</p>
+            <p className="mt-3 text-xs text-stone-500">并发越高评估越快，但受模型服务限流约束；禁用美股夜盘评估后，夜盘状态仅在顶部提示，不生成策略信号。</p>
           </section>
 
           <section className="rounded-3xl border border-stone-200 bg-white/90 p-6 backdrop-blur">

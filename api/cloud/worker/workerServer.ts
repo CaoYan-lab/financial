@@ -19,6 +19,10 @@ import { claimNextJob, completeJob, failJob, getEngineDesired, upsertWorkerStatu
 import { collectEngineSnapshots, handleJob } from '../jobs/jobHandlers.js'
 import { tryAcquireLeader, releaseLeader, leaderKeepAlive } from '../state/leaderLock.js'
 import { managedOrderSupervisor } from '../../live/managedOrderSupervisor.js'
+import { startMultiUserWorkerRuntime, stopMultiUserWorkerRuntime } from '../multiuser/worker/multiUserWorkerRuntime.js'
+import { longbridgeOrderProxyConfigured } from '../../longbridge/longbridgeOrderProxy.js'
+import { realtimeSubscriptionService } from '../../realtime/realtimeSubscriptionService.js'
+import { aShareRealtimeSubscriptionService } from '../../ashare/aShareRealtimeSubscriptionService.js'
 
 const WORKER_ID = process.env.WORKER_ID || `worker-${process.pid}-${randomUUID().slice(0, 8)}`
 const PORT = Number(process.env.PORT || 8000)
@@ -46,6 +50,7 @@ function buildStatus() {
     startedAt,
     lastJobAt,
     processing,
+    longbridgeOrderProxyConfigured: longbridgeOrderProxyConfigured(),
     now: new Date().toISOString(),
   }
 }
@@ -168,6 +173,7 @@ async function campaignLeadership(): Promise<void> {
         logger.info({ event: 'cloud.worker.leader.acquired', workerId: WORKER_ID }, '本实例成为 leader，开始驱动引擎')
         await reconcileDesiredState().catch(() => undefined)
         await managedOrderSupervisor.start()
+        startMultiUserWorkerRuntime(WORKER_ID)
         startJobLoop()
         startHeartbeatLoop()
         startLeaderKeepalive(client)
@@ -208,6 +214,9 @@ async function bootstrap(): Promise<void> {
   const shutdown = (signal: string): void => {
     running = false
     managedOrderSupervisor.stop()
+    stopMultiUserWorkerRuntime()
+    realtimeSubscriptionService.stop()
+    aShareRealtimeSubscriptionService.stop()
     logger.info({ event: 'cloud.worker.shutdown', signal }, 'Worker shutting down')
     void releaseLeader(leaderClient).finally(() => {
       server.close(() => {

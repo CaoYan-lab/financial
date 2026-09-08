@@ -3,6 +3,8 @@
  */
 import app from './app.js';
 import { aShareLiveTradingEngine } from './ashare/aShareLiveTradingEngine.js'
+import { aShareRealtimeSubscriptionService } from './ashare/aShareRealtimeSubscriptionService.js'
+import { realtimeSubscriptionService } from './realtime/realtimeSubscriptionService.js'
 import { logger } from './utils/logger.js'
 
 /**
@@ -29,6 +31,8 @@ const server = app.listen(PORT, () => {
  */
 process.on('SIGTERM', () => {
   logger.info({ event: 'server.sigterm' }, 'SIGTERM signal received')
+  realtimeSubscriptionService.stop()
+  aShareRealtimeSubscriptionService.stop()
   server.close(() => {
     logger.info({ event: 'server.closed' }, 'Server closed')
     process.exit(0);
@@ -37,6 +41,8 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   logger.info({ event: 'server.sigint' }, 'SIGINT signal received')
+  realtimeSubscriptionService.stop()
+  aShareRealtimeSubscriptionService.stop()
   server.close(() => {
     logger.info({ event: 'server.closed' }, 'Server closed')
     process.exit(0);

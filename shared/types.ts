@@ -217,6 +217,7 @@ export type RealtimeQuote = {
   code: string
   name?: string
   price: string
+  lotSize?: number
   marketState?: string
   change: string
   changePercent: string
@@ -282,6 +283,11 @@ export type AccountSummary = {
   buyingPower: string
   dailyPnL: string
   totalPnL: string
+  tradingCurrency?: string
+  totalAssetsInTradingCurrency?: string
+  cashInTradingCurrency?: string
+  availableFundsInTradingCurrency?: string
+  buyingPowerInTradingCurrency?: string
   source: DataSourceCitation
 }
 
@@ -304,6 +310,9 @@ export type Position = {
   pnlRatio: string
   positionRatio: string
   currency: string
+  positionSide?: string
+  optionPositionType?: string
+  underlyingDirectionalExposure?: string
 }
 
 export type EstimatedPositionFeeContext = {
@@ -396,6 +405,12 @@ export type QuantSignalSide = 'BUY' | 'SELL_SHORT' | 'SELL_TO_CLOSE' | 'HOLD'
 export type SimulationUniverseItem = {
   ticker: string
   label: string
+  market?: string
+  assetType?: 'STOCK' | 'OPTION' | 'ETF' | 'OTHER'
+  underlyingTicker?: string
+  leverageFactor?: string
+  futuCode?: string
+  tradingCurrency?: string
   marketSession?: MarketSessionStatus
 }
 
@@ -408,6 +423,28 @@ export type MarketSessionStatus = {
   tradable: boolean
   allowsExtendedHours: boolean
   updatedAt: string
+}
+
+export type LiveEvaluationState = 'STOPPED' | 'RUNNING' | 'PARTIAL' | 'WAITING_MARKET' | 'ERROR'
+
+export type LiveEvaluationTickerStatus = {
+  ticker: string
+  market: '港股' | '美股'
+  marketState: string
+  marketLabel: string
+  evaluationState: 'ACTIVE' | 'WAITING_MARKET' | 'DISABLED' | 'ERROR'
+  reason: string
+}
+
+export type LiveEvaluationStatus = {
+  state: LiveEvaluationState
+  title: string
+  summary: string
+  activeCount: number
+  waitingCount: number
+  totalCount: number
+  updatedAt: string
+  items: LiveEvaluationTickerStatus[]
 }
 
 export type LlmDataWindowRecommendation = {
@@ -425,7 +462,7 @@ export type LlmDataWindowRecommendation = {
 export type TrendContextWindow = {
   lookbackTradingDays: number
   barInterval: '15m' | '30m' | '1d'
-  source: 'futu-history-kline'
+  source: 'futu-history-kline' | 'longbridge-history-kline' | 'longbridge-sdk-cache'
   available: boolean
   reason?: string
 }
@@ -468,6 +505,7 @@ export type LlmRuntimeConfig = {
   concurrency: number
   maxConcurrency: number
   updatedAt: string
+  disableUsOvernightLlm?: boolean
 }
 
 export type LlmRuntimeConfigResponse = {
@@ -480,6 +518,7 @@ export type LlmRuntimeConfigResponse = {
 export type UpdateLlmRuntimeConfigRequest = {
   model?: string
   concurrency?: number
+  disableUsOvernightLlm?: boolean
 }
 
 export type QuantSignal = {
@@ -510,8 +549,12 @@ export type QuantSignal = {
   trendAlignment?: string
   tradeHorizon?: string
   whyNotNoise?: string
-  source: 'futu-callback'
+  source: 'futu-callback' | 'longbridge-sdk-cache' | 'longbridge-cli'
   rawModelOutput?: string
+  agentRunId?: string
+  agentReports?: AShareTradingAgentRoleReport[]
+  finalAgentDecision?: any
+  agentFailureReason?: string
 }
 
 export type LlmTradingDecision = {
@@ -534,6 +577,10 @@ export type LlmTradingDecision = {
   }
   rawText?: string
   error?: string
+  agentRunId?: string
+  agentReports?: AShareTradingAgentRoleReport[]
+  finalAgentDecision?: Record<string, unknown>
+  agentFailureReason?: string
 }
 
 export type SimulatedOrderIntent = {
@@ -633,6 +680,8 @@ export type SimulationSkippedTicker = {
   ticker: string
   reason: string
   updatedAt: string
+  side?: QuantSignalSide
+  signalId?: string
 }
 
 export type SimulationHistoryKind = 'signals' | 'orders' | 'skipped'
@@ -719,6 +768,7 @@ export type LivePendingOrderStatus =
   | 'REJECTED_BY_USER'
   | 'BLOCKED_BY_RISK'
   | 'SUBMIT_FAILED'
+  | 'EXPIRED'
 
 export type LivePendingOrder = {
   historyId?: number
@@ -733,6 +783,8 @@ export type LivePendingOrder = {
   decisionMode?: 'legacy_direct' | 'candidate_pool' | 'trading_agent'
   candidateId?: string
   portfolioDecisionId?: string
+  portfolioRank?: number
+  portfolioDecisionReason?: string
   confirmation?: LiveOrderConfirmation
   submittedOrder?: LiveOrderResult
 }
@@ -740,7 +792,7 @@ export type LivePendingOrder = {
 export type LiveOrderConfirmation = {
   confirmedAt: string
   confirmationId: string
-  confirmedBy: 'user'
+  confirmedBy: 'user' | 'system'
 }
 
 export type LiveOrderResult = {
@@ -802,11 +854,12 @@ export type FutuLiveOrderDetailResponse =
 
 export type LiveSkippedTicker = SimulationSkippedTicker
 
-export type LiveHistoryKind = 'signals' | 'pending_orders' | 'submitted_orders' | 'rejected_orders' | 'skipped' | 'confirmations'
+export type LiveHistoryKind = 'signals' | 'pending_orders' | 'submitted_orders' | 'rejected_orders' | 'skipped' | 'confirmations' | 'candidate_pool' | 'agent_runs'
 
 export type LiveTradingDashboardResponse = {
   account: LiveAccountDashboardResponse
   engine: LiveEngineStatus
+  evaluationStatus: LiveEvaluationStatus
   universe: SimulationUniverseItem[]
   llmRuntimeConfig: LlmRuntimeConfig
   modelOptions: LlmModelOption[]
@@ -822,4 +875,160 @@ export type LiveTradingDashboardResponse = {
   limitTimeoutSeconds: number
   brokerSyncIntervalSeconds: number
   modelReviewIntervalSeconds: number
+  candidatePool: LiveCandidatePoolSnapshot
+}
+
+export type TradeRuntimeMode = 'simulation' | 'live'
+export type TradeExecutionMode = 'legacy_direct' | 'candidate_pool' | 'trading_agent'
+export type LivePendingOrderStatusFilter = LivePendingOrderStatus | 'ALL'
+export type LivePendingOrderSideFilter = Exclude<QuantSignalSide, 'HOLD'> | 'ALL'
+export type LiveSignalDirectionFilter = QuantSignalSide | 'ALL'
+export type LiveSignalLifecycleFilter = string
+export type LiveCandidatePoolHistoryFilter = string
+export type LiveSignalHistoryItem = QuantSignal & { lifecycleStatus?: string; lifecycleReason?: string }
+
+export type LiveCandidatePoolItem = {
+  candidateId: string
+  ticker: string
+  action: Exclude<QuantSignalSide, 'HOLD'>
+  groupKey: string
+  riskTags: string[]
+  firstSeenAt: string
+  lastSeenAt: string
+  expiresAt: string
+  signalCount: number
+  priceDriftPct: number
+  proposedQuantity: number
+  proposedNotional: number
+  confidence: string
+  status: string
+  side?: QuantSignalSide
+  signal?: QuantSignal
+  llmDecision?: LlmTradingDecision
+  portfolioDecisionId?: string
+  portfolioRank?: number
+  portfolioDecisionReason?: string
+  [key: string]: any
+}
+
+export type LiveCandidatePoolSnapshot = {
+  executionMode: TradeExecutionMode
+  enabled: boolean
+  promptVersion?: string
+  promptLabel?: string
+  promptSummary?: string
+  promptConfigVersion?: number
+  promptRawYaml?: string
+  presetId?: string
+  presetLabel?: string
+  timingPresets: LivePortfolioTimingPreset[]
+  decisionRuleCount?: number
+  requiredJsonKeys?: string[]
+  candidates: LiveCandidatePoolItem[]
+}
+
+export type TradeStrategyConfig = {
+  id: string
+  version: number
+  label: string
+  summary: string
+  enabledFor: TradeRuntimeMode[]
+  riskControls: Record<string, any>
+  trendFilters: Record<string, any>
+  copy?: Record<string, string>
+  rawYaml?: string
+}
+
+export type TradePromptPackConfig = {
+  id: string
+  version: number
+  label: string
+  summary: string
+  enabledFor: TradeRuntimeMode[]
+  systemPrompts: Record<string, string>
+  hardConstraints: Record<string, string[]>
+  requiredJson: Record<string, unknown>
+  contextRules?: any
+  tasks?: any
+  rawYaml?: string
+}
+
+export type LivePortfolioReviewPromptConfig = {
+  id: string
+  version: number
+  label: string
+  summary: string
+  enabledFor: TradeRuntimeMode[]
+  systemPrompt: string
+  task: string
+  defaultPresetId: string
+  timingPresets: LivePortfolioTimingPreset[]
+  decisionRules: string[]
+  requiredJson: Record<string, unknown>
+  rawYaml?: string
+}
+
+export type LivePortfolioTimingPreset = {
+  id: string
+  label: string
+  version: number
+  description: string
+  singleSignalScanIntervalMinutes: number
+  portfolioReviewIntervalMinutes: number
+  candidateTtlMinutes: number
+  leveragedEtfCooldownMinutes: number
+  minSignalConfirmations: number
+  maxPromotedOrdersPerReview: number
+  maxActiveCandidates: number
+}
+
+export type TradeStrategyRuntimeSelection = {
+  strategyId: string
+  promptPackId: string
+  executionMode: TradeExecutionMode
+  portfolioTimingPresetId?: string
+  updatedAt: string
+}
+
+export type TradeStrategyOption = {
+  id: string
+  label: string
+  version: number
+  summary: string
+  enabledFor: TradeRuntimeMode[]
+}
+
+export type TradeStrategyConfigResponse = {
+  ok: boolean
+  mode: TradeRuntimeMode
+  selection: TradeStrategyRuntimeSelection
+  strategyOptions: TradeStrategyOption[]
+  promptPackOptions: TradeStrategyOption[]
+  activeStrategy: TradeStrategyConfig
+  activePromptPack: TradePromptPackConfig
+  warnings: string[]
+}
+
+export type UpdateTradeStrategyConfigRequest = Partial<Pick<
+  TradeStrategyRuntimeSelection,
+  'strategyId' | 'promptPackId' | 'executionMode' | 'portfolioTimingPresetId'
+>>
+
+export type AShareTradingAgentRoleReport = {
+  role: string
+  summary?: string
+  [key: string]: any
+}
+
+export type AShareTradingAgentRun = {
+  agentRunId: string
+  ticker: string
+  decisionMode: 'trading_agent'
+  executionMode: 'trading_agent'
+  startedAt: string
+  completedAt: string
+  status: string
+  roleReports: AShareTradingAgentRoleReport[]
+  finalDecision: any
+  [key: string]: any
 }
