@@ -27,6 +27,21 @@ if [[ -n "${IMAGE_WORKER:-}" ]]; then
 fi
 if [[ "${MULTIUSER_ENABLED:-false}" == "true" ]]; then
   : "${MULTIUSER_CREDENTIAL_MASTER_KEY:?启用多用户时必须配置 MULTIUSER_CREDENTIAL_MASTER_KEY}"
+  command -v python3 >/dev/null 2>&1 || { echo "校验多用户主密钥需要 python3"; exit 1; }
+  if ! printf '%s' "$MULTIUSER_CREDENTIAL_MASTER_KEY" | python3 -c '
+import base64
+import binascii
+import sys
+
+try:
+    decoded = base64.b64decode(sys.stdin.buffer.read().strip(), validate=True)
+except (binascii.Error, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if len(decoded) == 32 else 1)
+'; then
+    echo "MULTIUSER_CREDENTIAL_MASTER_KEY 必须为 32 字节随机值的 Base64 编码"
+    exit 1
+  fi
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
