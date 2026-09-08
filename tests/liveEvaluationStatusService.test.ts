@@ -118,4 +118,28 @@ describe('实盘评估状态聚合', () => {
       disableUsOvernightLlm: false,
     })).toContain('无法确认')
   })
+
+  it('市场时段允许但行情数据未就绪时显示异常而非正在评估', () => {
+    const status = buildLiveEvaluationStatus({
+      running: true,
+      items: [{
+        ticker: 'AAPL',
+        marketState: 'PRE_MARKET_BEGIN',
+        updatedAt,
+        evaluationError: '长桥行情缓存 1 分钟 K 线不足',
+      }],
+      disableUsOvernightLlm: true,
+    })
+
+    expect(status).toMatchObject({
+      state: 'ERROR',
+      activeCount: 0,
+      waitingCount: 0,
+    })
+    expect(status.items[0]).toMatchObject({
+      evaluationState: 'ERROR',
+      marketLabel: '盘前',
+      reason: '长桥行情缓存 1 分钟 K 线不足',
+    })
+  })
 })

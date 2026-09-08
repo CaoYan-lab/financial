@@ -11,7 +11,12 @@ import { loadLongbridgeLiveAccountDashboard, loadLongbridgeSourceStatus } from '
 import { longbridgeCandidatePoolService } from './longbridgeCandidatePoolService.js'
 import { estimateLongbridgePreTradeFee } from './longbridgeFeeService.js'
 import { requestLongbridgeLiveTradingDecision } from './longbridgeLiveDecisionService.js'
-import { ensureLongbridgeRealtimeSubscriptions, loadLongbridgeRealtimeStrategyMarketData, loadLongbridgeRealtimeTrendContext } from './longbridgeRealtimeDataAdapter.js'
+import {
+  ensureLongbridgeRealtimeSubscriptions,
+  loadLongbridgeRealtimeStrategyMarketData,
+  loadLongbridgeRealtimeTrendContext,
+  longbridgeRealtimeReadinessReason,
+} from './longbridgeRealtimeDataAdapter.js'
 import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 import { longbridgeOrderQueueService } from './longbridgeOrderQueueService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
@@ -667,6 +672,7 @@ function longbridgeEvaluationMarketStates(symbols: string[], marketStates: Map<s
       ticker: (snapshot?.ticker ?? symbol).toUpperCase(),
       marketState: marketStates.get(normalizeLongbridgeSymbol(symbol)),
       updatedAt: new Date().toISOString(),
+      evaluationError: longbridgeRealtimeReadinessReason(symbol, DEFAULT_DATA_WINDOW.kline1mBars),
     }
   })
 }

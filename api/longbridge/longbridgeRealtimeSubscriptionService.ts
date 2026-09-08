@@ -1,10 +1,11 @@
-import { Config, Period, QuoteContext, SubType, TradeSessions } from 'longbridge'
+import { AdjustType, Period, SubType, TradeSessions } from 'longbridge'
 import type { RealtimeBar, RealtimeOrderBookLevel, RealtimePoint } from '../../shared/types.js'
 import { latestQuotePrice, loadLongbridgeStrategyMarketData, normalizeLongbridgeSymbol } from './longbridgeMarketDataService.js'
 import { longbridgeRealtimeStore, type LongbridgeBarPeriod } from './longbridgeRealtimeStore.js'
+import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
 import { logger } from '../utils/logger.js'
 
-type QuoteContextLike = InstanceType<typeof QuoteContext>
+type QuoteContextLike = ReturnType<typeof getLongbridgeSdkContexts>['quote']
 
 const SDK_ENV_KEYS = ['LONGBRIDGE_APP_KEY', 'LONGBRIDGE_APP_SECRET', 'LONGBRIDGE_ACCESS_TOKEN']
 const DEFAULT_BACKFILL_CONCURRENCY = Math.max(1, Number(process.env.LONGBRIDGE_REALTIME_BACKFILL_CONCURRENCY || 2) || 2)
@@ -69,12 +70,7 @@ class LongbridgeRealtimeSubscriptionService {
     if (this.ctx) return
     if (this.initializing) return this.initializing
     this.initializing = Promise.resolve().then(() => {
-      const config = Config.fromApikey(
-        process.env.LONGBRIDGE_APP_KEY ?? '',
-        process.env.LONGBRIDGE_APP_SECRET ?? '',
-        process.env.LONGBRIDGE_ACCESS_TOKEN ?? '',
-      )
-      const ctx = QuoteContext.new(config)
+      const ctx = getLongbridgeSdkContexts().quote
       ctx.setOnQuote((err, event) => {
         if (err) {
           longbridgeRealtimeStore.markError(`Longbridge quote push 错误：${err.message}`)
@@ -153,6 +149,31 @@ class LongbridgeRealtimeSubscriptionService {
         { event: 'longbridge.realtime.seed.backfill_started', symbol, existingBars, requiredKlineCount, lastSeededAt: lastSeededAt ? new Date(lastSeededAt).toISOString() : undefined },
         'Longbridge realtime seed K-line backfill started',
       )
+      try {
+        if (!this.ctx) throw new Error('Longbridge SDK QuoteContext 不可用。')
+        const bars = await fetchLongbridgeHistoricalSeed(this.ctx, symbol, requiredKlineCount)
+        longbridgeRealtimeStore.upsertBars(symbol, '1m', bars)
+        const updatedBars = longbridgeRealtimeStore.getSnapshot(symbol)?.bars['1m']?.length ?? 0
+        if (updatedBars >= requiredKlineCount) {
+          this.historicalSeededAt.set(symbol, Date.now())
+          logger.info(
+            { event: 'longbridge.realtime.seed.backfill_completed', symbol, existingBars, updatedBars, requiredKlineCount, source: 'sdk' },
+            'Longbridge realtime seed K-line backfill completed',
+          )
+          return
+        }
+        logger.warn(
+          { event: 'longbridge.realtime.seed.sdk_insufficient', symbol, existingBars, updatedBars, requiredKlineCount },
+          'Longbridge SDK historical seed returned insufficient K-line bars',
+        )
+      } catch (error) {
+        logger.warn(
+          { event: 'longbridge.realtime.seed.sdk_failed', symbol, existingBars, requiredKlineCount, error: error instanceof Error ? error.message : String(error) },
+          'Longbridge SDK historical seed failed',
+        )
+      }
+
+      if (process.env.CLOUD_MODE === '1') return
       const marketData = await loadLongbridgeStrategyMarketData(symbol, {
         klineCount: requiredKlineCount,
         includeDepth: false,
@@ -186,6 +207,21 @@ class LongbridgeRealtimeSubscriptionService {
 }
 
 export const longbridgeRealtimeSubscriptionService = new LongbridgeRealtimeSubscriptionService()
+
+export async function fetchLongbridgeHistoricalSeed(
+  context: Pick<QuoteContextLike, 'candlesticks'>,
+  symbol: string,
+  requiredKlineCount: number,
+): Promise<RealtimeBar[]> {
+  const requestedCount = Math.min(1_000, Math.max(requiredKlineCount * 3, requiredKlineCount + 120))
+  return normalizeCandlesticks(await context.candlesticks(
+    symbol,
+    Period.Min_1,
+    requestedCount,
+    AdjustType.NoAdjust,
+    TradeSessions.All,
+  ))
+}
 
 function normalizeSymbols(symbols: string[]) {
   return [...new Set(symbols.map(normalizeLongbridgeSymbol))]

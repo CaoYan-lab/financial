@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { latestQuotePrice } from '../api/longbridge/longbridgeMarketDataService'
 import { loadLongbridgeRealtimeStrategyMarketData, loadLongbridgeRealtimeTrendContext } from '../api/longbridge/longbridgeRealtimeDataAdapter'
 import { longbridgeRealtimeStore } from '../api/longbridge/longbridgeRealtimeStore'
-import { longbridgeRealtimeSubscriptionService } from '../api/longbridge/longbridgeRealtimeSubscriptionService'
+import {
+  fetchLongbridgeHistoricalSeed,
+  longbridgeRealtimeSubscriptionService,
+} from '../api/longbridge/longbridgeRealtimeSubscriptionService'
 
 describe('Longbridge realtime SDK cache', () => {
   beforeEach(() => {
@@ -88,6 +91,54 @@ describe('Longbridge realtime SDK cache', () => {
     expect(data.source).toBe('longbridge-sdk-cache')
     expect(data.reason).toBe('Longbridge SDK cache 1m K 线不足')
     expect(data.warnings.join('；')).toContain('当前 1 / 要求 120')
+  })
+
+  it('云模式下 SDK cache 不足时不调用容器内不存在的 CLI', async () => {
+    const previousCloudMode = process.env.CLOUD_MODE
+    process.env.CLOUD_MODE = '1'
+    try {
+      longbridgeRealtimeStore.markSubscribed(['MU.US'])
+      longbridgeRealtimeStore.upsertQuote({
+        symbol: 'MU.US',
+        lastPrice: 124.5,
+        marketState: 'PreMarket',
+        updatedAt: '2026-06-24T08:30:00-04:00',
+        source: 'longbridge-sdk-cache',
+      })
+      longbridgeRealtimeStore.upsertBars('MU.US', '1m', [
+        { time: '2026-06-24T08:29:00-04:00', open: 124, high: 125, low: 123.9, close: 124.5 },
+      ])
+
+      const data = await loadLongbridgeRealtimeStrategyMarketData('MU.US', { klineCount: 120 })
+
+      expect(data.ok).toBe(false)
+      if (data.ok) throw new Error('expected skipped market data')
+      expect(data.source).toBe('longbridge-sdk-cache')
+      expect(data.reason).toBe('Longbridge SDK cache 1m K 线不足')
+    } finally {
+      restoreEnv('CLOUD_MODE', previousCloudMode)
+    }
+  })
+
+  it('历史 K 线通过 SDK 回补并转换为实时缓存格式', async () => {
+    const candlesticks = vi.fn(async () => [
+      { timestamp: new Date('2026-09-08T09:30:00.000Z'), open: '100', high: '102', low: '99', close: '101' },
+      { timestamp: new Date('2026-09-08T09:31:00.000Z'), open: '101', high: '103', low: '100', close: '102' },
+    ])
+
+    const bars = await fetchLongbridgeHistoricalSeed(
+      { candlesticks } as unknown as Parameters<typeof fetchLongbridgeHistoricalSeed>[0],
+      'AAPL.US',
+      120,
+    )
+
+    expect(candlesticks).toHaveBeenCalledOnce()
+    expect(candlesticks.mock.calls[0][0]).toBe('AAPL.US')
+    expect(candlesticks.mock.calls[0][2]).toBe(360)
+    expect(bars).toEqual([
+      { time: '2026-09-08T09:30:00.000Z', open: 100, high: 102, low: 99, close: 101 },
+      { time: '2026-09-08T09:31:00.000Z', open: 101, high: 103, low: 100, close: 102 },
+    ])
   })
 
   it('美股开盘初期 Normal 状态仍保留同日盘前 K 线补足窗口', async () => {

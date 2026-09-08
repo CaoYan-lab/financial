@@ -8,6 +8,7 @@ type EvaluationMarketState = {
   ticker: string
   marketState?: string
   updatedAt?: string
+  evaluationError?: string
 }
 
 export function liveEvaluationSkipReason(input: {
@@ -143,6 +144,16 @@ function buildTickerStatus(
       marketLabel,
       evaluationState: marketState === 'OVERNIGHT' ? 'DISABLED' : 'WAITING_MARKET',
       reason: readableReason(reason),
+    }
+  }
+  if (item.evaluationError) {
+    return {
+      ticker,
+      market,
+      marketState,
+      marketLabel,
+      evaluationState: 'ERROR',
+      reason: item.evaluationError,
     }
   }
   return {

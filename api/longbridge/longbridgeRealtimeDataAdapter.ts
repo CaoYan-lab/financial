@@ -24,7 +24,7 @@ export async function loadLongbridgeRealtimeStrategyMarketData(
   const requiredKlineCount = options.klineCount ?? 120
   const cached = fromCache(symbol, requiredKlineCount, options)
   if (cached.ok) return cached
-  if (options.allowFallback === false) return cached
+  if (options.allowFallback === false || process.env.CLOUD_MODE === '1') return cached
 
   const fallback = await loadLongbridgeStrategyMarketData(symbol, options)
   if (!fallback.ok) {
@@ -47,6 +47,18 @@ export async function loadLongbridgeRealtimeStrategyMarketData(
     ...fallback,
     warnings: [...cached.warnings, ...fallback.warnings, 'Longbridge SDK cache 不足，本轮使用 CLI 补拉兜底。'],
   }
+}
+
+export function longbridgeRealtimeReadinessReason(
+  symbolInput: string,
+  requiredKlineCount = 120,
+): string | undefined {
+  const cached = fromCache(normalizeLongbridgeSymbol(symbolInput), requiredKlineCount, {
+    includeDepth: false,
+    includeTrades: false,
+  })
+  if (cached.ok) return undefined
+  return 'reason' in cached ? cached.reason : 'Longbridge SDK 行情缓存未就绪'
 }
 
 export async function loadLongbridgeRealtimeTrendContext(
