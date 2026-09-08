@@ -1,4 +1,5 @@
 import { Config, QuoteContext, TradeContext } from 'longbridge'
+import { createLongbridgeSdkScheduler } from './longbridgeSdkRateLimiter.js'
 
 const SDK_ENV_KEYS = [
   'LONGBRIDGE_APP_KEY',
@@ -55,6 +56,7 @@ export type LongbridgeSdkProbe = {
 let config: Config | undefined
 let quoteContext: QuoteContextInstance | undefined
 let tradeContext: TradeContextInstance | undefined
+const sdkScheduler = createLongbridgeSdkScheduler()
 const accountCache = new Map<LongbridgeAccountCurrency, {
   expiresAt: number
   value: LongbridgeSdkAccountSnapshot
@@ -113,8 +115,8 @@ export function getLongbridgeSdkContexts(): {
       { enablePrintQuotePackages: false },
     )
   }
-  quoteContext ??= QuoteContext.new(config)
-  tradeContext ??= TradeContext.new(config)
+  quoteContext ??= sdkScheduler.wrap(QuoteContext.new(config))
+  tradeContext ??= sdkScheduler.wrap(TradeContext.new(config))
   return { config, quote: quoteContext, trade: tradeContext }
 }
 

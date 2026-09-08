@@ -1,4 +1,5 @@
 import { Config, QuoteContext, TradeContext } from 'longbridge'
+import { createLongbridgeSdkScheduler } from '../../../longbridge/longbridgeSdkRateLimiter.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
 import { credentialsForConnection } from './connectionStore.js'
 
@@ -24,10 +25,11 @@ function createContexts(bundle: LongbridgeCredentialBundle): TenantLongbridgeCon
     bundle.accessToken,
     { enablePrintQuotePackages: false },
   )
+  const scheduler = createLongbridgeSdkScheduler()
   return {
     config,
-    quote: QuoteContext.new(config),
-    trade: TradeContext.new(config),
+    quote: scheduler.wrap(QuoteContext.new(config)),
+    trade: scheduler.wrap(TradeContext.new(config)),
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   }
