@@ -37,6 +37,7 @@ type BrokerOrderFilters = {
 const HISTORY_PAGE_SIZE = 12
 const BROKER_ORDERS_PAGE_SIZE = 12
 const AUTO_REFRESH_MS = 30_000
+const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
 const CONTROL_POLL_INTERVAL_MS = 500
 const CONTROL_POLL_ATTEMPTS = 60
 
@@ -129,7 +130,9 @@ export function useLongbridgeLiveTrading() {
   })
 
   const refreshDashboard = useCallback(async () => {
-    const response = await fetch('/api/longbridge/live-trading/dashboard')
+    const response = await fetch('/api/longbridge/live-trading/dashboard', {
+      signal: AbortSignal.timeout(DASHBOARD_REQUEST_TIMEOUT_MS),
+    })
     const payload: unknown = await response.json()
     if (!response.ok) throw new Error(responseError(payload) ?? `Longbridge live dashboard request failed with HTTP ${response.status}.`)
     if (!isDashboardResponse(payload)) throw new Error('长桥实盘看板返回内容不完整。')
@@ -171,7 +174,9 @@ export function useLongbridgeLiveTrading() {
       if (kind === 'candidate-pool') {
         params.set('statusGroup', filters.candidatePoolHistoryFilter)
       }
-      const response = await fetch(`/api/longbridge/live-trading/history/${kind}?${params.toString()}`)
+      const response = await fetch(`/api/longbridge/live-trading/history/${kind}?${params.toString()}`, {
+        signal: AbortSignal.timeout(DASHBOARD_REQUEST_TIMEOUT_MS),
+      })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload?.error ?? `Longbridge live history request failed with HTTP ${response.status}.`)
       if (historyRequestSeqRef.current[kind] !== requestSeq) return undefined
@@ -186,7 +191,9 @@ export function useLongbridgeLiveTrading() {
 
   const loadManagedOrders = useCallback(async () => {
     try {
-      const response = await fetch('/api/longbridge/live-trading/managed-orders')
+      const response = await fetch('/api/longbridge/live-trading/managed-orders', {
+        signal: AbortSignal.timeout(DASHBOARD_REQUEST_TIMEOUT_MS),
+      })
       const payload = await response.json() as ManagedOrderListResponse
       if (!response.ok || !payload.ok) throw new Error(payload.error ?? '长桥系统挂单读取失败。')
       setManagedOrders(payload)
@@ -251,13 +258,13 @@ export function useLongbridgeLiveTrading() {
     try {
       const payload = await refreshDashboard()
       const currentHistoryPages = historyPagesRef.current
+      // 券商订单依赖 worker 和外部网络，独立刷新，不能占用整页刷新状态。
       await Promise.all([
         loadManagedOrders(),
         loadHistory('signals', currentHistoryPages.signals, HISTORY_PAGE_SIZE),
         loadHistory('pending-orders', currentHistoryPages['pending-orders'], HISTORY_PAGE_SIZE),
         loadHistory('candidate-pool', currentHistoryPages['candidate-pool'], HISTORY_PAGE_SIZE),
       ])
-      await loadBrokerOrders(brokerOrdersPageRef.current, BROKER_ORDERS_PAGE_SIZE)
       return payload
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '长桥实盘状态加载失败。')
@@ -266,7 +273,12 @@ export function useLongbridgeLiveTrading() {
       dashboardRefreshInFlight.current = false
       setRefreshing(false)
     }
-  }, [loadBrokerOrders, loadHistory, loadManagedOrders, refreshDashboard])
+  }, [loadHistory, loadManagedOrders, refreshDashboard])
+
+  const refreshPage = useCallback(() => {
+    void loadBrokerOrders(brokerOrdersPageRef.current, BROKER_ORDERS_PAGE_SIZE)
+    return refreshAll()
+  }, [loadBrokerOrders, refreshAll])
 
   const runOnce = useCallback(async (symbol = 'AAPL.US') => {
     setRunning(true)
@@ -621,8 +633,8 @@ export function useLongbridgeLiveTrading() {
   }, [loadManagedOrders])
 
   useEffect(() => {
-    refreshAll().catch(() => undefined)
-  }, [refreshAll])
+    refreshPage().catch(() => undefined)
+  }, [refreshPage])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -660,7 +672,7 @@ export function useLongbridgeLiveTrading() {
     signalDirectionFilter,
     signalLifecycleFilter,
     candidatePoolHistoryFilter,
-    refresh: refreshAll,
+    refresh: refreshPage,
     start,
     stop,
     runOnce,

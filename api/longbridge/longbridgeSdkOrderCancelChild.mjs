@@ -1,15 +1,15 @@
 import { Config, TradeContext } from 'longbridge'
+import { writeChildResult } from './longbridgeChildProcess.mjs'
 
 const CANCELLABLE_STATUSES = new Set([1, 6, 7, 11])
 
 function fail(orderId, message) {
-  process.stdout.write(JSON.stringify({
+  writeChildResult({
     ok: false,
     accepted: false,
     orderId,
     error: message,
-  }))
-  process.exitCode = 1
+  }, 1)
 }
 
 async function main() {
@@ -37,24 +37,24 @@ async function main() {
   const trade = TradeContext.new(config)
   const detail = await trade.orderDetail(orderId)
   if (!CANCELLABLE_STATUSES.has(detail.status)) {
-    process.stdout.write(JSON.stringify({
+    writeChildResult({
       ok: true,
       accepted: false,
       orderId,
       brokerStatus: detail.status,
       reason: 'Order is not cancellable in its current broker status.',
       rawResponse: detail.toJSON(),
-    }))
+    })
     return
   }
   await trade.cancelOrder(orderId)
-  process.stdout.write(JSON.stringify({
+  writeChildResult({
     ok: true,
     accepted: true,
     orderId,
     brokerStatus: detail.status,
     rawResponse: detail.toJSON(),
-  }))
+  })
 }
 
 main().catch((error) => {

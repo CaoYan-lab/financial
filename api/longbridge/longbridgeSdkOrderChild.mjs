@@ -7,10 +7,10 @@ import {
   TimeInForceType,
   TradeContext,
 } from 'longbridge'
+import { writeChildResult } from './longbridgeChildProcess.mjs'
 
 function fail(message) {
-  process.stdout.write(JSON.stringify({ ok: false, error: message }))
-  process.exitCode = 1
+  writeChildResult({ ok: false, error: message }, 1)
 }
 
 async function main() {
@@ -46,11 +46,11 @@ async function main() {
     remark: String(input.remark ?? '').slice(0, 64),
   })
 
-  process.stdout.write(JSON.stringify({
+  writeChildResult({
     ok: true,
     orderId: response.orderId,
     rawResponse: response.toJSON(),
-  }))
+  })
 }
 
 function outsideRth(orderSession) {

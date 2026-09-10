@@ -1,4 +1,5 @@
 import { Config, TradeContext } from 'longbridge'
+import { writeChildResult } from './longbridgeChildProcess.mjs'
 
 const ORDER_STATUS_LABELS = {
   0: '未知',
@@ -48,8 +49,7 @@ const ORDER_STATUS_FILTERS = {
 }
 
 function fail(message) {
-  process.stdout.write(JSON.stringify({ ok: false, error: message }))
-  process.exitCode = 1
+  writeChildResult({ ok: false, error: message }, 1)
 }
 
 function decimal(value) {
@@ -165,7 +165,7 @@ async function main() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const safePage = Math.min(page, totalPages)
   const start = (safePage - 1) * pageSize
-  process.stdout.write(JSON.stringify({
+  writeChildResult({
     ok: true,
     orders: orders.slice(start, start + pageSize),
     page: safePage,
@@ -175,7 +175,7 @@ async function main() {
     startDate: startAt.toISOString().slice(0, 10),
     endDate: endAt.toISOString().slice(0, 10),
     warnings: [],
-  }))
+  })
 }
 
 main().catch((error) => {

@@ -1,4 +1,5 @@
 import { Config, TradeContext } from 'longbridge'
+import { writeChildResult } from './longbridgeChildProcess.mjs'
 
 const ORDER_STATUS_LABELS = {
   0: '未知',
@@ -45,8 +46,7 @@ const ORDER_TYPE_LABELS = {
 }
 
 function fail(message) {
-  process.stdout.write(JSON.stringify({ ok: false, error: message }))
-  process.exitCode = 1
+  writeChildResult({ ok: false, error: message }, 1)
 }
 
 function decimal(value) {
@@ -133,7 +133,7 @@ async function main() {
   }
 
   const chargeDetail = detail.chargeDetail
-  process.stdout.write(JSON.stringify({
+  writeChildResult({
     ok: true,
     orderId: detail.orderId,
     symbol: detail.symbol,
@@ -175,7 +175,7 @@ async function main() {
       time: iso(item.time),
     })),
     checkedAt: new Date().toISOString(),
-  }))
+  })
 }
 
 main().catch((error) => {

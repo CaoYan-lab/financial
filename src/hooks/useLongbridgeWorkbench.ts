@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { LongbridgeWorkbenchDashboardResponse } from '../../shared/longbridgeTypes'
 
+const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
+
 export function useLongbridgeWorkbench() {
   const [dashboard, setDashboard] = useState<LongbridgeWorkbenchDashboardResponse>()
   const [loading, setLoading] = useState(true)
@@ -10,7 +12,9 @@ export function useLongbridgeWorkbench() {
     setLoading(true)
     setError(undefined)
     try {
-      const response = await fetch('/api/longbridge/workbench/dashboard')
+      const response = await fetch('/api/longbridge/workbench/dashboard', {
+        signal: AbortSignal.timeout(DASHBOARD_REQUEST_TIMEOUT_MS),
+      })
       if (!response.ok) throw new Error(`Longbridge dashboard failed with HTTP ${response.status}`)
       setDashboard((await response.json()) as LongbridgeWorkbenchDashboardResponse)
     } catch (requestError) {
