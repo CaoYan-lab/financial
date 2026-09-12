@@ -15,8 +15,8 @@ import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { closePool } from '../db/pgClient.js'
 import { logger } from '../../utils/logger.js'
-import { claimNextJob, completeJob, failJob, getEngineDesired, upsertWorkerStatus } from '../state/taskStores.js'
-import { collectEngineSnapshots, handleJob } from '../jobs/jobHandlers.js'
+import { claimNextJob, completeJob, failJob, getEngineDesired, getWorkerStatus, upsertWorkerStatus } from '../state/taskStores.js'
+import { collectEngineSnapshots, handleJob, mergeEngineSnapshot } from '../jobs/jobHandlers.js'
 import { tryAcquireLeader, releaseLeader, leaderKeepAlive } from '../state/leaderLock.js'
 import { managedOrderSupervisor } from '../../live/managedOrderSupervisor.js'
 import { startMultiUserWorkerRuntime, stopMultiUserWorkerRuntime } from '../multiuser/worker/multiUserWorkerRuntime.js'
@@ -66,6 +66,17 @@ async function processOneJob(): Promise<boolean> {
     const result = await handleJob(job.jobType, job.payload)
     if (result.ok) {
       await completeJob(job.id, { ok: true, ...(result.summary ?? {}) })
+      await publishJobEngineSnapshot(result).catch((error) => {
+        logger.warn(
+          {
+            event: 'cloud.worker.job_snapshot_publish.failed',
+            jobId: job.id,
+            jobType: job.jobType,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          '任务已成功，但即时引擎快照发布失败',
+        )
+      })
       logger.info({ event: 'cloud.worker.job.succeeded', jobId: job.id, jobType: job.jobType }, '任务成功')
     } else {
       await failJob(job.id, result.error || '任务失败')
@@ -81,9 +92,36 @@ async function processOneJob(): Promise<boolean> {
   return true
 }
 
+async function publishJobEngineSnapshot(result: {
+  summary?: Record<string, unknown>
+}): Promise<void> {
+  const platform = result.summary?.platform
+  const dashboard = result.summary?.dashboard
+  if (typeof platform !== 'string' || !dashboard || typeof dashboard !== 'object') return
+  const previousStatus = await getWorkerStatus('leader')
+  const previousEngines = previousStatus?.engines
+  const engines = previousEngines && typeof previousEngines === 'object' && !Array.isArray(previousEngines)
+    ? previousEngines as Record<string, unknown>
+    : {}
+  const mergedDashboard = mergeEngineSnapshot(engines[platform], dashboard)
+  if (!mergedDashboard) return
+  await upsertWorkerStatus('leader', {
+    ...buildStatus(),
+    leader: true,
+    engines: { ...engines, [platform]: mergedDashboard },
+    managedOrders: managedOrderSupervisor.snapshot(),
+  })
+}
+
 async function heartbeat(): Promise<void> {
   try {
-    const engines = await collectEngineSnapshots()
+    const previousStatus = await getWorkerStatus('leader')
+    const previousEngines = previousStatus?.engines
+    const engines = await collectEngineSnapshots(
+      previousEngines && typeof previousEngines === 'object' && !Array.isArray(previousEngines)
+        ? previousEngines as Record<string, unknown>
+        : {},
+    )
     // 仅 leader 写心跳；固定写到 'leader' 行，避免旧版本/非 leader 实例写 'primary' 造成噪声。
     // web 侧只读 'leader' 行展示引擎看板。
     await upsertWorkerStatus('leader', {
@@ -171,6 +209,13 @@ async function campaignLeadership(): Promise<void> {
       if (client) {
         leaderClient = client
         logger.info({ event: 'cloud.worker.leader.acquired', workerId: WORKER_ID }, '本实例成为 leader，开始驱动引擎')
+        const previousStatus = await getWorkerStatus('leader')
+        await upsertWorkerStatus('leader', {
+          ...buildStatus(),
+          leader: true,
+          engines: previousStatus?.engines ?? {},
+          managedOrders: managedOrderSupervisor.snapshot(),
+        })
         await reconcileDesiredState().catch(() => undefined)
         await managedOrderSupervisor.start()
         startMultiUserWorkerRuntime(WORKER_ID)

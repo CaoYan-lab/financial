@@ -30,12 +30,31 @@ import { requestManagedOrderCancel } from '../../live/managedOrderSupervisor.js'
 
 export type JobResult = { ok: boolean; summary?: Record<string, unknown>; error?: string }
 
+const ENGINE_SNAPSHOT_TIMEOUT_MS = Math.max(
+  2_000,
+  Number(process.env.WORKER_ENGINE_SNAPSHOT_TIMEOUT_MS || 8_000) || 8_000,
+)
+const LONGBRIDGE_SNAPSHOT_STAGE_TIMEOUT_MS = Math.max(
+  1_000,
+  Math.min(
+    ENGINE_SNAPSHOT_TIMEOUT_MS - 500,
+    Number(process.env.LONGBRIDGE_CLOUD_SNAPSHOT_STAGE_TIMEOUT_MS || 3_000) || 3_000,
+  ),
+)
+const latestEngineSnapshots = new Map<string, unknown>()
+const engineSnapshotInFlight = new Map<string, Promise<unknown>>()
+let longbridgeDashboardInFlight: Promise<unknown> | undefined
+let longbridgeSupplementalInFlight: Promise<{
+  workbench: Awaited<ReturnType<typeof loadLongbridgeWorkbenchDashboard>>
+  account: Awaited<ReturnType<typeof loadLongbridgeLiveAccountDashboard>>
+}> | undefined
+
 type EngineHandle = {
   platform: string
   start: () => Promise<unknown> | unknown
   stop: () => unknown
   runOnce?: () => Promise<unknown> | unknown
-  status: () => unknown | Promise<unknown>
+  status: (previous?: unknown) => unknown | Promise<unknown>
 }
 
 /**
@@ -63,7 +82,7 @@ function engines(): Record<string, EngineHandle> {
       start: () => longbridgeLiveTradingEngine.start(),
       stop: () => longbridgeLiveTradingEngine.stop(),
       runOnce: () => longbridgeLiveTradingEngine.runPoolOnceDryRun(),
-      status: () => collectLongbridgeCloudSnapshot(),
+      status: (previous) => collectLongbridgeCloudSnapshot(previous),
     },
     ashare_live: {
       platform: 'ashare_live',
@@ -79,18 +98,45 @@ function engines(): Record<string, EngineHandle> {
   }
 }
 
-async function collectLongbridgeCloudSnapshot(): Promise<Record<string, unknown>> {
-  const dashboard = await longbridgeLiveTradingEngine.dashboard()
-  const [workbench, account] = await Promise.all([
+async function collectLongbridgeCloudSnapshot(previous?: unknown): Promise<Record<string, unknown>> {
+  longbridgeDashboardInFlight ??= Promise.resolve(longbridgeLiveTradingEngine.dashboard())
+    .finally(() => {
+      longbridgeDashboardInFlight = undefined
+    })
+  const dashboard = await withTimeout(
+    longbridgeDashboardInFlight,
+    LONGBRIDGE_SNAPSHOT_STAGE_TIMEOUT_MS,
+    '长桥引擎看板采集超时',
+  ).catch(() => undefined)
+  const base = mergeEngineSnapshot(previous, dashboard)
+  if (!base) throw new Error('长桥引擎看板暂不可用')
+
+  longbridgeSupplementalInFlight ??= Promise.all([
     loadLongbridgeWorkbenchDashboard(),
     loadLongbridgeLiveAccountDashboard(),
-  ])
+  ]).then(([workbench, account]) => ({ workbench, account }))
+    .finally(() => {
+      longbridgeSupplementalInFlight = undefined
+    })
+  const supplemental = await withTimeout(
+    longbridgeSupplementalInFlight,
+    LONGBRIDGE_SNAPSHOT_STAGE_TIMEOUT_MS,
+    '长桥账户补充快照采集超时',
+  ).catch(() => undefined)
+  if (!supplemental) {
+    return {
+      ...base,
+      realtime: getLongbridgeRealtimeSubscriptionStatus(),
+      snapshotDegraded: true,
+    }
+  }
   return {
-    ...dashboard,
-    sourceStatus: workbench.sourceStatus,
-    account,
-    workbench,
+    ...base,
+    sourceStatus: supplemental.workbench.sourceStatus,
+    account: supplemental.account,
+    workbench: supplemental.workbench,
     realtime: getLongbridgeRealtimeSubscriptionStatus(),
+    snapshotDegraded: false,
   }
 }
 
@@ -334,17 +380,20 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
     switch (action) {
       case 'start': {
         const dashboard = await engine.start()
+        rememberEngineDashboard(platform, dashboard)
         logger.info({ event: 'cloud.worker.job.start_done', platform }, '引擎启动指令完成')
         return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
       case 'stop': {
-        const dashboard = engine.stop()
+        const dashboard = await engine.stop()
+        rememberEngineDashboard(platform, dashboard)
         logger.info({ event: 'cloud.worker.job.stop_done', platform }, '引擎停止指令完成')
         return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
       case 'run_once': {
         if (!engine.runOnce) return { ok: false, error: `${platform} 不支持 run_once` }
         const dashboard = await engine.runOnce()
+        rememberEngineDashboard(platform, dashboard)
         logger.info({ event: 'cloud.worker.job.run_once_done', platform }, '引擎单轮评估完成')
         return { ok: true, summary: { platform, dashboard: sanitizeWorkerSnapshot(dashboard) } }
       }
@@ -389,18 +438,78 @@ function executionSettingsPatch(payload: Record<string, unknown>) {
   }
 }
 
-/** 收集各引擎当前看板快照（worker 心跳用，大字段裁剪）。各引擎 dashboard() 多为 async，需 await。 */
-export async function collectEngineSnapshots(): Promise<Record<string, unknown>> {
-  const snapshot: Record<string, unknown> = {}
+/** 收集各引擎当前看板快照。单个外部数据源卡住时沿用最近快照，不阻断 Worker 心跳。 */
+export async function collectEngineSnapshots(
+  previousSnapshots: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
   const registry = engines()
-  for (const [key, engine] of Object.entries(registry)) {
-    try {
-      snapshot[key] = sanitizeWorkerSnapshot(await engine.status())
-    } catch (error) {
-      snapshot[key] = { error: error instanceof Error ? error.message : String(error) }
+  const entries = await Promise.all(Object.entries(registry).map(async ([key, engine]) => {
+    const fallback = mergeEngineSnapshot(previousSnapshots[key], latestEngineSnapshots.get(key))
+    let request = engineSnapshotInFlight.get(key)
+    if (!request) {
+      request = Promise.resolve(engine.status(fallback))
+        .then((value) => sanitizeWorkerSnapshot(value))
+        .then((value) => {
+          latestEngineSnapshots.set(key, value)
+          return value
+        })
+        .finally(() => {
+          engineSnapshotInFlight.delete(key)
+        })
+      engineSnapshotInFlight.set(key, request)
     }
+    try {
+      return [key, await withTimeout(
+        request,
+        ENGINE_SNAPSHOT_TIMEOUT_MS,
+        `${key} 引擎快照采集超时`,
+      )] as const
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn(
+        { event: 'cloud.worker.engine_snapshot.degraded', platform: key, error: message },
+        '引擎快照采集降级为最近可用数据',
+      )
+      return [key, fallback ?? { error: message }] as const
+    }
+  }))
+  return Object.fromEntries(entries.map(([key, value]) => [
+    key,
+    mergeEngineSnapshot(value, latestEngineSnapshots.get(key)) ?? value,
+  ]))
+}
+
+export function mergeEngineSnapshot(previous: unknown, latest: unknown): Record<string, unknown> | undefined {
+  const previousRecord = snapshotRecord(previous)
+  const latestRecord = snapshotRecord(latest)
+  if (!previousRecord) return latestRecord
+  if (!latestRecord) return previousRecord
+  return { ...previousRecord, ...latestRecord }
+}
+
+function rememberEngineDashboard(platform: string, dashboard: unknown): void {
+  const merged = mergeEngineSnapshot(latestEngineSnapshots.get(platform), sanitizeWorkerSnapshot(dashboard))
+  if (merged) latestEngineSnapshots.set(platform, merged)
+}
+
+function snapshotRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return snapshot
 }
 
 /** 单引擎快照序列化大小上限（字符）。超过则递归裁剪大数组/长文本，而非丢弃整份快照。 */

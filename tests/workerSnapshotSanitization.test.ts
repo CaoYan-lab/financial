@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeWorkerSnapshot } from '../api/cloud/jobs/jobHandlers.js'
+import {
+  mergeEngineSnapshot,
+  sanitizeWorkerSnapshot,
+} from '../api/cloud/jobs/jobHandlers.js'
 
 describe('worker snapshot sanitization', () => {
   it('preserves every market status while trimming oversized detail arrays', () => {
@@ -26,5 +29,29 @@ describe('worker snapshot sanitization', () => {
       items.map((item) => item.ticker),
     )
     expect(result.latestSignals).toHaveLength(40)
+  })
+
+  it('uses the latest engine state while preserving the last complete broker snapshot', () => {
+    const result = mergeEngineSnapshot(
+      {
+        engine: { running: false, lastError: '' },
+        sourceStatus: { authStatus: 'authenticated', accountDataAvailable: true },
+        account: { ok: true },
+        workbench: { ok: true },
+      },
+      {
+        engine: { running: true, lastError: '' },
+        evaluationStatus: { state: 'WAITING_MARKET' },
+        updatedAt: '2026-09-12T06:43:12.000Z',
+      },
+    )
+
+    expect(result).toMatchObject({
+      engine: { running: true, lastError: '' },
+      evaluationStatus: { state: 'WAITING_MARKET' },
+      sourceStatus: { authStatus: 'authenticated', accountDataAvailable: true },
+      account: { ok: true },
+      workbench: { ok: true },
+    })
   })
 })

@@ -12,9 +12,15 @@
  */
 import type { PoolClient } from 'pg'
 import { getPool } from '../db/pgClient.js'
+import { logger } from '../../utils/logger.js'
 
 // 固定锁 key（任意大整数，'fin cloud worker leader' 派生常量）
 export const LEADER_LOCK_KEY = 7129036401
+const LEADER_RECOVERY_LOCK_KEY = LEADER_LOCK_KEY + 1
+const LEADER_STALE_MS = Math.max(
+  30_000,
+  Number(process.env.WORKER_LEADER_STALE_MS || 90_000) || 90_000,
+)
 
 /**
  * 尝试获取 leader 锁。
@@ -31,11 +37,73 @@ export async function tryAcquireLeader(): Promise<PoolClient | null> {
     if (res.rows[0]?.got) {
       return client
     }
+    if (await recoverStaleLeader(client)) {
+      return client
+    }
     client.release()
     return null
   } catch (error) {
     client.release()
     throw error
+  }
+}
+
+async function recoverStaleLeader(client: PoolClient): Promise<boolean> {
+  const recovery = await client.query<{ got: boolean }>(
+    'SELECT pg_try_advisory_lock($1::bigint) AS got',
+    [LEADER_RECOVERY_LOCK_KEY],
+  )
+  if (!recovery.rows[0]?.got) return false
+
+  try {
+    const status = await client.query<{ stale: boolean }>(
+      `SELECT COALESCE(
+         (
+           SELECT heartbeat_at < now() - make_interval(secs => $1)
+           FROM cloud_worker_status
+           WHERE platform = 'leader'
+         ),
+         FALSE
+       ) AS stale`,
+      [Math.ceil(LEADER_STALE_MS / 1_000)],
+    )
+    if (!status.rows[0]?.stale) return false
+
+    const lockClassId = Math.floor(LEADER_LOCK_KEY / 0x1_0000_0000)
+    const lockObjectId = LEADER_LOCK_KEY >>> 0
+    const terminated = await client.query<{ pid: number; terminated: boolean }>(
+      `SELECT l.pid, pg_terminate_backend(l.pid) AS terminated
+       FROM pg_locks l
+       JOIN pg_stat_activity a ON a.pid = l.pid
+       WHERE l.locktype = 'advisory'
+         AND l.classid = $1::oid
+         AND l.objid = $2::oid
+         AND l.objsubid = 1
+         AND l.granted
+         AND l.pid <> pg_backend_pid()
+         AND a.usename = current_user
+         AND a.application_name = 'financial-workbench-cloud'`,
+      [lockClassId, lockObjectId],
+    )
+    const terminatedPids = terminated.rows.filter((row) => row.terminated).map((row) => row.pid)
+    if (terminatedPids.length === 0) return false
+
+    const acquired = await client.query<{ got: boolean }>(
+      'SELECT pg_try_advisory_lock($1::bigint) AS got',
+      [LEADER_LOCK_KEY],
+    )
+    if (!acquired.rows[0]?.got) return false
+    logger.warn(
+      {
+        event: 'cloud.worker.leader.stale_connection_recovered',
+        staleAfterMs: LEADER_STALE_MS,
+        backendPids: terminatedPids,
+      },
+      '已回收过期 Leader 连接并原子接管 Leader 锁',
+    )
+    return true
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1::bigint)', [LEADER_RECOVERY_LOCK_KEY])
   }
 }
 
