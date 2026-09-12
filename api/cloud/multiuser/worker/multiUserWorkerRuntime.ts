@@ -2,9 +2,13 @@ import { query } from '../../db/pgClient.js'
 import { logger } from '../../../utils/logger.js'
 import { orderSubmissionSessionFailureReason } from '../../../simulation/usOvernightLlmGate.js'
 import { normalizeLongbridgeSymbol } from '../../../longbridge/longbridgeMarketSessionService.js'
+import { longbridgeTradingCurrency } from '../../../longbridge/longbridgeLotSizeService.js'
+import { longbridgeOpeningRiskRejectionReason } from '../../../longbridge/longbridgeRiskService.js'
 import {
-  longbridgeOpeningLotSizeFailureReason,
-} from '../../../longbridge/longbridgeLotSizeService.js'
+  buildLongbridgeSdkOrderPayload,
+  formatLongbridgeSubmittedPrice,
+} from '../../../longbridge/longbridgeLiveOrderService.js'
+import { getTradeStrategyRuntimeConfig } from '../../../trade_strategy/tradeStrategyConfigService.js'
 import {
   getConnectionForVerification,
   getOwnedConnection,
@@ -31,7 +35,11 @@ import {
   loadTenantLotSize,
   loadTenantMarketStates,
 } from '../longbridge/tenantMarketSessionService.js'
-import { runTenantStrategyOnce, runTenantStrategyPoolOnce } from '../longbridge/tenantStrategyService.js'
+import {
+  loadTenantAccountForTrading,
+  runTenantStrategyOnce,
+  runTenantStrategyPoolOnce,
+} from '../longbridge/tenantStrategyService.js'
 import { multiUserEnabled } from '../auth/multiUserAuthService.js'
 
 const POLL_MS = Number(process.env.MULTIUSER_WORKER_POLL_MS || 3_000)
@@ -97,8 +105,9 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
         mode: string
         live_trading_enabled: boolean
         shadow_verified_at: Date | null
+        settings: Record<string, unknown>
       }>(
-        `SELECT mode, live_trading_enabled, shadow_verified_at
+        `SELECT mode, live_trading_enabled, shadow_verified_at, settings
          FROM multiuser.longbridge_engine_state
          WHERE user_id = $1 AND binding_id = $2`,
         [job.userId, job.bindingId],
@@ -112,18 +121,36 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
       if (!pending || pending.status !== 'PENDING_CONFIRMATION') {
         throw new Error('未找到当前用户可提交的待确认订单')
       }
-      const symbol = normalizeLongbridgeSymbol(typeof job.payload.symbol === 'string'
-        ? job.payload.symbol
-        : pending.intent.ticker)
+      const symbol = normalizeLongbridgeSymbol(pending.intent.ticker)
+      const account = await loadTenantAccountForTrading(
+        connection,
+        longbridgeTradingCurrency(symbol),
+      )
       const lotSize = await loadTenantLotSize(connection, symbol)
-      const lotSizeFailure = longbridgeOpeningLotSizeFailureReason({
-        symbol,
-        action: pending.intent.side,
-        quantity: pending.intent.quantity,
-        lotSize,
+      const confirmationId = `tenant-confirm-${job.id}`
+      const submissionPayload = buildLongbridgeSdkOrderPayload({
+        pendingOrderId: pending.id,
+        confirmationId,
+        intent: pending.intent,
       })
-      if (lotSizeFailure) {
-        throw new Error(`当前用户长桥真实提交已拦截：${lotSizeFailure}`)
+      const riskFailure = longbridgeOpeningRiskRejectionReason(
+        account,
+        {
+          action: pending.intent.side,
+          ticker: pending.intent.ticker,
+          orderQuantity: pending.intent.quantity,
+        },
+        submissionPayload.limitPrice,
+        getTradeStrategyRuntimeConfig('live').activeStrategy,
+        symbol,
+        lotSize,
+        {
+          blockOpeningWhenCashNegative:
+            gate.settings?.blockOpeningWhenCashNegative !== false,
+        },
+      )
+      if (riskFailure) {
+        throw new Error(riskFailure)
       }
       const marketState = (await loadTenantMarketStates(connection, [symbol])).get(symbol)
       const sessionFailure = orderSubmissionSessionFailureReason({
@@ -134,21 +161,29 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
       if (sessionFailure) {
         throw new Error(sessionFailure)
       }
+      const submittedIntent = pending.intent.orderType === 'MARKET'
+        ? pending.intent
+        : {
+            ...pending.intent,
+            limitPrice: submissionPayload.limitPrice,
+          }
       const submittingAt = new Date().toISOString()
       await appendTenantPendingOrder(job.userId, job.bindingId, {
         ...pending,
+        intent: submittedIntent,
         status: 'CONFIRMED_SUBMITTING',
         updatedAt: submittingAt,
         confirmation: {
           confirmedAt: submittingAt,
-          confirmationId: `tenant-confirm-${job.id}`,
+          confirmationId,
           confirmedBy: 'user',
         },
       })
-      const result = await runTenantOrderChild(connection, 'submit', job.payload)
+      const result = await runTenantOrderChild(connection, 'submit', submissionPayload)
       const submittedAt = new Date().toISOString()
       const finalOrder = {
         ...pending,
+        intent: submittedIntent,
         status: result.ok === true ? ('SUBMITTED' as const) : ('SUBMIT_FAILED' as const),
         updatedAt: submittedAt,
         submittedOrder: {
@@ -159,7 +194,9 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
           quantity: String(pending.intent.quantity),
           orderType: pending.intent.orderType,
           orderSession: pending.intent.orderSession,
-          limitPrice: String(pending.intent.limitPrice),
+          limitPrice: pending.intent.orderType === 'MARKET'
+            ? 'MARKET'
+            : formatLongbridgeSubmittedPrice(symbol, submissionPayload.limitPrice),
           submittedAt,
           strategy: pending.intent.strategy,
           signalId: pending.intent.signalId,
@@ -186,7 +223,7 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
           submittedQuantity: pending.intent.quantity,
           executedQuantity: 0,
           remainingQuantity: pending.intent.quantity,
-          submittedPrice: pending.intent.limitPrice,
+          submittedPrice: submissionPayload.limitPrice,
           executedPrice: null,
           latestPrice: null,
           priceDriftPct: null,

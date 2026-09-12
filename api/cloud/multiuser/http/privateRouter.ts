@@ -604,6 +604,8 @@ function registerTenantLongbridgeRoutes(router: Router): void {
         liveTradingEnabled: dashboard.liveTradingEnabled,
         autoSubmitEnabled: dashboard.autoSubmitEnabled,
         autoCancelEnabled: dashboard.autoCancelEnabled,
+        blockOpeningWhenCashNegative:
+          dashboard.blockOpeningWhenCashNegative,
         marketableLimitTimeoutSeconds: dashboard.marketableLimitTimeoutSeconds,
         limitTimeoutSeconds: dashboard.limitTimeoutSeconds,
         brokerSyncIntervalSeconds: dashboard.brokerSyncIntervalSeconds,

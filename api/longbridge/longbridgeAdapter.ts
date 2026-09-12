@@ -19,6 +19,10 @@ import {
   probeLongbridgeSdk,
   type LongbridgeAccountCurrency,
 } from './longbridgeSdkGateway.js'
+import {
+  longbridgeFinancingOpeningRestricted,
+  longbridgeFinancingRiskLabel,
+} from './longbridgeRiskService.js'
 
 const LONGBRIDGE_SKILLS = [
   'longbridge',
@@ -106,17 +110,35 @@ export async function loadLongbridgeWorkbenchDashboard(): Promise<LongbridgeWork
 
 export async function loadLongbridgeLiveAccountDashboard(
   currency: LongbridgeAccountCurrency = 'USD',
+  options: { force?: boolean } = {},
 ): Promise<LiveAccountDashboardResponse> {
   const sourceStatus = await loadLongbridgeSourceStatus()
   const warnings = [...sourceStatus.missingCapabilities]
-  const assets = sourceStatus.accountDataAvailable ? await loadAssetRecord(warnings, currency) : {}
+  const assets = sourceStatus.accountDataAvailable
+    ? await loadAssetRecord(warnings, currency, options.force)
+    : {}
   const positions = sourceStatus.accountDataAvailable ? await loadPositions(warnings, currency) : []
   const now = new Date().toISOString()
   const availableCash = assetValue(assets, 'available_cash') ?? firstCashInfoValue(assets, 'available_cash') ?? assetValue(assets, 'total_cash')
   const totalCash = assetValue(assets, 'total_cash') ?? firstCashInfoValue(assets, 'available_cash')
   const buyPower = assetValue(assets, 'buy_power')
   const netAssets = assetValue(assets, 'net_assets')
+  const financingRiskLevelValue = Number(assetValue(assets, 'risk_level'))
+  const financingRiskLevel = Number.isFinite(financingRiskLevelValue)
+    ? financingRiskLevelValue
+    : undefined
+  const initialMargin = formatCurrency(assetValue(assets, 'init_margin'), currency)
+  const maintenanceMargin = formatCurrency(assetValue(assets, 'maintenance_margin'), currency)
+  const marginCall = formatCurrency(assetValue(assets, 'margin_call'), currency)
   if (sourceStatus.accountDataAvailable && buyPower === undefined) warnings.push('Longbridge assets 未返回可解析 buy_power，LLM 将无法获得最大购买力。')
+  if (sourceStatus.accountDataAvailable && financingRiskLevel === undefined) warnings.push('Longbridge assets 未返回可解析 risk_level，LLM 将无法获得融资风险等级。')
+  const financingOpeningRestricted = longbridgeFinancingOpeningRestricted({
+    financingRiskLevel,
+    totalAssets: formatCurrency(netAssets, currency),
+    totalAssetsInTradingCurrency: formatCurrency(netAssets, currency),
+    initialMargin,
+    marginCall,
+  })
   return {
     ok: sourceStatus.accountDataAvailable,
     selectedAccountId: 'longbridge-real',
@@ -127,6 +149,14 @@ export async function loadLongbridgeLiveAccountDashboard(
       cash: formatCurrency(totalCash, currency),
       availableFunds: formatCurrency(availableCash, currency),
       buyingPower: formatCurrency(buyPower, currency),
+      financingRiskLevel,
+      financingRiskLabel: longbridgeFinancingRiskLabel(financingRiskLevel),
+      financingOpeningRestricted,
+      initialMargin,
+      maintenanceMargin,
+      marginCall,
+      maximumFinancing: formatCurrency(assetValue(assets, 'max_finance_amount'), currency),
+      remainingFinancing: formatCurrency(assetValue(assets, 'remaining_finance_amount'), currency),
       tradingCurrency: currency,
       totalAssetsInTradingCurrency: formatCurrency(netAssets, currency),
       cashInTradingCurrency: formatCurrency(totalCash, currency),
@@ -196,10 +226,11 @@ async function loadAccountMetrics(warnings: string[]): Promise<LongbridgeMetric[
 async function loadAssetRecord(
   warnings: string[],
   currency: LongbridgeAccountCurrency = 'USD',
+  force = false,
 ): Promise<Record<string, unknown>> {
   if (longbridgeSdkCredentialsConfigured()) {
     try {
-      return (await loadLongbridgeSdkAccountSnapshot({ currency })).assets
+      return (await loadLongbridgeSdkAccountSnapshot({ currency, force })).assets
     } catch (error) {
       warnings.push(`Longbridge SDK 账户资产读取失败：${error instanceof Error ? error.message : String(error)}`)
       return {}

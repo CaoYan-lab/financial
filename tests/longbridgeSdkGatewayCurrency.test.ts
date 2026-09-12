@@ -44,7 +44,12 @@ describe('Longbridge SDK 账户资产币种', () => {
       netAssets: '1291.52',
       totalCash: '1291.52',
       buyPower: '1291.52',
-      riskLevel: 0,
+      riskLevel: 1,
+      initMargin: '11996.37',
+      maintenanceMargin: '9968.03',
+      marginCall: '0.00',
+      maxFinanceAmount: '28819.52',
+      remainingFinanceAmount: '5925.11',
       cashInfos: [{
         currency: 'USD',
         availableCash: '1291.52',
@@ -76,6 +81,12 @@ describe('Longbridge SDK 账户资产币种', () => {
       total_cash: '1291.52',
       available_cash: '1291.52',
       buy_power: '1291.52',
+      risk_level: 1,
+      init_margin: '11996.37',
+      maintenance_margin: '9968.03',
+      margin_call: '0.00',
+      max_finance_amount: '28819.52',
+      remaining_finance_amount: '5925.11',
     })
   })
 

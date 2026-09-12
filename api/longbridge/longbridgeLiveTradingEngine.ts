@@ -19,6 +19,7 @@ import {
 } from './longbridgeRealtimeDataAdapter.js'
 import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 import { longbridgeOrderQueueService } from './longbridgeOrderQueueService.js'
+import { normalizeLongbridgeLimitPrice } from './longbridgeLiveOrderService.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
@@ -235,6 +236,8 @@ class LongbridgeLiveTradingEngine {
     if (!trendContext.window.available) warnings.push(trendContext.window.reason ?? trendContext.summary)
 
     if (options.llmPacingBatch && options.requestIndex !== undefined) await waitForLlmRequestSlot({ index: options.requestIndex, ticker: marketData.symbol, batch: options.llmPacingBatch })
+    const blockOpeningWhenCashNegative =
+      getLongbridgeLiveSettings().blockOpeningWhenCashNegative
     const decision = await requestLongbridgeLiveTradingDecision({
       symbol: marketData.symbol,
       account,
@@ -242,6 +245,7 @@ class LongbridgeLiveTradingEngine {
       dataWindow,
       trendContext,
       managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === marketData.ticker.toUpperCase()),
+      blockOpeningWhenCashNegative,
     })
     const orderSession = orderSessionForMarketState(marketData.marketState)
     const managedConflict = hasManagedOrderConflict(managedOpenOrders, marketData.ticker)
@@ -252,10 +256,15 @@ class LongbridgeLiveTradingEngine {
           ? longbridgeOpeningRiskRejectionReason(
               account,
               decision,
-              decision.limitPrice || marketData.lastPrice,
+              normalizeLongbridgeLimitPrice(
+                marketData.symbol,
+                decision.limitPrice || marketData.lastPrice,
+                decision.action === 'BUY' ? 'BUY' : 'SELL',
+              ),
               getTradeStrategyRuntimeConfig('live').activeStrategy,
               marketData.symbol,
               marketData.lotSize,
+              { blockOpeningWhenCashNegative },
             )
           : `当前市场状态 ${marketData.marketState || '不可用'} 只允许策略研究，不允许生成真实订单。`
         : undefined
@@ -357,7 +366,10 @@ class LongbridgeLiveTradingEngine {
   private async reviewCandidatePool(accountInput?: LiveAccountDashboardResponse) {
     const reviewCandidates = longbridgeCandidatePoolService.reviewCandidates()
     if (!reviewCandidates.length) return []
-    const account = accountInput ?? this.account ?? (await loadLongbridgeLiveAccountDashboard())
+    const reviewCurrency = accountInput?.summary.tradingCurrency === 'HKD'
+      ? 'HKD'
+      : 'USD'
+    const account = await loadLongbridgeLiveAccountDashboard(reviewCurrency, { force: true })
     this.account = account
     const prompt = getActiveLivePortfolioReviewPrompt()
     const runtime = getTradeStrategyRuntimeConfig('live')
@@ -387,7 +399,45 @@ class LongbridgeLiveTradingEngine {
         humanConfirmationRequired: true,
       },
     })
-    return review.ok ? longbridgeCandidatePoolService.applyReview(review) : []
+    if (!review.ok) return []
+    const promoted = longbridgeCandidatePoolService.applyReview(review)
+    const allowed = []
+    const settings = getLongbridgeLiveSettings()
+    for (const candidate of promoted) {
+      const symbol = normalizeLongbridgeSymbol(candidate.ticker)
+      const currency = longbridgeTradingCurrency(symbol)
+      const candidateAccount = account.summary.tradingCurrency === currency
+        ? account
+        : await loadLongbridgeLiveAccountDashboard(currency, { force: true })
+      const rawPrice = candidate.decision.limitPrice
+        || (candidate.marketData?.ok ? candidate.marketData.lastPrice : 0)
+      const limitPrice = normalizeLongbridgeLimitPrice(
+        symbol,
+        rawPrice,
+        candidate.decision.action === 'BUY' ? 'BUY' : 'SELL',
+      )
+      const riskReason = longbridgeOpeningRiskRejectionReason(
+        candidateAccount,
+        candidate.decision,
+        limitPrice,
+        runtime.activeStrategy,
+        symbol,
+        candidate.marketData?.ok ? candidate.marketData.lotSize : undefined,
+        { blockOpeningWhenCashNegative: settings.blockOpeningWhenCashNegative },
+      )
+      if (riskReason) {
+        longbridgeCandidatePoolService.suppressByRisk(candidate, riskReason)
+        logger.warn({
+          event: 'longbridge.live.candidate_promotion_blocked',
+          candidateId: candidate.candidateId,
+          ticker: candidate.ticker,
+          reason: riskReason,
+        }, 'Longbridge candidate promotion blocked by refreshed risk')
+        continue
+      }
+      allowed.push(candidate)
+    }
+    return allowed
   }
 
   private async bootstrapAfterStart(account: LiveAccountDashboardResponse, universe: string[]) {
@@ -602,18 +652,24 @@ function pendingOrderFromDecision(
   orderSession: LiveOrderIntent['orderSession'],
 ): LivePendingOrder {
   const now = new Date().toISOString()
+  const side = decision.action as Exclude<LlmTradingDecision['action'], 'HOLD'>
+  const limitPrice = normalizeLongbridgeLimitPrice(
+    marketData.symbol,
+    decision.limitPrice || marketData.lastPrice,
+    side === 'BUY' ? 'BUY' : 'SELL',
+  )
   const intent: LiveOrderIntent = {
     ticker: decision.ticker,
-    side: decision.action as Exclude<LlmTradingDecision['action'], 'HOLD'>,
+    side,
     quantity: decision.orderQuantity,
     orderType: 'MARKETABLE_LIMIT',
     orderSession,
-    limitPrice: decision.limitPrice || marketData.lastPrice,
+    limitPrice,
     strategy: STRATEGY,
     signalId: signal.id,
     reason: decision.reason,
-    estimatedNotional: formatMoney(decision.orderQuantity * (decision.limitPrice || marketData.lastPrice)),
-    feeContext: estimateLongbridgePreTradeFee(decision.orderQuantity, decision.limitPrice || marketData.lastPrice, marketData.symbol),
+    estimatedNotional: formatMoney(decision.orderQuantity * limitPrice),
+    feeContext: estimateLongbridgePreTradeFee(decision.orderQuantity, limitPrice, marketData.symbol),
   }
   return {
     id: `longbridge-pending-${decision.ticker}-${Date.now()}`,

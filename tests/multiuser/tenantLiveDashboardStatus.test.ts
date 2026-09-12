@@ -73,6 +73,7 @@ describe('Longbridge 租户实盘状态', () => {
       live_trading_enabled: false,
       auto_submit_enabled: false,
       auto_cancel_enabled: false,
+      settings: {},
     })
     mocks.marketStates.mockResolvedValue(new Map([
       ['AAPL.US', 'RTH'],
@@ -97,6 +98,22 @@ describe('Longbridge 租户实盘状态', () => {
     })
     expect(dashboard.signals).toEqual([validSignal])
     expect(dashboard.engine.signalCount).toBe(1)
+    expect(dashboard.blockOpeningWhenCashNegative).toBe(true)
+  })
+
+  it('Dashboard 返回当前用户关闭的负现金开仓保护设置', async () => {
+    mocks.queryOne.mockResolvedValueOnce({
+      desired: 'running',
+      mode: 'live',
+      live_trading_enabled: true,
+      auto_submit_enabled: true,
+      auto_cancel_enabled: false,
+      settings: { blockOpeningWhenCashNegative: false },
+    })
+
+    const dashboard = await loadTenantLiveDashboard('user-1', 'binding-1', connection)
+
+    expect(dashboard.blockOpeningWhenCashNegative).toBe(false)
   })
 
   it('信号历史分页排除休市伪信号并修正总数', async () => {

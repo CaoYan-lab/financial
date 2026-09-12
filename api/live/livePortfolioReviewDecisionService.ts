@@ -3,6 +3,10 @@ import { durationMs, logger } from '../utils/logger.js'
 import { callArkResponses, parseJsonObject } from '../simulation/llmResponseUtils.js'
 import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import { getActiveLivePortfolioReviewPrompt } from '../trade_strategy/tradeStrategyConfigService.js'
+import {
+  longbridgeFinancingOpeningRestricted,
+  longbridgeFinancingRiskLabel,
+} from '../longbridge/longbridgeRiskService.js'
 
 export type LivePortfolioReviewCandidate = {
   candidateId: string
@@ -116,8 +120,31 @@ export async function requestLivePortfolioReviewDecision(input: ReviewInput, opt
   return parsed
 }
 
-function buildPortfolioReviewPrompt(input: ReviewInput, portfolioDecisionId: string, promptConfig = getActiveLivePortfolioReviewPrompt()): Array<{ role: string; content: string }> {
+export function buildPortfolioReviewPrompt(input: ReviewInput, portfolioDecisionId: string, promptConfig = getActiveLivePortfolioReviewPrompt()): Array<{ role: string; content: string }> {
   const preset = activePreset(promptConfig)
+  const financingOpeningRestricted = longbridgeFinancingOpeningRestricted(
+    input.account.summary,
+  )
+  const hasFinancingRiskContext =
+    input.account.summary.financingRiskLevel !== undefined
+    || input.account.summary.initialMargin !== undefined
+    || input.account.summary.marginCall !== undefined
+  const financingRisk = hasFinancingRiskContext
+    ? {
+        level: input.account.summary.financingRiskLevel ?? null,
+        label: input.account.summary.financingRiskLabel
+          ?? longbridgeFinancingRiskLabel(input.account.summary.financingRiskLevel),
+        openingRestricted: financingOpeningRestricted,
+        initialMargin: input.account.summary.initialMargin ?? '不可用',
+        maintenanceMargin: input.account.summary.maintenanceMargin ?? '不可用',
+        marginCall: input.account.summary.marginCall ?? '不可用',
+        maximumFinancing: input.account.summary.maximumFinancing ?? '不可用',
+        remainingFinancing: input.account.summary.remainingFinancing ?? '不可用',
+        rule: financingOpeningRestricted
+          ? '账户当前只允许减仓或平仓；禁止晋级任何新增多头、空头或融资仓位。'
+          : '融资风险等级优先于购买力；风险达到预警或危险时不得晋级开仓候选。',
+      }
+    : undefined
   logger.info(
     {
       event: 'live.portfolio_review.prompt_built',
@@ -152,8 +179,10 @@ function buildPortfolioReviewPrompt(input: ReviewInput, portfolioDecisionId: str
           account: {
             accountId: input.account.selectedAccountId,
             totalAssets: input.account.summary.totalAssetsInTradingCurrency ?? input.account.summary.totalAssets,
+            availableFunds: input.account.summary.availableFundsInTradingCurrency ?? input.account.summary.availableFunds,
             buyingPower: input.account.summary.buyingPowerInTradingCurrency ?? input.account.summary.buyingPower,
             tradingCurrency: input.account.summary.tradingCurrency ?? 'USD',
+            financingRisk,
           },
           positions: input.positions.map((position) => ({
             ticker: (position.underlyingTicker || position.ticker).toUpperCase(),

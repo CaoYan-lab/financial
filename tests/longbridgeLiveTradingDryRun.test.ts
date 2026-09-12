@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { longbridgeLiveTradingEngine, longbridgeSignalLifecycle } from '../api/longbridge/longbridgeLiveTradingEngine'
-import { buildLongbridgeSdkOrderPayload } from '../api/longbridge/longbridgeLiveOrderService'
+import {
+  buildLongbridgeSdkOrderPayload,
+  formatLongbridgeSubmittedPrice,
+  normalizeLongbridgeLimitPrice,
+} from '../api/longbridge/longbridgeLiveOrderService'
+import { buildLongbridgeLiveDecisionPrompt } from '../api/longbridge/longbridgeLiveDecisionService'
 import { longbridgeOrderQueueService } from '../api/longbridge/longbridgeOrderQueueService'
 import { longbridgeOpeningRiskRejectionReason } from '../api/longbridge/longbridgeRiskService'
 import { updateTradeStrategyRuntimeConfig } from '../api/trade_strategy/tradeStrategyConfigService'
@@ -43,6 +48,37 @@ describe('Longbridge order gate', () => {
       orderSession: 'RTH',
     })
     expect(payload.remark.length).toBeLessThanOrEqual(64)
+  })
+
+  it('美股限价提交前按最小报价单位归一化', () => {
+    expect(normalizeLongbridgeLimitPrice('MU.US', 982.369, 'BUY')).toBe(982.36)
+    expect(normalizeLongbridgeLimitPrice('MU.US', 982.361, 'SELL')).toBe(982.37)
+    expect(normalizeLongbridgeLimitPrice('MULL', 21.911, 'BUY')).toBe(21.91)
+    expect(normalizeLongbridgeLimitPrice('PENNY.US', 0.98765, 'BUY')).toBe(0.9876)
+    expect(normalizeLongbridgeLimitPrice('PENNY.US', 0.98761, 'SELL')).toBe(0.9877)
+  })
+
+  it('港股价格不套用美股报价精度', () => {
+    expect(normalizeLongbridgeLimitPrice('09660', 19.123, 'BUY')).toBe(19.123)
+  })
+
+  it('订单审计价格保留实际报单精度和币种', () => {
+    expect(formatLongbridgeSubmittedPrice('PENNY.US', 0.9876)).toBe('$0.9876')
+    expect(formatLongbridgeSubmittedPrice('09660', 19.123)).toBe('HK$19.123')
+  })
+
+  it('真实订单 adapter 会归一化美股限价', () => {
+    const order = testPendingOrder()
+    order.intent.ticker = 'MU'
+    order.intent.limitPrice = 982.369
+
+    const payload = buildLongbridgeSdkOrderPayload({
+      pendingOrderId: order.id,
+      confirmationId: 'longbridge-confirm-test',
+      intent: order.intent,
+    })
+
+    expect(payload.limitPrice).toBe(982.36)
   })
 
   it('待确认订单费用使用提交前估算而不是 unavailable', () => {
@@ -162,6 +198,359 @@ describe('Longbridge order gate', () => {
     expect(reason).toBeUndefined()
   })
 
+  it('负现金保护开启时拒绝新增多头和新增空头', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    account.summary.buyingPower = '$2,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$2,000.00'
+    const openingDecision = {
+      ok: true,
+      approved: true,
+      action: 'BUY' as const,
+      ticker: 'AAPL',
+      orderQuantity: 1,
+      limitPrice: 100,
+      confidence: 'medium',
+      reason: 'test',
+      riskAssessment: 'test',
+      dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+    }
+
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      openingDecision,
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )).toContain('负现金开仓保护已拦截')
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      { ...openingDecision, action: 'SELL_SHORT' },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )).toContain('负现金开仓保护已拦截')
+  })
+
+  it('融资风险达到预警时即使购买力为正也拒绝新增开仓', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.totalAssets = '$10,000.00'
+    account.summary.totalAssetsInTradingCurrency = '$10,000.00'
+    account.summary.buyingPower = '$3,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$3,000.00'
+    account.summary.financingRiskLevel = 2
+    account.summary.financingRiskLabel = '预警'
+    account.summary.financingOpeningRestricted = true
+    account.summary.initialMargin = '$10,500.00'
+    account.summary.maintenanceMargin = '$9,000.00'
+    account.summary.marginCall = '$0.00'
+
+    const reason = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'BUY',
+        ticker: 'AAPL',
+        orderQuantity: 1,
+        limitPrice: 100,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )
+
+    expect(reason).toContain('融资风险开仓保护已拦截')
+    expect(reason).toContain('账户风险等级为 预警')
+  })
+
+  it('融资风险预警时仍允许纯平仓', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.financingRiskLevel = 3
+    account.summary.financingRiskLabel = '危险'
+    account.summary.financingOpeningRestricted = true
+    account.positions = [{
+      ticker: 'AAPL',
+      name: 'Apple',
+      quantity: '2',
+      marketValue: '$200.00',
+      averageCost: '$90.00',
+      currentPrice: '$100.00',
+      todayPnL: '$0.00',
+      unrealizedPnL: '$20.00',
+      pnlRatio: '10%',
+      positionRatio: '1%',
+      currency: 'USD',
+    }]
+
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'SELL_TO_CLOSE',
+        ticker: 'AAPL',
+        orderQuantity: 1,
+        limitPrice: 100,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )).toBeUndefined()
+  })
+
+  it('账户快照失败或融资风险等级未知时禁止新增开仓', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.totalAssets = '$10,000.00'
+    account.summary.totalAssetsInTradingCurrency = '$10,000.00'
+    account.summary.buyingPower = '$3,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$3,000.00'
+    const decision = {
+      action: 'BUY' as const,
+      ticker: 'AAPL',
+      orderQuantity: 1,
+    }
+
+    account.ok = false
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      decision,
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )).toContain('账户快照读取失败')
+
+    account.ok = true
+    account.summary.financingRiskLevel = undefined
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      decision,
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )).toContain('融资风险等级不可用')
+  })
+
+  it('拒绝超量平仓和超量回补，防止仓位反向翻转', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.totalAssets = '$10,000.00'
+    account.summary.totalAssetsInTradingCurrency = '$10,000.00'
+    account.summary.buyingPower = '$3,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$3,000.00'
+    account.positions = [{
+      ticker: 'AAPL',
+      name: 'Apple',
+      quantity: '2',
+      marketValue: '$200.00',
+      averageCost: '$90.00',
+      currentPrice: '$100.00',
+      todayPnL: '$0.00',
+      unrealizedPnL: '$20.00',
+      pnlRatio: '10%',
+      positionRatio: '1%',
+      currency: 'USD',
+    }]
+
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      { action: 'SELL_TO_CLOSE', ticker: 'AAPL', orderQuantity: 3 },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )).toContain('超过多头持仓')
+
+    account.positions[0].quantity = '-2'
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      { action: 'BUY', ticker: 'AAPL', orderQuantity: 3 },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+    )).toContain('超过空头持仓')
+  })
+
+  it('负现金保护开启时允许纯平仓', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    account.summary.buyingPower = '$2,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$2,000.00'
+    account.positions = [{
+      ticker: 'AAPL',
+      name: 'Apple',
+      quantity: '2',
+      marketValue: '$200.00',
+      averageCost: '$90.00',
+      currentPrice: '$100.00',
+      todayPnL: '$0.00',
+      unrealizedPnL: '$20.00',
+      pnlRatio: '10%',
+      positionRatio: '1%',
+      currency: 'USD',
+    }]
+    const reason = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'SELL_TO_CLOSE',
+        ticker: 'AAPL',
+        orderQuantity: 1,
+        limitPrice: 100,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )
+
+    expect(reason).toBeUndefined()
+  })
+
+  it('负现金保护开启时允许回补空头但拒绝买超为空头转多', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    account.summary.buyingPower = '$2,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$2,000.00'
+    account.positions = [{
+      ticker: 'AAPL',
+      name: 'Apple',
+      quantity: '-2',
+      marketValue: '$-200.00',
+      averageCost: '$110.00',
+      currentPrice: '$100.00',
+      todayPnL: '$0.00',
+      unrealizedPnL: '$20.00',
+      pnlRatio: '9%',
+      positionRatio: '-1%',
+      currency: 'USD',
+    }]
+    const decision = {
+      ok: true,
+      approved: true,
+      action: 'BUY' as const,
+      ticker: 'AAPL',
+      orderQuantity: 2,
+      limitPrice: 100,
+      confidence: 'medium',
+      reason: 'test',
+      riskAssessment: 'test',
+      dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+    }
+
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      decision,
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )).toBeUndefined()
+    expect(longbridgeOpeningRiskRejectionReason(
+      account,
+      { ...decision, orderQuantity: 3 },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )).toContain('禁止超量买入反向开多')
+  })
+
+  it('负现金保护关闭时保留原有购买力规则', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    account.summary.buyingPower = '$2,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$2,000.00'
+    const reason = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'BUY',
+        ticker: 'AAPL',
+        orderQuantity: 1,
+        limitPrice: 100,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: false },
+    )
+
+    expect(reason).toBeUndefined()
+  })
+
+  it('负现金保护开启时提示模型只允许平仓', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    const prompt = buildLongbridgeLiveDecisionPrompt({
+      symbol: 'AAPL.US',
+      account,
+      marketData: {
+        ok: true,
+        ticker: 'AAPL',
+        symbol: 'AAPL.US',
+        source: 'longbridge-sdk-cache',
+        lastPrice: 100,
+        bars: [],
+        tickerPoints: [],
+        asks: [],
+        bids: [],
+        lotSize: 1,
+        marketState: 'RTH',
+        updatedAt: '2026-09-11T15:00:00.000Z',
+        warnings: [],
+      },
+      dataWindow: {
+        kline1mBars: 30,
+        tickerPoints: 30,
+        orderBookDepth: 5,
+        pollIntervalSeconds: 60,
+        reason: 'test',
+        source: 'fallback',
+      },
+      blockOpeningWhenCashNegative: true,
+    })
+    const payload = JSON.parse(prompt[1].content)
+
+    expect(payload.account.blockOpeningWhenCashNegative).toBe(true)
+    expect(payload.account.orderSizingConstraint).toContain('只允许 SELL_TO_CLOSE')
+  })
+
   it('直推和组合策略使用各自的信号生命周期状态', () => {
     expect(longbridgeSignalLifecycle('legacy_direct', 'BUY')).toMatchObject({
       lifecycleStatus: 'PENDING_CONFIRMATION',
@@ -267,6 +656,12 @@ function lowBuyingPowerAccount(): LiveAccountDashboardResponse {
       cash: '$2.30',
       availableFunds: '$2.30',
       buyingPower: '$2.30',
+      financingRiskLevel: 0,
+      financingRiskLabel: '安全',
+      financingOpeningRestricted: false,
+      initialMargin: '$0.00',
+      maintenanceMargin: '$0.00',
+      marginCall: '$0.00',
       tradingCurrency: 'USD',
       totalAssetsInTradingCurrency: '$2.30',
       cashInTradingCurrency: '$2.30',

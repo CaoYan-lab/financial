@@ -1,17 +1,24 @@
 import type { LiveOrderConfirmation, LiveOrderResult, LivePendingOrder } from '../../shared/types.js'
 import { ensureLongbridgeEstimatedFee, ensureLongbridgeEstimatedFees } from './longbridgeFeeService.js'
-import { submitLongbridgeLiveOrder } from './longbridgeLiveOrderService.js'
+import { loadLongbridgeLiveAccountDashboard } from './longbridgeAdapter.js'
+import {
+  buildLongbridgeSdkOrderPayload,
+  submitLongbridgeLiveOrder,
+} from './longbridgeLiveOrderService.js'
+import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
+import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
 import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
 import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
 import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
+import { getTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
 import {
   loadLongbridgeMarketStates,
   normalizeLongbridgeSymbol,
 } from './longbridgeMarketSessionService.js'
 import {
   loadLongbridgeLotSize,
-  longbridgeOpeningLotSizeFailureReason,
+  longbridgeTradingCurrency,
 } from './longbridgeLotSizeService.js'
 
 class LongbridgeOrderQueueService {
@@ -103,19 +110,37 @@ class LongbridgeOrderQueueService {
     }
 
     const symbol = normalizeLongbridgeSymbol(order.intent.ticker)
+    const settings = getLongbridgeLiveSettings()
+    const account = await loadLongbridgeLiveAccountDashboard(
+      longbridgeTradingCurrency(symbol),
+      { force: true },
+    )
     const quote = getLongbridgeSdkContexts().quote
     const lotSize = await loadLongbridgeLotSize(quote, symbol)
-    const lotSizeFailure = longbridgeOpeningLotSizeFailureReason({
-      symbol,
-      action: order.intent.side,
-      quantity: order.intent.quantity,
-      lotSize,
+    const confirmationId = input.confirmationId || `longbridge-confirm-${Date.now()}`
+    const submissionPayload = buildLongbridgeSdkOrderPayload({
+      pendingOrderId: order.id,
+      confirmationId,
+      intent: order.intent,
     })
-    if (lotSizeFailure) {
+    const riskFailure = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        action: order.intent.side,
+        ticker: order.intent.ticker,
+        orderQuantity: order.intent.quantity,
+      },
+      submissionPayload.limitPrice,
+      getTradeStrategyRuntimeConfig('live').activeStrategy,
+      symbol,
+      lotSize,
+      { blockOpeningWhenCashNegative: settings.blockOpeningWhenCashNegative },
+    )
+    if (riskFailure) {
       return {
         ok: false,
         order,
-        error: `长桥真实提交已拦截：${lotSizeFailure}`,
+        error: riskFailure,
         blockedByGate: true,
       }
     }
@@ -140,11 +165,18 @@ class LongbridgeOrderQueueService {
     const confirmedAt = new Date().toISOString()
     const confirmation: LiveOrderConfirmation = {
       confirmedAt,
-      confirmationId: input.confirmationId || `longbridge-confirm-${Date.now()}`,
+      confirmationId,
       confirmedBy: input.confirmedBy ?? 'user',
     }
+    const submittedIntent = order.intent.orderType === 'MARKET'
+      ? order.intent
+      : {
+          ...order.intent,
+          limitPrice: submissionPayload.limitPrice,
+        }
     const submitting = {
       ...order,
+      intent: submittedIntent,
       status: 'CONFIRMED_SUBMITTING' as const,
       updatedAt: confirmedAt,
       confirmation,
@@ -154,7 +186,7 @@ class LongbridgeOrderQueueService {
     const result = await submitLongbridgeLiveOrder({
       pendingOrderId: order.id,
       confirmationId: confirmation.confirmationId,
-      intent: order.intent,
+      intent: submittedIntent,
     })
     const next = {
       ...submitting,

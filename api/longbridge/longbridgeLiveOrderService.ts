@@ -238,6 +238,7 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
       input,
       `长桥订单提交失败：${localizeLongbridgeOrderError(childResponse?.error || '订单响应缺少订单编号。')}`,
       childResponse?.rawResponse,
+      payload,
     )
   }
 
@@ -249,7 +250,9 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
     quantity: String(input.intent.quantity),
     orderType: input.intent.orderType,
     orderSession: input.intent.orderSession,
-    limitPrice: input.intent.orderType === 'MARKET' ? 'MARKET' : `$${input.intent.limitPrice.toFixed(2)}`,
+    limitPrice: input.intent.orderType === 'MARKET'
+      ? 'MARKET'
+      : formatLongbridgeSubmittedPrice(payload.symbol, payload.limitPrice),
     submittedAt: new Date().toISOString(),
     strategy: input.intent.strategy,
     signalId: input.intent.signalId,
@@ -261,18 +264,56 @@ export async function submitLongbridgeLiveOrder(input: SubmitInput): Promise<Liv
 
 export function buildLongbridgeSdkOrderPayload(input: SubmitInput): LongbridgeSdkOrderPayload {
   const intent = input.intent
+  const symbol = normalizeLongbridgeSymbol(intent.ticker)
+  const side = intent.side === 'BUY' ? 'BUY' : 'SELL'
   return {
-    symbol: normalizeLongbridgeSymbol(intent.ticker),
-    side: intent.side === 'BUY' ? 'BUY' : 'SELL',
+    symbol,
+    side,
     quantity: intent.quantity,
     orderType: intent.orderType === 'MARKET' ? 'MO' : 'LO',
-    limitPrice: intent.limitPrice,
+    limitPrice: intent.orderType === 'MARKET'
+      ? intent.limitPrice
+      : normalizeLongbridgeLimitPrice(symbol, intent.limitPrice, side),
     orderSession: intent.orderSession,
     remark: `FinancialWorkbench ${intent.strategy} ${intent.signalId} ${input.confirmationId}`.slice(0, 64),
   }
 }
 
-function blockedLongbridgeOrder(input: SubmitInput, error: string, rawResponse?: unknown): LiveOrderResult {
+export function normalizeLongbridgeLimitPrice(
+  symbolInput: string,
+  priceInput: number,
+  side: 'BUY' | 'SELL',
+): number {
+  const symbol = normalizeLongbridgeSymbol(symbolInput)
+  const price = Number(priceInput)
+  if (!Number.isFinite(price) || price <= 0 || !symbol.endsWith('.US')) return price
+
+  const decimalPlaces = price < 1 ? 4 : 2
+  const factor = 10 ** decimalPlaces
+  const scaled = price * factor
+  const normalized = side === 'BUY'
+    ? Math.floor(scaled + 1e-9)
+    : Math.ceil(scaled - 1e-9)
+  return normalized / factor
+}
+
+export function formatLongbridgeSubmittedPrice(symbolInput: string, priceInput: number): string {
+  const symbol = normalizeLongbridgeSymbol(symbolInput)
+  const price = Number(priceInput)
+  if (!Number.isFinite(price)) return 'unavailable'
+  const prefix = symbol.endsWith('.HK') ? 'HK$' : '$'
+  const decimalPlaces = symbol.endsWith('.US') ? (price < 1 ? 4 : 2) : decimalPlacesOf(price)
+  return `${prefix}${price.toFixed(decimalPlaces)}`
+}
+
+function blockedLongbridgeOrder(
+  input: SubmitInput,
+  error: string,
+  rawResponse?: unknown,
+  payload?: LongbridgeSdkOrderPayload,
+): LiveOrderResult {
+  const symbol = payload?.symbol ?? normalizeLongbridgeSymbol(input.intent.ticker)
+  const submittedPrice = payload?.limitPrice ?? input.intent.limitPrice
   return {
     ok: false,
     orderId: 'blocked-by-longbridge-live-gate',
@@ -281,7 +322,9 @@ function blockedLongbridgeOrder(input: SubmitInput, error: string, rawResponse?:
     quantity: String(input.intent.quantity),
     orderType: input.intent.orderType,
     orderSession: input.intent.orderSession,
-    limitPrice: input.intent.orderType === 'MARKET' ? 'MARKET' : `$${input.intent.limitPrice.toFixed(2)}`,
+    limitPrice: input.intent.orderType === 'MARKET'
+      ? 'MARKET'
+      : formatLongbridgeSubmittedPrice(symbol, submittedPrice),
     submittedAt: new Date().toISOString(),
     strategy: input.intent.strategy,
     signalId: input.intent.signalId,
@@ -290,6 +333,12 @@ function blockedLongbridgeOrder(input: SubmitInput, error: string, rawResponse?:
     rawResponse,
     error,
   }
+}
+
+function decimalPlacesOf(value: number): number {
+  const text = String(value)
+  const decimals = text.includes('.') ? text.length - text.indexOf('.') - 1 : 2
+  return Math.min(4, Math.max(2, decimals))
 }
 
 function parseChildResponse(stdout?: string): {

@@ -5,6 +5,7 @@ import { hardRuleCancelDecision, hasManagedOrderConflict } from '../api/live/man
 const settings: BrokerExecutionSettings = {
   autoSubmitEnabled: false,
   autoCancelEnabled: false,
+  blockOpeningWhenCashNegative: false,
   marketableLimitTimeoutSeconds: 90,
   limitTimeoutSeconds: 600,
   brokerSyncIntervalSeconds: 15,

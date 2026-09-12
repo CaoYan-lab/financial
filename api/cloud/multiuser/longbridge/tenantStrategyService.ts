@@ -8,12 +8,17 @@ import type {
 import type { LongbridgeStrategyMarketData } from '../../../../shared/longbridgeTypes.js'
 import { requestLivePortfolioReviewDecision } from '../../../live/livePortfolioReviewDecisionService.js'
 import { requestLongbridgeLiveTradingDecision } from '../../../longbridge/longbridgeLiveDecisionService.js'
+import { normalizeLongbridgeLimitPrice } from '../../../longbridge/longbridgeLiveOrderService.js'
 import { estimateLongbridgePreTradeFee } from '../../../longbridge/longbridgeFeeService.js'
 import {
   loadLongbridgeLotSize,
   longbridgeTradingCurrency,
 } from '../../../longbridge/longbridgeLotSizeService.js'
-import { longbridgeOpeningRiskRejectionReason } from '../../../longbridge/longbridgeRiskService.js'
+import {
+  longbridgeFinancingOpeningRestricted,
+  longbridgeFinancingRiskLabel,
+  longbridgeOpeningRiskRejectionReason,
+} from '../../../longbridge/longbridgeRiskService.js'
 import { getLlmRuntimeConfig } from '../../../simulation/llmRuntimeConfigService.js'
 import { orderSessionForMarketState } from '../../../simulation/usOvernightLlmGate.js'
 import { llmSimulationTickers } from '../../../simulation/simulationUniverse.js'
@@ -35,6 +40,7 @@ type StrategyRunOptions = {
   account?: LiveAccountDashboardResponse
   marketState?: string
   now?: Date
+  blockOpeningWhenCashNegative?: boolean
 }
 type TenantSignal = Omit<QuantSignal, 'source'> & {
   source: 'longbridge-sdk-cache'
@@ -89,9 +95,11 @@ export async function runTenantStrategyOnce(
       error: preflightSkipReason,
     }
   }
-  const [account, marketData] = await Promise.all([
-    options.account ?? tenantAccount(connection, longbridgeTradingCurrency(symbol)),
+  const [account, marketData, blockOpeningWhenCashNegative] = await Promise.all([
+    options.account ?? loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol)),
     tenantMarketData(connection, symbol, marketState),
+    options.blockOpeningWhenCashNegative
+      ?? tenantNegativeCashGuardEnabled(userId, connection.id),
   ])
   if (!marketData.ok) {
     const reason = 'reason' in marketData ? marketData.reason : '行情不可用'
@@ -143,6 +151,7 @@ export async function runTenantStrategyOnce(
       trendBars,
     ),
     managedOpenOrders: [],
+    blockOpeningWhenCashNegative,
   })
   const orderSession = orderSessionForMarketState(marketData.marketState)
   const existingOrders = await listActiveTenantPendingOrders(userId, connection.id)
@@ -156,10 +165,15 @@ export async function runTenantStrategyOnce(
         ? longbridgeOpeningRiskRejectionReason(
             account,
             decision,
-            decision.limitPrice || marketData.lastPrice,
+            normalizeLongbridgeLimitPrice(
+              marketData.symbol,
+              decision.limitPrice || marketData.lastPrice,
+              decision.action === 'BUY' ? 'BUY' : 'SELL',
+            ),
             getTradeStrategyRuntimeConfig('live').activeStrategy,
             marketData.symbol,
             marketData.lotSize,
+            { blockOpeningWhenCashNegative },
           )
         : `当前市场状态 ${marketData.marketState || '不可用'} 只允许策略研究，不允许生成真实订单。`
       : undefined
@@ -261,9 +275,13 @@ export async function runTenantStrategyPoolOnce(
   const accountByCurrency = hasActiveMarket
     ? new Map(await Promise.all(
         [...new Set(universe.map(longbridgeTradingCurrency))].map(async (currency) =>
-          [currency, await tenantAccount(connection, currency)] as const),
+          [currency, await loadTenantAccountForTrading(connection, currency)] as const),
       ))
     : undefined
+  const blockOpeningWhenCashNegative = await tenantNegativeCashGuardEnabled(
+    userId,
+    connection.id,
+  )
   const results: Array<Record<string, unknown>> = []
 
   // Keep one decision in flight per tenant so candidate review and pending-order
@@ -274,6 +292,7 @@ export async function runTenantStrategyPoolOnce(
         account: accountByCurrency?.get(longbridgeTradingCurrency(symbol)),
         marketState: marketStates.get(symbol) ?? 'CLOSED',
         now: options.now,
+        blockOpeningWhenCashNegative,
       })
       const decision = result.decision as Record<string, unknown> | undefined
       const signal = result.signal as Record<string, unknown> | undefined
@@ -407,12 +426,40 @@ async function tenantTrendBars(connection: BrokerConnection, symbol: string) {
   }
 }
 
-async function tenantAccount(
+async function tenantNegativeCashGuardEnabled(
+  userId: string,
+  bindingId: string,
+): Promise<boolean> {
+  const rows = await query<{ settings: Record<string, unknown> }>(
+    `SELECT settings
+     FROM multiuser.longbridge_engine_state
+     WHERE user_id = $1 AND binding_id = $2`,
+    [userId, bindingId],
+  )
+  return rows[0]?.settings?.blockOpeningWhenCashNegative !== false
+}
+
+export async function loadTenantAccountForTrading(
   connection: BrokerConnection,
   currency: 'USD' | 'HKD' = 'USD',
 ): Promise<LiveAccountDashboardResponse> {
   const dashboard = await loadTenantWorkbench(connection, currency)
   const metric = (label: string) => dashboard.accountMetrics.find((item) => item.label === label)?.value ?? '$0.00'
+  const riskMetric = (label: string) => (dashboard.riskCards ?? []).find((item) => item.label === label)?.value ?? '不可用'
+  const financingRiskLevelValue = Number(dashboard.accountMetrics.find((item) => item.label === '风险等级')?.value)
+  const financingRiskLevel = Number.isFinite(financingRiskLevelValue)
+    ? financingRiskLevelValue
+    : undefined
+  const totalAssets = metric('账户净资产')
+  const initialMargin = riskMetric('初始保证金')
+  const marginCall = riskMetric('追加保证金')
+  const financingOpeningRestricted = longbridgeFinancingOpeningRestricted({
+    financingRiskLevel,
+    totalAssets,
+    totalAssetsInTradingCurrency: totalAssets,
+    initialMargin,
+    marginCall,
+  })
   const positions: Position[] = dashboard.positions.map((item) => ({
     code: item.symbol,
     ticker: tickerFromSymbol(item.symbol),
@@ -435,14 +482,22 @@ async function tenantAccount(
     summary: {
       accountId: connection.id,
       currency,
-      totalAssets: metric('账户净资产'),
+      totalAssets,
       cash: metric('账户现金'),
-      availableFunds: metric('账户现金'),
+      availableFunds: metric('现金可用'),
       buyingPower: metric('最大购买力'),
+      financingRiskLevel,
+      financingRiskLabel: longbridgeFinancingRiskLabel(financingRiskLevel),
+      financingOpeningRestricted,
+      initialMargin,
+      maintenanceMargin: riskMetric('维持保证金'),
+      marginCall,
+      maximumFinancing: riskMetric('最大融资额度'),
+      remainingFinancing: riskMetric('剩余融资额度'),
       tradingCurrency: currency,
-      totalAssetsInTradingCurrency: metric('账户净资产'),
+      totalAssetsInTradingCurrency: totalAssets,
       cashInTradingCurrency: metric('账户现金'),
-      availableFundsInTradingCurrency: metric('账户现金'),
+      availableFundsInTradingCurrency: metric('现金可用'),
       buyingPowerInTradingCurrency: metric('最大购买力'),
       dailyPnL: '暂无',
       totalPnL: '暂无',
@@ -536,6 +591,12 @@ function pendingOrder(
   portfolioDecisionId: string,
 ): LivePendingOrder {
   const now = new Date().toISOString()
+  const side = decision.action as Exclude<typeof decision.action, 'HOLD'>
+  const limitPrice = normalizeLongbridgeLimitPrice(
+    marketData.symbol,
+    decision.limitPrice || marketData.lastPrice,
+    side === 'BUY' ? 'BUY' : 'SELL',
+  )
   return {
     id: `tenant-pending-${randomUUID()}`,
     status: 'PENDING_CONFIRMATION',
@@ -543,16 +604,16 @@ function pendingOrder(
     updatedAt: now,
     intent: {
       ticker: decision.ticker,
-      side: decision.action as Exclude<typeof decision.action, 'HOLD'>,
+      side,
       quantity: decision.orderQuantity,
       orderType: 'MARKETABLE_LIMIT',
       orderSession,
-      limitPrice: decision.limitPrice || marketData.lastPrice,
+      limitPrice,
       strategy: STRATEGY,
       signalId: signal.id,
       reason: decision.reason,
-      estimatedNotional: money(decision.orderQuantity * (decision.limitPrice || marketData.lastPrice)),
-      feeContext: estimateLongbridgePreTradeFee(decision.orderQuantity, decision.limitPrice || marketData.lastPrice, marketData.symbol),
+      estimatedNotional: money(decision.orderQuantity * limitPrice),
+      feeContext: estimateLongbridgePreTradeFee(decision.orderQuantity, limitPrice, marketData.symbol),
     },
     signal: signal as unknown as QuantSignal,
     llmDecision: decision,

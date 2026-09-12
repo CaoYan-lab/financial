@@ -209,6 +209,11 @@ async function collectAccountSnapshot(
           available_cash: decimalText(cashInfo?.availableCash),
           buy_power: decimalText(balance.buyPower),
           risk_level: balance.riskLevel,
+          init_margin: decimalText(balance.initMargin),
+          maintenance_margin: decimalText(balance.maintenanceMargin),
+          margin_call: decimalText(balance.marginCall),
+          max_finance_amount: decimalText(balance.maxFinanceAmount),
+          remaining_finance_amount: decimalText(balance.remainingFinanceAmount),
           currency: balance.currency,
           cash_infos: balance.cashInfos.map((item) => ({
             available_cash: decimalText(item.availableCash),

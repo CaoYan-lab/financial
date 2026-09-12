@@ -281,6 +281,14 @@ export type AccountSummary = {
   cash: string
   availableFunds: string
   buyingPower: string
+  financingRiskLevel?: number
+  financingRiskLabel?: string
+  financingOpeningRestricted?: boolean
+  initialMargin?: string
+  maintenanceMargin?: string
+  marginCall?: string
+  maximumFinancing?: string
+  remainingFinancing?: string
   dailyPnL: string
   totalPnL: string
   tradingCurrency?: string

@@ -42,9 +42,13 @@ vi.mock('../../api/longbridge/longbridgeLiveDecisionService.js', () => ({
 vi.mock('../../api/longbridge/longbridgeFeeService.js', () => ({
   estimateLongbridgePreTradeFee: mocks.estimateFee,
 }))
-vi.mock('../../api/longbridge/longbridgeRiskService.js', () => ({
-  longbridgeOpeningRiskRejectionReason: mocks.riskReason,
-}))
+vi.mock('../../api/longbridge/longbridgeRiskService.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/longbridge/longbridgeRiskService.js')>()
+  return {
+    ...actual,
+    longbridgeOpeningRiskRejectionReason: mocks.riskReason,
+  }
+})
 vi.mock('../../api/simulation/usOvernightLlmGate.js', () => ({
   orderSessionForMarketState: mocks.orderSession,
   llmMarketSessionSkipReason: mocks.sessionSkipReason,
@@ -153,7 +157,16 @@ describe('Longbridge 租户策略服务', () => {
       accountMetrics: [
         { label: '账户净资产', value: '$10,000.00' },
         { label: '账户现金', value: '$5,000.00' },
+        { label: '现金可用', value: '$4,000.00' },
         { label: '最大购买力', value: '$8,000.00' },
+        { label: '风险等级', value: '2' },
+      ],
+      riskCards: [
+        { label: '最大融资额度', value: '$20,000.00' },
+        { label: '剩余融资额度', value: '$3,000.00' },
+        { label: '初始保证金', value: '$10,500.00' },
+        { label: '维持保证金', value: '$9,000.00' },
+        { label: '追加保证金', value: '$0.00' },
       ],
       positions: [{
         symbol: 'AAPL.US',
@@ -214,6 +227,29 @@ describe('Longbridge 租户策略服务', () => {
     const result = await runTenantStrategyOnce('user-1', connection, 'aapl.us')
     expect(result).toMatchObject({ ok: true, signal: { lifecycleStatus: 'HOLD' } })
     expect(candidateEvents).toHaveLength(0)
+  })
+
+  it('将租户长桥融资风险等级和保证金状态传给模型', async () => {
+    mocks.tradingDecision.mockResolvedValueOnce(marketDecision({
+      action: 'HOLD',
+      approved: false,
+      orderQuantity: 0,
+    }))
+
+    await runTenantStrategyOnce('user-1', connection, 'AAPL.US')
+
+    expect(mocks.tradingDecision).toHaveBeenCalledWith(expect.objectContaining({
+      account: expect.objectContaining({
+        summary: expect.objectContaining({
+          financingRiskLevel: 2,
+          financingRiskLabel: '预警',
+          financingOpeningRestricted: true,
+          initialMargin: '$10,500.00',
+          marginCall: '$0.00',
+          remainingFinancing: '$3,000.00',
+        }),
+      }),
+    }))
   })
 
   it('统一市场门禁命中时不请求模型且不落信号数据', async () => {

@@ -7,7 +7,11 @@ import { LLM_SIMULATION_UNIVERSE } from '../simulation/simulationUniverse.js'
 import { buildRiskModelDescription, getActivePromptPack } from '../trade_strategy/tradeStrategyConfigService.js'
 import { durationMs, logger } from '../utils/logger.js'
 import { fallbackLotSize, longbridgeOpeningLotSizeFailureReason } from './longbridgeLotSizeService.js'
-import { parseMoney } from './longbridgeRiskService.js'
+import {
+  longbridgeFinancingOpeningRestricted,
+  longbridgeFinancingRiskLabel,
+  parseMoney,
+} from './longbridgeRiskService.js'
 
 type DecisionInput = {
   symbol: string
@@ -17,6 +21,7 @@ type DecisionInput = {
   trendContext?: TrendContextSummary
   universe?: SimulationUniverseItem[]
   managedOpenOrders?: ManagedOrder[]
+  blockOpeningWhenCashNegative?: boolean
 }
 
 export async function requestLongbridgeLiveTradingDecision(input: DecisionInput): Promise<LlmTradingDecision> {
@@ -55,6 +60,9 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
   const lotSize = input.marketData.lotSize ?? fallbackLotSize(input.marketData.symbol)
   const isHongKong = input.marketData.symbol.toUpperCase().endsWith('.HK')
   const tradingCurrency = input.account.summary.tradingCurrency ?? (isHongKong ? 'HKD' : 'USD')
+  const financingOpeningRestricted = longbridgeFinancingOpeningRestricted(input.account.summary)
+  const financingRiskLabel = input.account.summary.financingRiskLabel
+    ?? longbridgeFinancingRiskLabel(input.account.summary.financingRiskLevel)
   const system = platformize(promptPack.systemPrompts.live ?? '你是长桥证券 REAL 实盘美股/港股正股与 ETF 半自动交易研究员。只能返回 JSON，不要 Markdown。')
   const task = platformize(promptPack.tasks?.live ?? '为单个标的生成本轮 Longbridge REAL 实盘候选交易决策')
   return [
@@ -88,9 +96,31 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
           availableFundsNumeric,
           buyingPowerNumeric,
           maxOpeningNotional: buyingPowerNumeric,
-          orderSizingConstraint: buyingPowerNumeric !== undefined
-            ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric, tradingCurrency)}；若最小交易单位也超过最大购买力，必须 HOLD。`
-            : '最大购买力不可解析；开仓 BUY / SELL_SHORT 必须 HOLD。',
+          financingRisk: {
+            level: input.account.summary.financingRiskLevel ?? null,
+            label: financingRiskLabel,
+            openingRestricted: financingOpeningRestricted,
+            initialMargin: input.account.summary.initialMargin ?? '不可用',
+            maintenanceMargin: input.account.summary.maintenanceMargin ?? '不可用',
+            marginCall: input.account.summary.marginCall ?? '不可用',
+            maximumFinancing: input.account.summary.maximumFinancing ?? '不可用',
+            remainingFinancing: input.account.summary.remainingFinancing ?? '不可用',
+            rule: financingOpeningRestricted
+              ? '长桥账户已进入融资预警、危险或保证金不足状态；即使 buyingPower 大于 0 也禁止新增仓位，必须 HOLD 或仅减仓/平仓。'
+              : '融资风险等级是购买力之前的开仓门禁；风险等级达到预警或危险时，即使 buyingPower 大于 0 也禁止新增仓位。',
+          },
+          blockOpeningWhenCashNegative:
+            input.blockOpeningWhenCashNegative !== false,
+          orderSizingConstraint:
+            financingOpeningRestricted
+              ? `长桥融资风险等级为${financingRiskLabel}，账户已禁止新增开仓；不得使用剩余购买力继续融资，必须 HOLD 或仅减仓/平仓。`
+              : input.blockOpeningWhenCashNegative !== false
+              && availableFundsNumeric !== undefined
+              && availableFundsNumeric < 0
+              ? `负现金开仓保护已开启，当前可用现金为 ${formatMoney(availableFundsNumeric, tradingCurrency)}；禁止 BUY 新增长仓和 SELL_SHORT 新增空仓，只允许 SELL_TO_CLOSE 或 BUY 回补现有空头。`
+              : buyingPowerNumeric !== undefined
+                ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric, tradingCurrency)}；若最小交易单位也超过最大购买力，必须 HOLD。`
+                : '最大购买力不可解析；开仓 BUY / SELL_SHORT 必须 HOLD。',
           tradingUnit: {
             lotSize,
             rule: isHongKong

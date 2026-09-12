@@ -371,6 +371,9 @@ function executionSettingsPatch(payload: Record<string, unknown>) {
     ...(typeof payload.autoCancelEnabled === 'boolean'
       ? { autoCancelEnabled: payload.autoCancelEnabled }
       : {}),
+    ...(typeof payload.blockOpeningWhenCashNegative === 'boolean'
+      ? { blockOpeningWhenCashNegative: payload.blockOpeningWhenCashNegative }
+      : {}),
     ...(numberOrUndefined(payload.marketableLimitTimeoutSeconds) !== undefined
       ? { marketableLimitTimeoutSeconds: numberOrUndefined(payload.marketableLimitTimeoutSeconds) }
       : {}),

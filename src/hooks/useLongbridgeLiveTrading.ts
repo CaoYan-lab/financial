@@ -580,6 +580,48 @@ export function useLongbridgeLiveTrading() {
     }
   }, [])
 
+  const updateNegativeCashOpeningGuard = useCallback(async (
+    blockOpeningWhenCashNegative: boolean,
+  ) => {
+    setSavingSettings(true)
+    try {
+      const response = await fetch('/api/longbridge/live-trading/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockOpeningWhenCashNegative }),
+      })
+      const payload = await response.json().catch(() => undefined)
+      if (!response.ok) {
+        throw new Error(
+          payload?.error
+            ?? `长桥负现金开仓保护更新失败，状态码 ${response.status}。`,
+        )
+      }
+      setData((current) => current
+        ? {
+            ...current,
+            blockOpeningWhenCashNegative:
+              payload?.blockOpeningWhenCashNegative !== false,
+            updatedAt:
+              typeof payload?.updatedAt === 'string'
+                ? payload.updatedAt
+                : current.updatedAt,
+          }
+        : current)
+      setError(undefined)
+      return payload
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : '长桥负现金开仓保护更新失败。',
+      )
+      return undefined
+    } finally {
+      setSavingSettings(false)
+    }
+  }, [])
+
   const updateAutoCancel = useCallback(async (autoCancelEnabled: boolean) => {
     setSavingSettings(true)
     try {
@@ -693,6 +735,7 @@ export function useLongbridgeLiveTrading() {
     rejectOrder,
     batchExpirePendingOrders,
     updateAutoSubmit,
+    updateNegativeCashOpeningGuard,
     updateAutoCancel,
     cancelManagedOrder,
   }

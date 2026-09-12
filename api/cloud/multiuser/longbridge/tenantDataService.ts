@@ -66,6 +66,8 @@ export async function loadTenantWorkbench(
   const balances = await trade.accountBalance(currency)
   const positionResponse = await trade.stockPositions()
   const balance = balances.find((item) => item.currency === currency) ?? balances[0]
+  const cashInfo = balance?.cashInfos?.find((item) => item.currency === currency)
+    ?? balance?.cashInfos?.[0]
   const rawPositions = positionResponse.channels.flatMap((channel) => channel.positions)
   const quotes = rawPositions.length
     ? await quote.quote(rawPositions.map((position) => position.symbol))
@@ -116,12 +118,15 @@ export async function loadTenantWorkbench(
     accountMetrics: [
       { label: '账户净资产', value: currencyMoney(balance?.netAssets, currency), helper: balance?.currency ?? currency },
       { label: '账户现金', value: currencyMoney(balance?.totalCash, currency), helper: balance?.currency ?? currency },
+      { label: '现金可用', value: currencyMoney(cashInfo?.availableCash ?? balance?.totalCash, currency), helper: balance?.currency ?? currency },
       { label: '最大购买力', value: currencyMoney(balance?.buyPower, currency), helper: balance?.currency ?? currency },
       { label: '风险等级', value: String(balance?.riskLevel ?? '未知'), helper: '当前绑定账户' },
     ],
     positions,
     riskCards: [
       { label: '持仓数量', value: String(positions.length), helper: '当前账户持仓标的数' },
+      { label: '最大融资额度', value: currencyMoney(balance?.maxFinanceAmount, currency), helper: balance?.currency ?? currency },
+      { label: '剩余融资额度', value: currencyMoney(balance?.remainingFinanceAmount, currency), helper: balance?.currency ?? currency },
       { label: '初始保证金', value: currencyMoney(balance?.initMargin, currency), helper: balance?.currency ?? currency },
       { label: '维持保证金', value: currencyMoney(balance?.maintenanceMargin, currency), helper: balance?.currency ?? currency },
       { label: '追加保证金', value: currencyMoney(balance?.marginCall, currency), helper: balance?.currency ?? currency },
@@ -152,8 +157,9 @@ export async function loadTenantLiveDashboard(
     live_trading_enabled: boolean
     auto_submit_enabled: boolean
     auto_cancel_enabled: boolean
+    settings: Record<string, unknown>
   }>(
-    `SELECT desired, mode, live_trading_enabled, auto_submit_enabled, auto_cancel_enabled
+    `SELECT desired, mode, live_trading_enabled, auto_submit_enabled, auto_cancel_enabled, settings
      FROM multiuser.longbridge_engine_state
      WHERE user_id = $1 AND binding_id = $2`,
     [userId, bindingId],
@@ -203,6 +209,8 @@ export async function loadTenantLiveDashboard(
     liveTradingEnabled: state?.mode === 'live' && state.live_trading_enabled,
     autoSubmitEnabled: state?.auto_submit_enabled === true,
     autoCancelEnabled: state?.auto_cancel_enabled === true,
+    blockOpeningWhenCashNegative:
+      state?.settings?.blockOpeningWhenCashNegative !== false,
     marketableLimitTimeoutSeconds: 90,
     limitTimeoutSeconds: 600,
     brokerSyncIntervalSeconds: 30,

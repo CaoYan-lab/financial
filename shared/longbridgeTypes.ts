@@ -113,6 +113,7 @@ export type LongbridgeLiveTradingDashboardResponse = {
   liveTradingEnabled: boolean
   autoSubmitEnabled: boolean
   autoCancelEnabled: boolean
+  blockOpeningWhenCashNegative: boolean
   marketableLimitTimeoutSeconds: number
   limitTimeoutSeconds: number
   brokerSyncIntervalSeconds: number

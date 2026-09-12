@@ -12,6 +12,9 @@ export function defaultBrokerExecutionSettings(
       process.env[`${prefix}_AUTO_SUBMIT_ENABLED`] === 'true',
     autoCancelEnabled:
       process.env[`${prefix}_AUTO_CANCEL_ENABLED`] === 'true',
+    blockOpeningWhenCashNegative: platform === 'longbridge'
+      ? process.env.LONGBRIDGE_BLOCK_OPENING_WHEN_CASH_NEGATIVE !== 'false'
+      : false,
     marketableLimitTimeoutSeconds: positiveInt(
       process.env[`${prefix}_MARKETABLE_LIMIT_TIMEOUT_SECONDS`],
       90,
@@ -68,6 +71,8 @@ function normalizeSettings(
   return {
     autoSubmitEnabled: input.autoSubmitEnabled === true,
     autoCancelEnabled: input.autoCancelEnabled === true,
+    blockOpeningWhenCashNegative:
+      input.blockOpeningWhenCashNegative === true,
     marketableLimitTimeoutSeconds: clamp(
       input.marketableLimitTimeoutSeconds,
       15,

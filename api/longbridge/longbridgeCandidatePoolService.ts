@@ -76,6 +76,13 @@ class LongbridgeCandidatePoolService {
     return promoted.sort((left, right) => (left.portfolioRank ?? 999) - (right.portfolioRank ?? 999))
   }
 
+  suppressByRisk(candidate: LongbridgeCandidateRecord, reason: string): void {
+    candidate.status = 'SUPPRESSED'
+    candidate.portfolioRank = undefined
+    candidate.portfolioDecisionReason = reason
+    longbridgePersistence.appendCandidate(candidate)
+  }
+
   decoratePendingOrder(order: LivePendingOrder, candidate: LongbridgeCandidateRecord): LivePendingOrder {
     return {
       ...order,

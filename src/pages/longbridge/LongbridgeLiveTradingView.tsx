@@ -94,6 +94,8 @@ export default function LongbridgeLiveTradingView() {
   const liveEnabled = Boolean(dashboard?.sourceStatus.tradingAvailable || longbridgeLive.data?.liveTradingEnabled)
   const autoSubmitEnabled = Boolean(longbridgeLive.data?.autoSubmitEnabled)
   const autoCancelEnabled = Boolean(longbridgeLive.data?.autoCancelEnabled)
+  const blockOpeningWhenCashNegative =
+    longbridgeLive.data?.blockOpeningWhenCashNegative !== false
   const executionMode = liveConfig?.tradeStrategyConfig.selection.executionMode ?? 'legacy_direct'
   const runtimeConfig = liveConfig?.llmRuntimeConfig
   const candidatePoolSnapshot = longbridgeLive.data?.candidatePool ?? liveConfig?.candidatePoolConfig
@@ -163,6 +165,9 @@ export default function LongbridgeLiveTradingView() {
               <Badge tone="cyan">长桥实盘</Badge>
               <Badge tone={liveEnabled ? 'emerald' : 'amber'}>{liveEnabled ? '提交门禁已开启' : '长桥提交门禁关闭'}</Badge>
               <Badge tone={autoSubmitEnabled ? 'red' : 'cyan'}>{autoSubmitEnabled ? '自动下单已开启' : '人工确认模式'}</Badge>
+              <Badge tone={blockOpeningWhenCashNegative ? 'emerald' : 'amber'}>
+                {blockOpeningWhenCashNegative ? '负现金保护已开启' : '负现金保护已关闭'}
+              </Badge>
               <Badge tone={executionMode === 'candidate_pool' ? 'violet' : 'cyan'}>
                 {executionMode === 'candidate_pool' ? '组合策略已开启' : '大模型直推'}
               </Badge>
@@ -208,17 +213,44 @@ export default function LongbridgeLiveTradingView() {
                 关闭时：直推或组合策略只生成待确认订单，需人工点击确认提交。开启时：非观望决策通过硬风控后，会自动调用长桥真实订单接口提交。
               </p>
             </div>
-            <button
-              className={`rounded-2xl px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${autoSubmitEnabled ? 'bg-rose-600 hover:bg-rose-500' : 'bg-sky-600 hover:bg-sky-500'}`}
-              disabled={longbridgeLive.savingSettings || !liveEnabled}
-              onClick={() => longbridgeLive.updateAutoSubmit(!autoSubmitEnabled)}
-            >
-              {longbridgeLive.savingSettings ? '保存中...' : autoSubmitEnabled ? '关闭自动下单' : '开启自动下单'}
-            </button>
+            <div className="flex flex-wrap items-center justify-end gap-4">
+              <label className="flex items-center gap-3 text-sm font-semibold text-stone-700">
+                <span>负现金禁止开仓</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={blockOpeningWhenCashNegative}
+                  aria-label="负现金禁止开仓"
+                  className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    blockOpeningWhenCashNegative ? 'bg-emerald-500' : 'bg-stone-300'
+                  }`}
+                  disabled={longbridgeLive.savingSettings}
+                  onClick={() => void longbridgeLive.updateNegativeCashOpeningGuard(
+                    !blockOpeningWhenCashNegative,
+                  )}
+                >
+                  <span
+                    className={`h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      blockOpeningWhenCashNegative ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </label>
+              <button
+                className={`rounded-2xl px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${autoSubmitEnabled ? 'bg-rose-600 hover:bg-rose-500' : 'bg-sky-600 hover:bg-sky-500'}`}
+                disabled={longbridgeLive.savingSettings || !liveEnabled}
+                onClick={() => longbridgeLive.updateAutoSubmit(!autoSubmitEnabled)}
+              >
+                {longbridgeLive.savingSettings ? '保存中...' : autoSubmitEnabled ? '关闭自动下单' : '开启自动下单'}
+              </button>
+            </div>
           </div>
-          <div className="mt-4 grid gap-3 text-sm text-stone-600 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 text-sm text-stone-600 md:grid-cols-4">
             <Guard ok={liveEnabled}>长桥实盘提交门禁 {liveEnabled ? '已开启' : '未开启'}</Guard>
             <Guard ok={!autoSubmitEnabled}>当前模式：{autoSubmitEnabled ? '自动提交真实订单' : '人工确认后提交'}</Guard>
+            <Guard ok={blockOpeningWhenCashNegative}>
+              {blockOpeningWhenCashNegative ? '负现金时仅允许平仓' : '允许融资继续开仓'}
+            </Guard>
             <Guard ok={authReady}>长桥账户授权 {authReady ? '已登录' : '不可用'}</Guard>
           </div>
         </section>

@@ -430,10 +430,17 @@ describe('多用户 privateRouter', () => {
     })
     expect((await request('/longbridge/live-trading/settings', {
       method: 'PUT',
-      body: JSON.stringify({ autoSubmitEnabled: true }),
+      body: JSON.stringify({
+        autoSubmitEnabled: true,
+        blockOpeningWhenCashNegative: false,
+      }),
     })).status).toBe(200)
     expect(mocks.query.mock.calls.some(([, params]) =>
       Array.isArray(params) && params[2] === true && params[3] === true)).toBe(true)
+    expect(mocks.query.mock.calls.some(([, params]) =>
+      Array.isArray(params)
+      && typeof params[5] === 'string'
+      && JSON.parse(params[5]).blockOpeningWhenCashNegative === false)).toBe(true)
     mocks.queryOne.mockResolvedValueOnce({
       shadow_verified_at: null,
       live_trading_enabled: false,

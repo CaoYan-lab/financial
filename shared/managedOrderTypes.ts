@@ -99,6 +99,7 @@ export type ManagedCancelBrokerResponse = {
 export type BrokerExecutionSettings = {
   autoSubmitEnabled: boolean
   autoCancelEnabled: boolean
+  blockOpeningWhenCashNegative: boolean
   marketableLimitTimeoutSeconds: number
   limitTimeoutSeconds: number
   brokerSyncIntervalSeconds: number

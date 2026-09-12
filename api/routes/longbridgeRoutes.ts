@@ -266,6 +266,9 @@ function executionSettingsPatch(body: Record<string, unknown> | undefined) {
     ...(typeof body?.autoCancelEnabled === 'boolean'
       ? { autoCancelEnabled: body.autoCancelEnabled }
       : {}),
+    ...(typeof body?.blockOpeningWhenCashNegative === 'boolean'
+      ? { blockOpeningWhenCashNegative: body.blockOpeningWhenCashNegative }
+      : {}),
     ...(typeof body?.marketableLimitTimeoutSeconds === 'number'
       ? { marketableLimitTimeoutSeconds: body.marketableLimitTimeoutSeconds }
       : {}),

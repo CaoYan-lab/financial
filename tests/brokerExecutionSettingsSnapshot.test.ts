@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { overlayBrokerExecutionSettings } from '../api/cloud/http/routeOverrides'
+import { defaultBrokerExecutionSettings } from '../api/cloud/state/brokerExecutionSettingsStore'
 import type { BrokerExecutionSettings } from '../shared/managedOrderTypes'
 
 const persistedSettings: BrokerExecutionSettings = {
   autoSubmitEnabled: true,
   autoCancelEnabled: true,
+  blockOpeningWhenCashNegative: true,
   marketableLimitTimeoutSeconds: 90,
   limitTimeoutSeconds: 600,
   brokerSyncIntervalSeconds: 15,
@@ -13,6 +15,10 @@ const persistedSettings: BrokerExecutionSettings = {
 }
 
 describe('broker execution settings snapshot', () => {
+  it('长桥负现金开仓保护默认开启', () => {
+    expect(defaultBrokerExecutionSettings('longbridge').blockOpeningWhenCashNegative).toBe(true)
+  })
+
   it.each(['futu', 'longbridge'])(
     'uses persisted %s settings instead of stale worker heartbeat values',
     () => {

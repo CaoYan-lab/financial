@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { loadLongbridgeLiveAccountDashboard } from '../api/longbridge/longbridgeAdapter'
 import { buildLongbridgeLiveDecisionPrompt, parseLongbridgeTradingDecision, requestLongbridgeLiveTradingDecision } from '../api/longbridge/longbridgeLiveDecisionService'
 import { loadLongbridgeStrategyMarketData } from '../api/longbridge/longbridgeMarketDataService'
+import { buildPortfolioReviewPrompt } from '../api/live/livePortfolioReviewDecisionService'
 import type { LiveAccountDashboardResponse, LlmDataWindowRecommendation } from '../shared/types'
 
 const dataWindow: LlmDataWindowRecommendation = {
@@ -53,6 +54,98 @@ describe('Longbridge live decision prompt context', () => {
     expect(payload.marketData.bids).toHaveLength(1)
   })
 
+  it('将长桥融资风险等级和保证金状态加入提示词，并优先于购买力限制', () => {
+    const account = testAccount()
+    account.summary.financingRiskLevel = 2
+    account.summary.financingRiskLabel = '预警'
+    account.summary.financingOpeningRestricted = true
+    account.summary.initialMargin = '$9000.00'
+    account.summary.maintenanceMargin = '$8000.00'
+    account.summary.marginCall = '$100.00'
+    account.summary.maximumFinancing = '$20000.00'
+    account.summary.remainingFinancing = '$3000.00'
+    const marketData = {
+      ok: true as const,
+      ticker: 'AAPL',
+      symbol: 'AAPL.US',
+      source: 'longbridge-sdk-cache' as const,
+      lastPrice: 180,
+      bars: [],
+      tickerPoints: [],
+      asks: [],
+      bids: [],
+      marketState: 'TRADING',
+      updatedAt: '2026-09-11T10:00:00.000Z',
+      warnings: [],
+    }
+
+    const payload = JSON.parse(buildLongbridgeLiveDecisionPrompt({
+      symbol: marketData.symbol,
+      account,
+      marketData,
+      dataWindow,
+    })[1].content)
+
+    expect(payload.account.financingRisk).toMatchObject({
+      level: 2,
+      label: '预警',
+      openingRestricted: true,
+      marginCall: '$100.00',
+      remainingFinancing: '$3000.00',
+    })
+    expect(payload.account.financingRisk.rule).toContain('即使 buyingPower 大于 0 也禁止新增仓位')
+    expect(payload.account.orderSizingConstraint).toContain('不得使用剩余购买力继续融资')
+  })
+
+  it('将融资风险状态加入组合候选裁决提示词', () => {
+    const account = testAccount()
+    account.summary.financingRiskLevel = 2
+    account.summary.financingRiskLabel = '预警'
+    account.summary.financingOpeningRestricted = true
+    account.summary.initialMargin = '$9000.00'
+    account.summary.maintenanceMargin = '$8000.00'
+    account.summary.marginCall = '$100.00'
+    const prompt = buildPortfolioReviewPrompt({
+      candidates: [{
+        candidateId: 'candidate-1',
+        ticker: 'AAPL',
+        action: 'BUY',
+        groupKey: 'AAPL_DIRECT',
+        riskTags: [],
+        firstSeenAt: '2026-09-11T10:00:00.000Z',
+        lastSeenAt: '2026-09-11T10:00:00.000Z',
+        signalCount: 1,
+        firstSignalPrice: 180,
+        latestSignalPrice: 180,
+        latestMarketPrice: 180,
+        priceDriftPct: 0,
+        proposedQuantity: 1,
+        proposedNotional: 180,
+        confidence: 'medium',
+        recentReasons: ['test'],
+      }],
+      account,
+      positions: account.positions,
+      pendingOrders: [],
+      constraints: {
+        maxPromotedOrdersPerReview: 1,
+        minSignalConfirmations: 1,
+        leveragedEtfCooldownMinutes: 30,
+        sameGroupMutualExclusion: false,
+        humanConfirmationRequired: true,
+      },
+    }, 'portfolio-review-test')
+    const payload = JSON.parse(prompt[1].content)
+
+    expect(payload.portfolioState.account.financingRisk).toMatchObject({
+      level: 2,
+      label: '预警',
+      openingRestricted: true,
+      marginCall: '$100.00',
+    })
+    expect(payload.portfolioState.account.financingRisk.rule).toContain('禁止晋级')
+  })
+
   it('港股提示词包含真实每手股数，美股不套用港股规则', () => {
     const hkMarketData = {
       ok: true as const,
@@ -88,6 +181,38 @@ describe('Longbridge live decision prompt context', () => {
       dataWindow,
     })[1].content)
     expect(usPayload.account.tradingUnit.rule).toContain('不套用港股整手约束')
+  })
+
+  it('负现金保护开启时提示模型只允许平仓', () => {
+    const account = testAccount()
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
+    const marketData = {
+      ok: true as const,
+      ticker: 'AAPL',
+      symbol: 'AAPL.US',
+      source: 'longbridge-sdk-cache' as const,
+      lastPrice: 180,
+      bars: [],
+      tickerPoints: [],
+      asks: [],
+      bids: [],
+      lotSize: 1,
+      marketState: 'RTH',
+      updatedAt: '2026-09-11T15:00:00.000Z',
+      warnings: [],
+    }
+
+    const payload = JSON.parse(buildLongbridgeLiveDecisionPrompt({
+      symbol: marketData.symbol,
+      account,
+      marketData,
+      dataWindow,
+      blockOpeningWhenCashNegative: true,
+    })[1].content)
+
+    expect(payload.account.blockOpeningWhenCashNegative).toBe(true)
+    expect(payload.account.orderSizingConstraint).toContain('只允许 SELL_TO_CLOSE')
   })
 
   it('拒绝港股非整手开仓数量，并保留美股按股数量', () => {

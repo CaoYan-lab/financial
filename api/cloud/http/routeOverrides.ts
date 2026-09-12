@@ -94,6 +94,9 @@ function executionSettingsPayload(body: Record<string, unknown> | undefined) {
     ...(typeof body?.autoCancelEnabled === 'boolean'
       ? { autoCancelEnabled: body.autoCancelEnabled }
       : {}),
+    ...(typeof body?.blockOpeningWhenCashNegative === 'boolean'
+      ? { blockOpeningWhenCashNegative: body.blockOpeningWhenCashNegative }
+      : {}),
     ...(typeof body?.marketableLimitTimeoutSeconds === 'number'
       ? { marketableLimitTimeoutSeconds: body.marketableLimitTimeoutSeconds }
       : {}),
@@ -341,6 +344,8 @@ export function createRouteOverrideRouter(): Router {
       liveTradingEnabled: snapshot.liveTradingEnabled === true,
       autoSubmitEnabled: snapshot.autoSubmitEnabled === true,
       autoCancelEnabled: snapshot.autoCancelEnabled === true,
+      blockOpeningWhenCashNegative:
+        snapshot.blockOpeningWhenCashNegative !== false,
       marketableLimitTimeoutSeconds: snapshot.marketableLimitTimeoutSeconds,
       limitTimeoutSeconds: snapshot.limitTimeoutSeconds,
       brokerSyncIntervalSeconds: snapshot.brokerSyncIntervalSeconds,

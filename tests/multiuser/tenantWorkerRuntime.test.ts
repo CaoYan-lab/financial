@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   setDesired: vi.fn(),
   runStrategy: vi.fn(),
   runStrategyPool: vi.fn(),
+  loadTradingAccount: vi.fn(),
   loadLotSize: vi.fn(),
   loadMarketStates: vi.fn(),
   appendPending: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock('../../api/cloud/multiuser/longbridge/tenantDataService.js', () => ({
   setTenantDesiredState: mocks.setDesired,
 }))
 vi.mock('../../api/cloud/multiuser/longbridge/tenantStrategyService.js', () => ({
+  loadTenantAccountForTrading: mocks.loadTradingAccount,
   runTenantStrategyOnce: mocks.runStrategy,
   runTenantStrategyPoolOnce: mocks.runStrategyPool,
 }))
@@ -105,6 +107,54 @@ const job = (jobType: string, payload: Record<string, unknown> = {}): TenantJob 
   payload,
 })
 
+function tradingAccount(
+  summary: Record<string, unknown> = {},
+  positions: Array<Record<string, unknown>> = [],
+) {
+  return {
+    ok: true,
+    selectedAccountId: 'binding-1',
+    summary: {
+      accountId: 'binding-1',
+      currency: 'USD',
+      totalAssets: '$10,000.00',
+      totalAssetsInTradingCurrency: '$10,000.00',
+      cash: '$1,000.00',
+      cashInTradingCurrency: '$1,000.00',
+      availableFunds: '$1,000.00',
+      availableFundsInTradingCurrency: '$1,000.00',
+      buyingPower: '$5,000.00',
+      buyingPowerInTradingCurrency: '$5,000.00',
+      tradingCurrency: 'USD',
+      financingRiskLevel: 0,
+      financingRiskLabel: '安全',
+      financingOpeningRestricted: false,
+      initialMargin: '$0.00',
+      maintenanceMargin: '$0.00',
+      marginCall: '$0.00',
+      dailyPnL: '$0.00',
+      totalPnL: '$0.00',
+      ...summary,
+    },
+    positions,
+    risk: {
+      concentrationRisk: '正常',
+      largestPosition: '无',
+      cashRatio: '10%',
+      top30Overlap: '无',
+      warnings: [],
+    },
+    trading: {
+      environment: 'REAL',
+      liveTradingEnabled: true,
+      requiresConfirmation: true,
+      warning: '',
+    },
+    missingCapabilities: [],
+    warnings: [],
+  }
+}
+
 describe('多用户 Worker runtime', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -116,6 +166,7 @@ describe('多用户 Worker runtime', () => {
     mocks.runChild.mockResolvedValue({ ok: true, orderId: 'broker-1', rawResponse: { status: 'ok' } })
     mocks.getPending.mockResolvedValue(pendingOrder)
     mocks.loadLotSize.mockResolvedValue(1)
+    mocks.loadTradingAccount.mockResolvedValue(tradingAccount())
     mocks.runStrategy.mockResolvedValue({ ok: true })
     mocks.runStrategyPool.mockResolvedValue({ ok: true, evaluatedCount: 20 })
     mocks.loadMarketStates.mockResolvedValue(new Map([['AAPL.US', 'RTH']]))
@@ -229,6 +280,179 @@ describe('多用户 Worker runtime', () => {
       }),
     )).rejects.toThrow('休市')
     expect(mocks.runChild).not.toHaveBeenCalled()
+  })
+
+  it('负现金保护开启时拒绝新增仓位', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+        availableFunds: '$-100.00',
+        availableFundsInTradingCurrency: '$-100.00',
+      }))
+
+    await expect(multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )).rejects.toThrow('负现金开仓保护已拦截')
+    expect(mocks.runChild).not.toHaveBeenCalled()
+  })
+
+  it('融资风险达到预警时即使购买力为正也拒绝提交', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+        availableFunds: '$500.00',
+        availableFundsInTradingCurrency: '$500.00',
+        buyingPower: '$3,000.00',
+        buyingPowerInTradingCurrency: '$3,000.00',
+        tradingCurrency: 'USD',
+        financingRiskLevel: 2,
+        financingRiskLabel: '预警',
+        financingOpeningRestricted: true,
+        initialMargin: '$10,500.00',
+        maintenanceMargin: '$9,000.00',
+        marginCall: '$0.00',
+      }))
+
+    await expect(multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )).rejects.toThrow('融资风险开仓保护已拦截')
+    expect(mocks.runChild).not.toHaveBeenCalled()
+  })
+
+  it('账户快照不可用时最终提交失败关闭', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.loadTradingAccount.mockResolvedValueOnce({
+      ...tradingAccount(),
+      ok: false,
+    })
+
+    await expect(multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )).rejects.toThrow('账户快照读取失败')
+    expect(mocks.runChild).not.toHaveBeenCalled()
+  })
+
+  it('多租户最终提交使用方向性价格归一化后的载荷', async () => {
+    mocks.loadMarketStates.mockResolvedValueOnce(new Map([['MU.US', 'RTH']]))
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.getPending.mockResolvedValueOnce({
+      ...pendingOrder,
+      intent: {
+        ...pendingOrder.intent,
+        ticker: 'MU',
+        limitPrice: 982.369,
+      },
+    })
+
+    await multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', {
+        pendingOrderId: 'pending-1',
+        limitPrice: 999.999,
+      }),
+    )
+
+    expect(mocks.runChild).toHaveBeenCalledWith(
+      connection,
+      'submit',
+      expect.objectContaining({
+        symbol: 'MU.US',
+        side: 'BUY',
+        limitPrice: 982.36,
+      }),
+    )
+    expect(mocks.appendPending).toHaveBeenLastCalledWith(
+      'user-1',
+      'binding-1',
+      expect.objectContaining({
+        intent: expect.objectContaining({ limitPrice: 982.36 }),
+        submittedOrder: expect.objectContaining({ limitPrice: '$982.36' }),
+      }),
+    )
+  })
+
+  it('多租户市价卖出失败时保留市价语义和标准错误', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.getPending.mockResolvedValueOnce({
+      ...pendingOrder,
+      intent: {
+        ...pendingOrder.intent,
+        side: 'SELL_TO_CLOSE',
+        orderType: 'MARKET',
+        quantity: 1,
+      },
+    })
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount(
+      {},
+      [{ ticker: 'AAPL', quantity: '2' }],
+    ))
+    mocks.runChild.mockResolvedValueOnce({ ok: false })
+
+    const result = await multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )
+
+    expect(mocks.runChild).toHaveBeenCalledWith(
+      connection,
+      'submit',
+      expect.objectContaining({ side: 'SELL', orderType: 'MO' }),
+    )
+    expect(result.pendingOrder).toMatchObject({
+      status: 'SUBMIT_FAILED',
+      submittedOrder: {
+        limitPrice: 'MARKET',
+        error: '长桥报单失败',
+      },
+    })
+  })
+
+  it('负现金保护开启时允许卖出平仓', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.getPending.mockResolvedValueOnce({
+      ...pendingOrder,
+      intent: { ...pendingOrder.intent, side: 'SELL_TO_CLOSE', quantity: 1 },
+    })
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+        availableFunds: '$-100.00',
+        availableFundsInTradingCurrency: '$-100.00',
+      }, [{ ticker: 'AAPL', quantity: '2' }]))
+
+    const result = await multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )
+    expect(result).toMatchObject({ ok: true })
+    expect(mocks.runChild).toHaveBeenCalledWith(
+      connection,
+      'submit',
+      expect.any(Object),
+    )
   })
 
   it('提交前拒绝不符合港股每手股数的订单', async () => {
