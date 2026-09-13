@@ -18,8 +18,10 @@ import {
   longbridgeFinancingOpeningRestricted,
   longbridgeFinancingRiskLabel,
   longbridgeOpeningRiskRejectionReason,
+  parseLongbridgeRiskLevel,
 } from '../../../longbridge/longbridgeRiskService.js'
 import { getLlmRuntimeConfig } from '../../../simulation/llmRuntimeConfigService.js'
+import { resolveTradingPromptMode } from '../../../live/tradingPromptReleaseService.js'
 import { orderSessionForMarketState } from '../../../simulation/usOvernightLlmGate.js'
 import { llmSimulationTickers } from '../../../simulation/simulationUniverse.js'
 import { buildTrendContextSummary } from '../../../simulation/trendContextService.js'
@@ -34,6 +36,7 @@ import { contextsForConnection } from './contextRegistry.js'
 import { loadTenantWorkbench } from './tenantDataService.js'
 import { loadTenantMarketStates } from './tenantMarketSessionService.js'
 import { listActiveTenantPendingOrders } from './tenantOrderStore.js'
+import { candidateProductionEvidence } from '../../../live/tradingPromptContext.js'
 
 const STRATEGY = 'LLM_AUTONOMOUS_STOCK_TRADER' as const
 type StrategyRunOptions = {
@@ -48,6 +51,7 @@ type TenantSignal = Omit<QuantSignal, 'source'> & {
   lifecycleReason: string
 }
 type TenantCandidate = {
+  trendContext?: import('../../../../shared/types.js').TrendContextSummary
   id: string
   candidateId: string
   ticker: string
@@ -140,17 +144,22 @@ export async function runTenantStrategyOnce(
     source: 'fallback' as const,
     reason: '当前用户独立 Longbridge SDK 数据窗口。',
   }
+  const promptPendingOrders = await resolveTradingPromptMode('longbridge', 'single', `${userId}:${connection.id}`) === 'shadow'
+    ? await listActiveTenantPendingOrders(userId, connection.id) : undefined
+  const trendContext = buildTrendContextSummary(
+    marketData.ticker,
+    { lookbackTradingDays: 7, barInterval: '30m', currentPrice: marketData.lastPrice },
+    trendBars,
+  )
   const decision = await requestLongbridgeLiveTradingDecision({
     symbol,
     account,
     marketData,
     dataWindow,
-    trendContext: buildTrendContextSummary(
-      marketData.ticker,
-      { lookbackTradingDays: 7, barInterval: '30m', currentPrice: marketData.lastPrice },
-      trendBars,
-    ),
+    trendContext,
     managedOpenOrders: [],
+    pendingOrders: promptPendingOrders?.map(order => ({ ticker: order.intent.ticker })),
+    promptScope: `${userId}:${connection.id}`,
     blockOpeningWhenCashNegative,
   })
   const orderSession = orderSessionForMarketState(marketData.marketState)
@@ -224,6 +233,7 @@ export async function runTenantStrategyOnce(
     signal,
     decision,
     marketData,
+    trendContext,
   }
   candidate.id = candidate.candidateId
   await appendEvent(userId, connection.id, 'candidate-pool', 'ACTIVE', candidate)
@@ -248,7 +258,7 @@ export async function runTenantStrategyOnce(
       sameGroupMutualExclusion: false,
       humanConfirmationRequired: true,
     },
-  }, { namespace: 'live' })
+  }, { namespace: 'live', broker: 'longbridge', promptScope: `${userId}:${connection.id}` })
   await persistReviewStatuses(userId, connection.id, reviewPool, review)
   const promotion = review.promotedCandidates.find((item) => item.candidateId === candidate.candidateId)
   if (!review.ok || !promotion) {
@@ -347,6 +357,7 @@ async function activeTenantCandidates(userId: string, bindingId: string): Promis
 function reviewCandidate(candidate: TenantCandidate) {
   const price = candidate.marketData.lastPrice
   return {
+    marketEvidence: candidateProductionEvidence(candidate),
     candidateId: candidate.candidateId,
     ticker: candidate.ticker,
     action: candidate.action,
@@ -372,6 +383,7 @@ async function persistReviewStatuses(
   candidates: TenantCandidate[],
   review: Awaited<ReturnType<typeof requestLivePortfolioReviewDecision>>,
 ): Promise<void> {
+  if (review.promptVersion?.startsWith('dual_broker_portfolio_')) return
   const byId = new Map(candidates.map((item) => [item.candidateId, item]))
   const updates = [
     ...review.promotedCandidates.map((item) => ({ ...item, status: 'PROMOTED' })),
@@ -444,12 +456,9 @@ export async function loadTenantAccountForTrading(
   currency: 'USD' | 'HKD' = 'USD',
 ): Promise<LiveAccountDashboardResponse> {
   const dashboard = await loadTenantWorkbench(connection, currency)
-  const metric = (label: string) => dashboard.accountMetrics.find((item) => item.label === label)?.value ?? '$0.00'
+  const metric = (label: string) => dashboard.accountMetrics.find((item) => item.label === label)?.value ?? '不可用'
   const riskMetric = (label: string) => (dashboard.riskCards ?? []).find((item) => item.label === label)?.value ?? '不可用'
-  const financingRiskLevelValue = Number(dashboard.accountMetrics.find((item) => item.label === '风险等级')?.value)
-  const financingRiskLevel = Number.isFinite(financingRiskLevelValue)
-    ? financingRiskLevelValue
-    : undefined
+  const financingRiskLevel = parseLongbridgeRiskLevel(dashboard.accountMetrics.find((item) => item.label === '风险等级')?.value)
   const totalAssets = metric('账户净资产')
   const initialMargin = riskMetric('初始保证金')
   const marginCall = riskMetric('追加保证金')
@@ -467,6 +476,7 @@ export async function loadTenantAccountForTrading(
     assetType: 'STOCK',
     underlyingTicker: tickerFromSymbol(item.symbol),
     quantity: item.quantity,
+    availableToClose: item.availableToClose ?? null,
     marketValue: item.marketValue,
     averageCost: item.averageCost,
     currentPrice: item.currentPrice,
@@ -487,6 +497,8 @@ export async function loadTenantAccountForTrading(
       availableFunds: metric('现金可用'),
       buyingPower: metric('最大购买力'),
       financingRiskLevel,
+      financingCurrency: currency,
+      financingEquity: totalAssets,
       financingRiskLabel: longbridgeFinancingRiskLabel(financingRiskLevel),
       financingOpeningRestricted,
       initialMargin,

@@ -76,7 +76,7 @@ export function longbridgeOpeningAccountDataFailureReason(
   if (!account.ok) {
     return '长桥开仓风控被拦截：账户快照读取失败，无法确认融资风险和购买力。'
   }
-  if (!Number.isFinite(Number(summary.financingRiskLevel))) {
+  if (parseLongbridgeRiskLevel(summary.financingRiskLevel) === undefined) {
     return '长桥开仓风控被拦截：融资风险等级不可用，禁止在未知风险状态下新增仓位。'
   }
   if (equity === undefined || equity <= 0 || buyingPower === undefined || buyingPower <= 0) {
@@ -128,12 +128,18 @@ export function longbridgeMarginRiskOpeningFailureReason(
 }
 
 export function longbridgeFinancingRiskLabel(value: unknown): string {
-  const level = Number(value)
+  const level = parseLongbridgeRiskLevel(value)
   if (level === 0) return '安全'
   if (level === 1) return '中等'
   if (level === 2) return '预警'
   if (level === 3) return '危险'
   return '未知'
+}
+
+export function parseLongbridgeRiskLevel(value: unknown): number | undefined {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^[0-3]$/.test(value))) return undefined
+  const level = Number(value)
+  return Number.isInteger(level) && level >= 0 && level <= 3 ? level : undefined
 }
 
 export function longbridgeFinancingOpeningRestricted(
@@ -207,7 +213,8 @@ function isOpeningTrade(
 function findPosition(positions: Position[], ticker: string): Position | undefined {
   const targetTicker = comparableTicker(ticker)
   return positions.find((item) =>
-    comparableTicker(item.underlyingTicker || item.ticker) === targetTicker)
+    (item.assetType === 'STOCK' || item.assetType === 'ETF')
+    && comparableTicker(item.ticker) === targetTicker)
 }
 
 function comparableTicker(value: string): string {

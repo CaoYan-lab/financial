@@ -4,6 +4,7 @@ import { longbridgeLiveTradingEngine } from '../../longbridge/longbridgeLiveTrad
 import { aShareLiveTradingEngine } from '../../ashare/aShareLiveTradingEngine.js'
 import { FutuOpenDProvider } from '../../providers/futuOpenDProvider.js'
 import { collectRawData } from '../../services/marketDataService.js'
+import { generateReport } from '../../routes/reportRoutes.js'
 import { logger } from '../../utils/logger.js'
 import { loadLiveAccountDashboard } from '../../live/liveAccountService.js'
 import {
@@ -365,6 +366,23 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.error({ event: 'cloud.worker.report_data.failed', error: message }, '报告数据采集任务失败')
+      return { ok: false, error: message }
+    }
+  }
+
+  if (jobType === 'report.generate') {
+    try {
+      const batchId = typeof payload.batchId === 'string' ? payload.batchId : `batch-${Date.now()}`
+      const report = await generateReport({
+        batchId,
+        asOfDate: typeof payload.asOfDate === 'string' ? payload.asOfDate : undefined,
+        reportWindowDays: payload.reportWindowDays === 60 ? 60 : 30,
+      })
+      logger.info({ event: 'cloud.worker.report.succeeded', batchId }, '报告生成任务完成')
+      return { ok: true, summary: { report } }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error({ event: 'cloud.worker.report.failed', error: message }, '报告生成任务失败')
       return { ok: false, error: message }
     }
   }

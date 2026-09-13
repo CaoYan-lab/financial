@@ -275,6 +275,10 @@ export type RealtimeSubscriptionStatus = {
 }
 
 export type AccountSummary = {
+  futuExposureLevel?: string
+  futuRiskStatus?: string
+  financingCurrency?: string
+  financingEquity?: string
   accountId: string
   currency: string
   totalAssets: string
@@ -300,6 +304,7 @@ export type AccountSummary = {
 }
 
 export type Position = {
+  availableToClose?: number | null
   code: string
   ticker: string
   name: string
@@ -566,6 +571,7 @@ export type QuantSignal = {
 }
 
 export type LlmTradingDecision = {
+  promptAudit?: import('./tradingPromptTypes.js').TradingPromptAudit
   ok: boolean
   approved: boolean
   action: QuantSignalSide

@@ -325,3 +325,42 @@ test('owner 可在用户管理中批准成员实盘门禁', async ({ page }) => 
   await expect(page.getByText('chuangye · 已启用 · 长桥 已连接 · 实盘已批准')).toBeVisible()
   await expect(page.getByRole('button', { name: '关闭实盘' })).toBeVisible()
 })
+
+for (const broker of ['futu', 'longbridge'] as const) {
+  test(`${broker}提示词切换需确认且新版实盘可选`, async ({ page }, testInfo) => {
+    await loginOwner(page)
+    if (broker === 'futu') await mockFutuApis(page)
+    else {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await mockLongbridgeApis(page)
+    }
+    let revision = 0
+    let mode = 'legacy'
+    await page.route('**/prompt-mode', async route => {
+      if (route.request().method() === 'PUT') {
+        const body = route.request().postDataJSON()
+        expect(body).toEqual({ mode: 'live', expectedRevision: 0, confirmed: true })
+        revision++
+        mode = body.mode
+      }
+      await route.fulfill({ json: {
+        revision, selectedMode: mode, effectiveModes: { single: mode, portfolio: mode, managed: mode },
+        environmentOverrides: {}, liveAvailable: true, updatedAt: null, blockers: [],
+      } })
+    })
+    await page.goto(broker === 'futu' ? '/live-trading' : '/longbridge/live-trading')
+    const panel = page.getByRole('region', { name: '交易提示词模式' })
+    await panel.scrollIntoViewIfNeeded()
+    await expect(panel.getByRole('combobox')).toBeEnabled()
+    await expect(panel.locator('option[value="live"]')).toBeEnabled()
+    await panel.getByRole('combobox').selectOption('live')
+    await expect(page.getByRole('alertdialog', { name: '确认提示词切换' })).toBeVisible()
+    expect(revision).toBe(0)
+    await page.getByRole('button', { name: '确认切换', exact: true }).click()
+    await expect(panel.getByText('单票：新版实盘', { exact: true })).toBeVisible()
+    expect(revision).toBe(1)
+    const overflow = await panel.evaluate(el => el.scrollWidth - el.clientWidth)
+    expect(overflow).toBeLessThanOrEqual(0)
+    await panel.screenshot({ path: testInfo.outputPath(`${broker}-prompt-mode.png`) })
+  })
+}

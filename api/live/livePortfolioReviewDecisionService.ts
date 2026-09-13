@@ -3,12 +3,17 @@ import { durationMs, logger } from '../utils/logger.js'
 import { callArkResponses, parseJsonObject } from '../simulation/llmResponseUtils.js'
 import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import { getActiveLivePortfolioReviewPrompt } from '../trade_strategy/tradeStrategyConfigService.js'
+import type { TradingPromptAudit, TradingPromptBroker } from '../../shared/tradingPromptTypes.js'
+import { buildPortfolioProductionContext, type CandidateMarketEvidence } from './tradingPromptContext.js'
+import { requestProductionDecision } from './tradingPromptV2.js'
+import { resolveTradingPromptMode } from './tradingPromptReleaseService.js'
 import {
   longbridgeFinancingOpeningRestricted,
   longbridgeFinancingRiskLabel,
 } from '../longbridge/longbridgeRiskService.js'
 
 export type LivePortfolioReviewCandidate = {
+  marketEvidence?: CandidateMarketEvidence
   candidateId: string
   ticker: string
   action: QuantSignal['side']
@@ -28,9 +33,10 @@ export type LivePortfolioReviewCandidate = {
 }
 
 export type LivePortfolioReviewDecision = {
+  promptAudit?: TradingPromptAudit
   ok: boolean
   portfolioDecisionId: string
-  promptVersion: 'live_portfolio_candidate_review_v1'
+  promptVersion: 'live_portfolio_candidate_review_v1' | 'dual_broker_portfolio_v2'
   promotedCandidates: Array<{
     candidateId: string
     rank: number
@@ -48,6 +54,8 @@ export type LivePortfolioReviewDecision = {
 }
 
 type PortfolioReviewOptions = {
+  broker?: TradingPromptBroker
+  promptScope?: string
   namespace?: string
   model?: string
   modelOption?: LlmModelOption
@@ -68,6 +76,42 @@ type ReviewInput = {
 }
 
 export async function requestLivePortfolioReviewDecision(input: ReviewInput, options: PortfolioReviewOptions = {}): Promise<LivePortfolioReviewDecision> {
+  const blockedShadow = (reason: string, promptAudit?: TradingPromptAudit): LivePortfolioReviewDecision => ({
+    ok: false, portfolioDecisionId: promptAudit?.requestId ?? `portfolio-review-${Date.now()}`,
+    promptVersion: 'dual_broker_portfolio_v2', promotedCandidates: [], watchedCandidates: [],
+    suppressedCandidates: [], expiredCandidates: [], portfolioRationale: reason, error: reason,
+    promptAudit, rawText: promptAudit?.rawText,
+  })
+  try {
+    if (options.broker) {
+      const mode = await resolveTradingPromptMode(options.broker, 'portfolio', options.promptScope)
+      if (mode !== 'legacy') {
+        const audit = await requestProductionDecision(buildPortfolioProductionContext(options.broker, input, options.promptScope), mode, options)
+        if (mode === 'shadow') return blockedShadow('新版组合只读结果仅审计，不晋级可执行候选。', audit)
+        if (!audit.contractValid || !audit.policyValid || !audit.output) {
+          return blockedShadow(`新版组合实盘决策未通过最终校验：${audit.errors.join('、') || '未知错误'}`, audit)
+        }
+        const output = audit.output as Record<string, any>
+        return {
+          ok: output.ok === true,
+          portfolioDecisionId: audit.requestId,
+          promptVersion: 'dual_broker_portfolio_v2',
+          promotedCandidates: output.promotedCandidates.map((item: any) => ({
+            candidateId: item.candidateId, rank: item.rank, reason: item.reason,
+            riskAssessment: item.riskAssessment,
+          })),
+          watchedCandidates: output.watchedCandidates,
+          suppressedCandidates: output.suppressedCandidates,
+          expiredCandidates: output.expiredCandidates,
+          portfolioRationale: output.portfolioRationale,
+          promptAudit: audit,
+          rawText: audit.rawText,
+        }
+      }
+    }
+  } catch {
+    return blockedShadow('新版组合配置或上下文失败，已阻断，不回退旧版。')
+  }
   const startedAt = performance.now()
   const model = options.model ?? getActiveArkModel()
   const promptConfig = getActiveLivePortfolioReviewPrompt(options.namespace)
@@ -174,7 +218,7 @@ export function buildPortfolioReviewPrompt(input: ReviewInput, portfolioDecision
           ...preset,
           leveragedEtfCooldownMinutes: input.constraints.leveragedEtfCooldownMinutes,
         },
-        candidatePool: input.candidates,
+        candidatePool: input.candidates.map(({ marketEvidence: _evidence, ...candidate }) => candidate),
         portfolioState: {
           account: {
             accountId: input.account.selectedAccountId,

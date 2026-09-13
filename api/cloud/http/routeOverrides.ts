@@ -1,5 +1,4 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
-import { generateReport, type ReportCollectedData } from '../../routes/reportRoutes.js'
 import { enqueueJob, getJob, getWorkerStatus, listWorkerStatus, setEngineDesired } from '../state/taskStores.js'
 import { listManagedOrderEvents, listManagedOrders } from '../state/managedOrderStore.js'
 import { loadBrokerExecutionSettings } from '../state/brokerExecutionSettingsStore.js'
@@ -9,8 +8,6 @@ import type { BrokerExecutionSettings, ManagedBroker } from '../../../shared/man
 // 引擎看板只读取常驻 worker 的 leader 心跳行（仅持有咨询锁的唯一 leader 会写该行），
 // 旧版本/非 leader 实例写的 'primary' 行会被忽略，避免被空闲/历史实例的空快照覆盖。
 const LEADER_STATUS_KEY = 'leader'
-const REPORT_JOB_TIMEOUT_MS = 330_000
-const REPORT_JOB_POLL_MS = 1_000
 const FUTU_ORDERS_JOB_TIMEOUT_MS = 25_000
 const FUTU_ORDERS_JOB_POLL_MS = 250
 const CONTROL_JOB_TIMEOUT_MS = 15_000
@@ -518,8 +515,8 @@ export function createRouteOverrideRouter(): Router {
     }
   })
 
-  // Futu 原始数据由 VPC 内 worker 采集；市场资讯与 Ark 长请求由有公网出口的 web 执行。
-  // Web 保持原同步响应契约，最终返回完整报告 JSON。
+  // 报告生成耗时可能超过 APIG 单请求上限，完整链路交由常驻 worker 执行。
+  // Web 仅负责入队和查询状态，避免请求断开后只完成采集却不生成报告。
   router.post('/report/generate', async (req: Request, res: Response) => {
     const batchId = `batch-${Date.now()}`
     const reportWindowDays: 30 | 60 = req.body?.reportWindowDays === 60 ? 60 : 30
@@ -530,35 +527,50 @@ export function createRouteOverrideRouter(): Router {
       requestedBy: (req as Request & { user?: { username?: string } }).user?.username ?? null,
     }
     try {
-      const jobId = await enqueueJob('report.collect', payload)
-      logger.info({ event: 'cloud.web.report_data.enqueued', jobId, batchId }, '报告数据采集任务已入队')
-      const deadline = Date.now() + REPORT_JOB_TIMEOUT_MS
-      while (Date.now() < deadline) {
-        const job = await getJob(jobId)
-        if (job?.status === 'succeeded') {
-          const collected = job.result?.collected
-          if (collected && typeof collected === 'object') {
-            const report = await generateReport(payload, collected as ReportCollectedData)
-            res.json(report)
-            return
-          }
-          res.status(500).json({ success: false, error: '报告数据采集完成但未返回内容', jobId })
-          return
-        }
-        if (job?.status === 'failed') {
-          res.status(500).json({ success: false, error: job.last_error ?? '报告生成失败', jobId })
-          return
-        }
-        await sleep(REPORT_JOB_POLL_MS)
-      }
-      res.status(504).json({ success: false, error: '报告生成超时，任务仍在后台执行', jobId })
+      const jobId = await enqueueJob('report.generate', payload)
+      logger.info({ event: 'cloud.web.report.enqueued', jobId, batchId }, '报告生成任务已入队')
+      res.status(202).json({ success: true, status: 'queued', jobId, batchId })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.error({ event: 'cloud.web.report.failed', error: message }, '报告生成任务失败')
-      res.status(message.startsWith('report_generation_in_progress:') ? 409 : 500).json({
-        success: false,
-        error: message,
-      })
+      res.status(500).json({ success: false, error: message })
+    }
+  })
+
+  router.get('/report/jobs/:jobId', async (req: Request, res: Response) => {
+    try {
+      const job = await getJob(req.params.jobId)
+      if (!job || job.job_type !== 'report.generate') {
+        res.status(404).json({ success: false, error: '未找到报告生成任务' })
+        return
+      }
+      const username = (req as Request & { user?: { username?: string } }).user?.username ?? null
+      const requestedBy = typeof job.payload?.requestedBy === 'string' ? job.payload.requestedBy : null
+      if (requestedBy && requestedBy !== username) {
+        res.status(404).json({ success: false, error: '未找到报告生成任务' })
+        return
+      }
+      const batchId = typeof job.payload?.batchId === 'string' ? job.payload.batchId : undefined
+      if (job.status === 'succeeded') {
+        const report = job.result?.report
+        if (!report || typeof report !== 'object') {
+          res.status(500).json({ success: false, status: 'failed', error: '报告任务完成但未返回内容', batchId })
+          return
+        }
+        res.json({ success: true, status: 'succeeded', batchId, report })
+        return
+      }
+      if (job.status === 'failed') {
+        res.json({ success: false, status: 'failed', error: job.last_error ?? '报告生成失败', batchId })
+        return
+      }
+      res.json({ success: true, status: job.status, batchId })
+    } catch (error) {
+      logger.error(
+        { event: 'cloud.web.report_status.failed', jobId: req.params.jobId, error: error instanceof Error ? error.message : String(error) },
+        '查询报告生成任务失败',
+      )
+      res.status(500).json({ success: false, error: '查询报告生成进度失败' })
     }
   })
 

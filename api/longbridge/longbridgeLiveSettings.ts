@@ -5,12 +5,12 @@ import {
   saveBrokerExecutionSettings,
 } from '../cloud/state/brokerExecutionSettingsStore.js'
 
-let controls = defaultBrokerExecutionSettings('longbridge')
+let controls: BrokerExecutionSettings | undefined
 
 export function getLongbridgeLiveSettings() {
   return {
     liveTradingEnabled: process.env.LONGBRIDGE_LIVE_TRADING_ENABLED === 'true',
-    ...controls,
+    ...(controls ?? defaultBrokerExecutionSettings('longbridge')),
     updatedAt: new Date().toISOString(),
   }
 }
@@ -21,6 +21,9 @@ export async function hydrateLongbridgeLiveSettings() {
 }
 
 export async function updateLongbridgeLiveSettings(input: Partial<BrokerExecutionSettings>) {
-  controls = await saveBrokerExecutionSettings('longbridge', { ...controls, ...input })
+  controls = await saveBrokerExecutionSettings('longbridge', {
+    ...(controls ?? defaultBrokerExecutionSettings('longbridge')),
+    ...input,
+  })
   return getLongbridgeLiveSettings()
 }

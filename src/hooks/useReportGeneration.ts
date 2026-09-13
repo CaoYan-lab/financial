@@ -9,7 +9,50 @@ import type {
 import { useReportStore } from '@/stores/reportStore'
 
 const SUMMARY_REQUEST_TIMEOUT_MS = 12_000
-const REPORT_GENERATION_TIMEOUT_MS = 360_000
+const REPORT_REQUEST_TIMEOUT_MS = 15_000
+const REPORT_POLL_INTERVAL_MS = 2_000
+const REPORT_POLL_TIMEOUT_MS = 15 * 60_000
+
+type ReportJobAccepted = {
+  jobId: string
+  batchId: string
+  status: 'queued'
+}
+
+type ReportJobStatus = {
+  success: boolean
+  status: string
+  batchId?: string
+  error?: string
+  report?: ReportGenerationResult
+}
+
+async function responseError(response: Response, fallback: string): Promise<string> {
+  const payload = await response.json().catch(() => undefined)
+  if (payload && typeof payload === 'object') {
+    if ('message' in payload && typeof payload.message === 'string') return payload.message
+    if ('error' in payload && typeof payload.error === 'string') return payload.error
+  }
+  return fallback
+}
+
+async function waitForReport(jobId: string, onStatus: (status: string) => void): Promise<ReportGenerationResult> {
+  const deadline = Date.now() + REPORT_POLL_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, REPORT_POLL_INTERVAL_MS))
+    const response = await fetch(`/api/report/jobs/${encodeURIComponent(jobId)}`, {
+      signal: AbortSignal.timeout(REPORT_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      throw new Error(await responseError(response, `查询报告生成进度失败（HTTP ${response.status}）`))
+    }
+    const payload = (await response.json()) as ReportJobStatus
+    if (payload.status === 'succeeded' && payload.report) return payload.report
+    if (payload.status === 'failed') throw new Error(payload.error || '报告生成失败')
+    onStatus(payload.status === 'running' ? '正在生成报告，请保持页面打开。' : '报告任务已排队，正在等待处理。')
+  }
+  throw new Error('报告仍在后台生成，请稍后刷新报告历史。')
+}
 
 export function useReportGeneration() {
   const generatingRef = useRef(false)
@@ -77,7 +120,7 @@ export function useReportGeneration() {
       const response = await fetch('/api/report/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(REPORT_GENERATION_TIMEOUT_MS),
+        signal: AbortSignal.timeout(REPORT_REQUEST_TIMEOUT_MS),
         body: JSON.stringify({
           outputLanguageMode: 'zh-en',
           universeSourcePriority: ['stockanalysis', 'companiesmarketcap'],
@@ -85,17 +128,18 @@ export function useReportGeneration() {
       })
 
       if (!response.ok) {
-        const errorPayload = await response.json().catch(() => undefined)
-        const message = errorPayload && typeof errorPayload === 'object' && 'message' in errorPayload ? String(errorPayload.message) : `Report generation failed with HTTP ${response.status}.`
-        throw new Error(message)
+        throw new Error(await responseError(response, `报告生成请求失败（HTTP ${response.status}）`))
       }
 
-      const payload = (await response.json()) as ReportGenerationResult
-      setReport(payload)
-      setGenerationStatus(`报告生成完成：${payload.analysisModel?.modelLabel ?? 'LLM'} · ${payload.batchId}`)
+      const initialPayload = (await response.json()) as ReportGenerationResult | ReportJobAccepted
+      const report = response.status === 202 && 'jobId' in initialPayload
+        ? await waitForReport(initialPayload.jobId, setGenerationStatus)
+        : initialPayload as ReportGenerationResult
+      setReport(report)
+      setGenerationStatus(`报告生成完成：${report.analysisModel?.modelLabel ?? '大模型'} · ${report.batchId}`)
       await refreshReportSummaries()
     } catch (reportError) {
-      setError(reportError instanceof Error ? reportError.message : 'Unknown report generation error.')
+      setError(reportError instanceof Error ? reportError.message : '报告生成失败')
       setGenerationStatus(undefined)
     } finally {
       generatingRef.current = false

@@ -35,6 +35,7 @@ export type LongbridgeMetric = {
 }
 
 export type LongbridgePosition = {
+  availableToClose?: number | null
   symbol: string
   name: string
   quantity: string

@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { createTradingPromptRouter } from './tradingPromptRoutes.js'
 import { liveTradingEngine } from '../live/liveTradingEngine.js'
 import { liveCandidatePoolService } from '../live/liveCandidatePoolService.js'
 import { livePersistence } from '../live/livePersistence.js'
@@ -13,6 +14,7 @@ import { getTradeStrategyRuntimeConfig, updateTradeStrategyRuntimeConfig } from 
 import { logger } from '../utils/logger.js'
 
 const router = Router()
+router.use('/prompt-mode', createTradingPromptRouter('futu'))
 
 router.get('/accounts', async (_req, res, next) => {
   try {

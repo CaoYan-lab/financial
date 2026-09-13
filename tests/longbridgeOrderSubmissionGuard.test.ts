@@ -101,7 +101,7 @@ describe('Longbridge 最终提交风控', () => {
 
     const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id)
 
-    expect(result.error).toContain('超过 USD 最大购买力保护线')
+    expect(result.error).toContain('超过可用购买力')
     expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 
@@ -118,6 +118,26 @@ describe('Longbridge 最终提交风控', () => {
       intent: expect.objectContaining({ limitPrice: 982.36 }),
     }))
     expect(result.order?.intent.limitPrice).toBe(982.36)
+  })
+
+  it('进程内并发确认最多提交一次', async () => {
+    longbridgeOrderQueueService.createPendingOrder(pendingOrder())
+    const results = await Promise.all([
+      longbridgeOrderQueueService.confirmPendingOrder('pending-mu-1'),
+      longbridgeOrderQueueService.confirmPendingOrder('pending-mu-1'),
+    ])
+    expect(results.filter(r => r.ok)).toHaveLength(1)
+    expect(mocks.submitOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('账户刷新期间被拒绝的订单不会提交', async () => {
+    longbridgeOrderQueueService.createPendingOrder(pendingOrder())
+    mocks.loadAccount.mockImplementationOnce(async () => {
+      longbridgeOrderQueueService.rejectPendingOrder('pending-mu-1')
+      return tradingAccount()
+    })
+    expect((await longbridgeOrderQueueService.confirmPendingOrder('pending-mu-1')).ok).toBe(false)
+    expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 })
 
@@ -147,6 +167,7 @@ function tradingAccount(
       buyingPowerInTradingCurrency: '$20,000.00',
       dailyPnL: '$0.00',
       totalPnL: '$0.00',
+      source: { source: 'test', accessedAt: new Date().toISOString() },
       ...summary,
     },
     positions: [],

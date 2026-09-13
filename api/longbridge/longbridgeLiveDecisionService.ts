@@ -7,6 +7,10 @@ import { LLM_SIMULATION_UNIVERSE } from '../simulation/simulationUniverse.js'
 import { buildRiskModelDescription, getActivePromptPack } from '../trade_strategy/tradeStrategyConfigService.js'
 import { durationMs, logger } from '../utils/logger.js'
 import { fallbackLotSize, longbridgeOpeningLotSizeFailureReason } from './longbridgeLotSizeService.js'
+import type { TradingPromptAudit } from '../../shared/tradingPromptTypes.js'
+import { requestProductionDecision } from '../live/tradingPromptV2.js'
+import { resolveTradingPromptMode } from '../live/tradingPromptReleaseService.js'
+import { buildSingleProductionContext } from '../live/tradingPromptContext.js'
 import {
   longbridgeFinancingOpeningRestricted,
   longbridgeFinancingRiskLabel,
@@ -22,9 +26,21 @@ type DecisionInput = {
   universe?: SimulationUniverseItem[]
   managedOpenOrders?: ManagedOrder[]
   blockOpeningWhenCashNegative?: boolean
+  pendingOrders?: Array<{ ticker: string; [key: string]: unknown }>
+  promptScope?: string
 }
 
 export async function requestLongbridgeLiveTradingDecision(input: DecisionInput): Promise<LlmTradingDecision> {
+  try {
+    const mode = await resolveTradingPromptMode('longbridge', 'single', input.promptScope)
+    if (mode !== 'legacy') {
+      const audit = await requestProductionDecision(buildSingleProductionContext('longbridge', { ...input, scope: input.promptScope }), mode)
+      if (mode === 'shadow') return { ...blockedDecision(input, '新版只读影子模式：结果仅审计，不创建真实订单。', audit.rawText), promptAudit: audit }
+      return productionDecision(input, audit)
+    }
+  } catch {
+    return blockedDecision(input, '新版提示词配置或上下文失败，已阻断，不回退旧版。')
+  }
   const startedAt = performance.now()
   const model = getActiveArkModel()
   logger.info({ event: 'longbridge.llm.decision.started', symbol: input.symbol, model }, 'Longbridge LLM decision started')
@@ -43,6 +59,31 @@ export async function requestLongbridgeLiveTradingDecision(input: DecisionInput)
     decision.ok ? 'Longbridge LLM decision succeeded' : 'Longbridge LLM decision failed',
   )
   return decision
+}
+
+function productionDecision(input: DecisionInput, audit: TradingPromptAudit): LlmTradingDecision {
+  const output = audit.output
+  if (!audit.contractValid || !audit.policyValid || !output) {
+    return { ...blockedDecision(input, `新版实盘决策未通过最终校验：${audit.errors.join('、') || '未知错误'}`, audit.rawText), promptAudit: audit }
+  }
+  const action = output.action as LlmTradingDecision['action']
+  return {
+    ok: true,
+    approved: output.approved === true,
+    action,
+    ticker: String(output.ticker),
+    orderQuantity: Number(output.orderQuantity),
+    limitPrice: typeof output.limitPrice === 'number' ? output.limitPrice : input.marketData.lastPrice,
+    confidence: action === 'HOLD' ? 'low' : 'medium',
+    reason: String(output.reason),
+    riskAssessment: String(output.riskAssessment),
+    trendAlignment: input.trendContext?.window.available ? 'WITH_TREND' : 'UNAVAILABLE',
+    tradeHorizon: 'INTRADAY',
+    whyNotNoise: String(output.reason),
+    dataWindowUsed: { ...input.dataWindow },
+    rawText: audit.rawText,
+    promptAudit: audit,
+  }
 }
 
 export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{ role: string; content: string }> {

@@ -64,7 +64,8 @@ def safe_float(value):
     if isinstance(value, str) and value.upper() in {"N/A", "NAN", "", UNAVAILABLE}:
         return None
     try:
-        return float(value)
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
     except (TypeError, ValueError):
         return None
 

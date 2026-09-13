@@ -8,6 +8,8 @@ import {
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgePersistence } from './longbridgePersistence.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
+import { finalAccountOrderFailure, livePromptMarketFailure, shadowOrderExecutionFailure } from '../live/brokerFinancingRisk.js'
+import { acquireOrderSubmissionLock } from '../live/orderSubmissionLock.js'
 import { registerSubmittedManagedOrder } from '../live/managedOrderSupervisor.js'
 import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
 import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
@@ -20,8 +22,10 @@ import {
   loadLongbridgeLotSize,
   longbridgeTradingCurrency,
 } from './longbridgeLotSizeService.js'
+import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 
 class LongbridgeOrderQueueService {
+  private confirmationInProgress = false
   createPendingOrder(order: LivePendingOrder) {
     longbridgePersistence.appendPendingOrder(order)
     return order
@@ -91,6 +95,21 @@ class LongbridgeOrderQueueService {
   }
 
   async confirmPendingOrder(id: string, input: { confirmedBy?: LiveOrderConfirmation['confirmedBy']; confirmationId?: string } = {}): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
+    if (this.confirmationInProgress) return { ok: false, error: '账户已有提交校验进行中，请等待结果。', blockedByGate: true }
+    this.confirmationInProgress = true
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await acquireOrderSubmissionLock('longbridge:default')
+      return await this.confirmPendingOrderLocked(id, input)
+    } catch (error) {
+      return { ok: false, order: this.findPendingOrder(id), error: error instanceof Error ? error.message : '跨进程提交锁不可用。', blockedByGate: true }
+    } finally {
+      await release?.()
+      this.confirmationInProgress = false
+    }
+  }
+
+  private async confirmPendingOrderLocked(id: string, input: { confirmedBy?: LiveOrderConfirmation['confirmedBy']; confirmationId?: string }): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
     const order = this.findPendingOrder(id)
     if (process.env.LONGBRIDGE_LIVE_TRADING_ENABLED !== 'true') {
       return {
@@ -109,7 +128,12 @@ class LongbridgeOrderQueueService {
       }
     }
 
+    const shadowFailure = shadowOrderExecutionFailure(order)
+    if (shadowFailure) return { ok: false, order, error: shadowFailure, blockedByGate: true }
     const symbol = normalizeLongbridgeSymbol(order.intent.ticker)
+    const latestMarket = longbridgeRealtimeStore.getSnapshot(symbol)
+    const marketFailure = livePromptMarketFailure(order, latestMarket?.quote?.lastPrice, latestMarket?.quote?.updatedAt)
+    if (marketFailure) return { ok: false, order, error: marketFailure, blockedByGate: true }
     const settings = getLongbridgeLiveSettings()
     const account = await loadLongbridgeLiveAccountDashboard(
       longbridgeTradingCurrency(symbol),
@@ -123,7 +147,7 @@ class LongbridgeOrderQueueService {
       confirmationId,
       intent: order.intent,
     })
-    const riskFailure = longbridgeOpeningRiskRejectionReason(
+    const riskFailure = finalAccountOrderFailure('longbridge', account, order.intent, longbridgeTradingCurrency(symbol)) ?? longbridgeOpeningRiskRejectionReason(
       account,
       {
         action: order.intent.side,
@@ -162,6 +186,7 @@ class LongbridgeOrderQueueService {
       }
     }
 
+    if (this.findPendingOrder(id)?.status !== 'PENDING_CONFIRMATION') return { ok: false, order, error: '订单状态已改变，禁止提交。', blockedByGate: true }
     const confirmedAt = new Date().toISOString()
     const confirmation: LiveOrderConfirmation = {
       confirmedAt,

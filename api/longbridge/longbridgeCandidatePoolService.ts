@@ -3,9 +3,11 @@ import { getActiveLivePortfolioReviewPrompt, getTradeStrategyRuntimeConfig } fro
 import type { LongbridgeStrategyMarketData } from '../../shared/longbridgeTypes.js'
 import type { LivePortfolioReviewDecision } from '../live/livePortfolioReviewDecisionService.js'
 import { longbridgePersistence, type LongbridgeCandidateRecord } from './longbridgePersistence.js'
+import { candidateProductionEvidence } from '../live/tradingPromptContext.js'
 
 class LongbridgeCandidatePoolService {
   upsert(input: {
+    trendContext?: import('../../shared/types.js').TrendContextSummary
     signal: LiveSignalHistoryItem
     decision: LlmTradingDecision
     marketData: Extract<LongbridgeStrategyMarketData, { ok: true }>
@@ -33,6 +35,7 @@ class LongbridgeCandidatePoolService {
       signal: input.signal,
       decision: input.decision,
       marketData: input.marketData,
+      trendContext: input.trendContext,
     }
     longbridgePersistence.appendCandidate(candidate)
     return candidate
@@ -42,6 +45,7 @@ class LongbridgeCandidatePoolService {
     return longbridgePersistence.latestCandidates()
       .filter((candidate) => candidate.status === 'ACTIVE' || candidate.status === 'WATCH' || candidate.status === 'PROMOTED')
       .map((candidate) => ({
+        marketEvidence: candidateProductionEvidence(candidate),
         candidateId: candidate.candidateId,
         ticker: candidate.ticker,
         action: candidate.action,

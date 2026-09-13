@@ -5,12 +5,18 @@ import { submitLiveOrder } from './futuLiveOrderService.js'
 import { registerSubmittedManagedOrder } from './managedOrderSupervisor.js'
 import { loadMarketSessions } from '../simulation/marketSessionService.js'
 import { orderSubmissionSessionFailureReason } from '../simulation/usOvernightLlmGate.js'
+import { finalAccountOrderFailure, livePromptMarketFailure, shadowOrderExecutionFailure } from './brokerFinancingRisk.js'
+import { llmUniverseItem } from '../simulation/simulationUniverse.js'
+import { getTradeStrategyRuntimeConfig } from '../trade_strategy/tradeStrategyConfigService.js'
+import { realtimeStore } from '../realtime/realtimeStore.js'
+import { acquireOrderSubmissionLock } from './orderSubmissionLock.js'
 
 const MAX_ITEMS = 500
 const ORDER_COOLDOWN_MS = 15 * 60 * 1000
 const STRATEGY: QuantStrategyName = 'LLM_AUTONOMOUS_STOCK_TRADER'
 
 class LiveOrderQueueService {
+  private confirmationInProgress = false
   private readonly signals: QuantSignal[] = livePersistence.readLatest('signals', MAX_ITEMS)
   private readonly pendingOrders: LivePendingOrder[] = livePersistence
     .readLatest('pending_orders', MAX_ITEMS)
@@ -142,6 +148,21 @@ class LiveOrderQueueService {
   }
 
   async confirmPendingOrder(id: string, input: { confirmedBy?: LiveOrderConfirmation['confirmedBy']; confirmationId?: string; accountId?: string } = {}): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
+    if (this.confirmationInProgress) return { ok: false, error: '账户已有提交校验进行中，请等待结果。', blockedByGate: true }
+    this.confirmationInProgress = true
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await acquireOrderSubmissionLock(`futu:${input.accountId ?? 'default'}`)
+      return await this.confirmPendingOrderLocked(id, input)
+    } catch (error) {
+      return { ok: false, order: this.findPendingOrder(id), error: error instanceof Error ? error.message : '跨进程提交锁不可用。', blockedByGate: true }
+    } finally {
+      await release?.()
+      this.confirmationInProgress = false
+    }
+  }
+
+  private async confirmPendingOrderLocked(id: string, input: { confirmedBy?: LiveOrderConfirmation['confirmedBy']; confirmationId?: string; accountId?: string }): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
     const order = this.findPendingOrder(id)
     if (process.env.LIVE_TRADING_ENABLED !== 'true' || process.env.FUTU_LIVE_TRD_ENV !== 'REAL') {
       return {
@@ -175,7 +196,15 @@ class LiveOrderQueueService {
       }
     }
 
-    const account = await loadLiveAccountDashboard(input.accountId)
+    const shadowFailure = shadowOrderExecutionFailure(order)
+    if (shadowFailure) return { ok: false, order, error: shadowFailure, blockedByGate: true }
+    const latestMarket = realtimeStore.snapshot(order.intent.ticker)
+    const currentPrice = Number(latestMarket.quote?.price.replace(/[$,%\s,]/g, ''))
+    const marketFailure = livePromptMarketFailure(order, currentPrice, latestMarket.updatedAt)
+    if (marketFailure) return { ok: false, order, error: marketFailure, blockedByGate: true }
+    const market = llmUniverseItem(order.intent.ticker)?.market === 'HK' ? 'HK' : 'US'
+    const currency = market === 'HK' ? 'HKD' : 'USD'
+    const account = await loadLiveAccountDashboard({ accountId: input.accountId, market, tradingCurrency: currency, refreshCache: true })
     if (!account.ok || account.selectedAccountId === 'unavailable') {
       return {
         ok: false,
@@ -185,6 +214,18 @@ class LiveOrderQueueService {
       }
     }
 
+    const accountFailure = finalAccountOrderFailure('futu', account, order.intent, currency)
+    if (accountFailure) return { ok: false, order, error: accountFailure, blockedByGate: true }
+    if (input.accountId && input.accountId !== account.selectedAccountId) return { ok: false, order, error: '返回账户与指定账户不匹配，禁止提交。', blockedByGate: true }
+    const position = account.positions.find(p => ['STOCK', 'ETF'].includes(p.assetType) && p.ticker === order.intent.ticker)
+    const opening = order.intent.side === 'SELL_SHORT' || (order.intent.side === 'BUY' && !(Number(position?.quantity) < 0))
+    if (opening) {
+      const { openingRiskRejectionReason } = await import('./liveTradingEngine.js')
+      const failure = openingRiskRejectionReason(account, { ...order.llmDecision, action: order.intent.side, ticker: order.intent.ticker, orderQuantity: order.intent.quantity },
+        order.intent.limitPrice, getTradeStrategyRuntimeConfig('live').activeStrategy, realtimeStore.snapshot(order.intent.ticker).quote?.lotSize)
+      if (failure) return { ok: false, order, error: failure, blockedByGate: true }
+    }
+    if (this.findPendingOrder(id)?.status !== 'PENDING_CONFIRMATION') return { ok: false, order, error: '订单状态已改变，禁止提交。', blockedByGate: true }
     const confirmedAt = new Date().toISOString()
     const confirmation: LiveOrderConfirmation = {
       confirmedAt,

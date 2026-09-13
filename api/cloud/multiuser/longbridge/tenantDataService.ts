@@ -65,9 +65,9 @@ export async function loadTenantWorkbench(
   const { quote, trade } = contextsForConnection(connection)
   const balances = await trade.accountBalance(currency)
   const positionResponse = await trade.stockPositions()
-  const balance = balances.find((item) => item.currency === currency) ?? balances[0]
+  const balance = balances.find((item) => item.currency === currency)
+  if (!balance) throw new Error('当前交易币种账户数据缺失，禁止使用其他币种代替。')
   const cashInfo = balance?.cashInfos?.find((item) => item.currency === currency)
-    ?? balance?.cashInfos?.[0]
   const rawPositions = positionResponse.channels.flatMap((channel) => channel.positions)
   const quotes = rawPositions.length
     ? await quote.quote(rawPositions.map((position) => position.symbol))
@@ -82,6 +82,7 @@ export async function loadTenantWorkbench(
       symbol: position.symbol,
       name: position.symbolName,
       quantity: text(position.quantity),
+      availableToClose: position.availableQuantity == null ? null : Number(position.availableQuantity.toString()),
       marketValue: usd(marketValue),
       averageCost: usd(averageCost),
       currentPrice: usd(currentPrice),
@@ -118,7 +119,7 @@ export async function loadTenantWorkbench(
     accountMetrics: [
       { label: '账户净资产', value: currencyMoney(balance?.netAssets, currency), helper: balance?.currency ?? currency },
       { label: '账户现金', value: currencyMoney(balance?.totalCash, currency), helper: balance?.currency ?? currency },
-      { label: '现金可用', value: currencyMoney(cashInfo?.availableCash ?? balance?.totalCash, currency), helper: balance?.currency ?? currency },
+      { label: '现金可用', value: currencyMoney(cashInfo?.availableCash, currency), helper: balance?.currency ?? currency },
       { label: '最大购买力', value: currencyMoney(balance?.buyPower, currency), helper: balance?.currency ?? currency },
       { label: '风险等级', value: String(balance?.riskLevel ?? '未知'), helper: '当前绑定账户' },
     ],

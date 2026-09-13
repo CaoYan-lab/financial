@@ -245,6 +245,12 @@ class LongbridgeLiveTradingEngine {
       dataWindow,
       trendContext,
       managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === marketData.ticker.toUpperCase()),
+      pendingOrders: longbridgeOrderQueueService.activePendingOrders().map(order => ({
+        ticker: order.intent.ticker,
+        intent: order.intent,
+        llmDecision: order.llmDecision,
+        status: order.status,
+      })),
       blockOpeningWhenCashNegative,
     })
     const orderSession = orderSessionForMarketState(marketData.marketState)
@@ -275,7 +281,7 @@ class LongbridgeLiveTradingEngine {
 
     if (!riskRejectionReason && decision.ok && decision.approved && decision.action !== 'HOLD' && decision.orderQuantity > 0) {
       if (executionMode === 'candidate_pool') {
-        const candidate = longbridgeCandidatePoolService.upsert({ signal, decision, marketData })
+        const candidate = longbridgeCandidatePoolService.upsert({ signal, decision, marketData, trendContext })
           if (options.reviewAfterCandidate ?? true) {
             const promoted = await this.reviewCandidatePool(account)
             const promotedStates = await this.loadMarketStates(promoted.map((item) => item.ticker))
@@ -398,7 +404,7 @@ class LongbridgeLiveTradingEngine {
         sameGroupMutualExclusion: false,
         humanConfirmationRequired: true,
       },
-    })
+    }, { broker: 'longbridge' })
     if (!review.ok) return []
     const promoted = longbridgeCandidatePoolService.applyReview(review)
     const allowed = []
@@ -680,8 +686,8 @@ function pendingOrderFromDecision(
     signal,
     llmDecision: decision,
     riskWarnings: [
-      '长桥实盘 dry-run：该订单只进入长桥待确认队列，不会自动提交真实订单。',
-      '真实提交接口当前受 LONGBRIDGE_LIVE_TRADING_ENABLED 门禁保护。',
+      '订单进入统一提交队列；自动提交仍须通过长桥实盘门禁、账户复核、行情重采样和跨进程提交锁。',
+      '新版提示词的失效价与退出条件属于风险契约，不代表券商侧已创建止损单。',
     ],
     decisionMode: getTradeStrategyRuntimeConfig('live').selection.executionMode,
   }

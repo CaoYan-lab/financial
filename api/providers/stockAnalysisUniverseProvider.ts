@@ -1,6 +1,8 @@
 import { DATA_SOURCES, UNAVAILABLE } from '../../shared/constants.js'
 import type { DataSourceCitation, UniverseCompany } from '../../shared/types.js'
 
+const UNIVERSE_REQUEST_TIMEOUT_MS = 15_000
+
 const seedCompanies = [
   ['NVDA', 'NVIDIA', 'United States'],
   ['MSFT', 'Microsoft', 'United States'],
@@ -48,7 +50,9 @@ export async function fetchUniverseFromStockAnalysis(asOfDate?: string): Promise
   const source = citation(DATA_SOURCES.universePrimary, timestamp)
 
   try {
-    const response = await fetch(DATA_SOURCES.universePrimary)
+    const response = await fetch(DATA_SOURCES.universePrimary, {
+      signal: AbortSignal.timeout(UNIVERSE_REQUEST_TIMEOUT_MS),
+    })
     if (!response.ok) {
       throw new Error(`StockAnalysis returned ${response.status}`)
     }

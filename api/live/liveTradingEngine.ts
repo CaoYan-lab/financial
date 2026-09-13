@@ -282,6 +282,12 @@ class LiveTradingEngine {
         riskModel: buildRiskModelDescription('live'),
         trendContext,
         managedOpenOrders: managedOpenOrders.filter((order) => order.ticker.toUpperCase() === ticker.toUpperCase()),
+        pendingOrders: liveOrderQueueService.activePendingOrders().map(order => ({
+          ticker: order.intent.ticker,
+          intent: order.intent,
+          llmDecision: order.llmDecision,
+          status: order.status,
+        })),
       })
       logger.info(
         {
@@ -456,7 +462,7 @@ class LiveTradingEngine {
             sameGroupMutualExclusion: false,
             humanConfirmationRequired: true,
           },
-        })
+        }, { broker: 'futu' })
         const promotedCandidates = portfolioDecision.ok ? liveCandidatePoolService.applyReview(portfolioDecision) : []
         logger.info(
           {

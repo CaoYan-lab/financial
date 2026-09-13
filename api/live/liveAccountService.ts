@@ -2,6 +2,7 @@ import type { AccountDashboardResponse, LiveAccountDashboardResponse, Position }
 import { runPythonBridge } from '../utils/runPythonBridge.js'
 
 export type LiveAccountDashboardOptions = {
+  refreshCache?: boolean
   accountId?: string
   market?: 'US' | 'HK' | 'CN'
   tradingCurrency?: 'USD' | 'HKD' | 'CNY'
@@ -15,7 +16,8 @@ export async function loadLiveAccountDashboard(accountIdOrOptions?: string | Liv
     accountId: options.accountId,
     market: options.market ?? 'US',
     tradingCurrency: options.tradingCurrency ?? 'USD',
-  })
+    refreshCache: options.refreshCache === true,
+  }, { timeoutMs: 30_000 })
 
   if (bridge.ok && bridge.data) return normalizeLiveAccount(bridge.data)
 

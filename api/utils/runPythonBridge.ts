@@ -13,7 +13,7 @@ export type PythonBridgeResult<T> = {
   stderr?: string
 }
 
-export async function runPythonBridge<T>(scriptName: string, payload: unknown): Promise<PythonBridgeResult<T>> {
+export async function runPythonBridge<T>(scriptName: string, payload: unknown, options: { timeoutMs?: number } = {}): Promise<PythonBridgeResult<T>> {
   const pythonBin = process.env.FUTU_PYTHON_BIN || 'python3'
   const scriptPath = path.resolve(__dirname, '..', 'futu_bridge', scriptName)
   const projectRoot = path.resolve(__dirname, '..', '..')
@@ -34,6 +34,11 @@ export async function runPythonBridge<T>(scriptName: string, payload: unknown): 
     })
     let stdout = ''
     let stderr = ''
+    let timedOut = false
+    const timeout = options.timeoutMs ? setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, options.timeoutMs) : undefined
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString()
@@ -42,9 +47,15 @@ export async function runPythonBridge<T>(scriptName: string, payload: unknown): 
       stderr += chunk.toString()
     })
     child.on('error', (error) => {
+      clearTimeout(timeout)
       resolve({ ok: false, error: error.message, stderr })
     })
     child.on('close', (code) => {
+      clearTimeout(timeout)
+      if (timedOut) {
+        resolve({ ok: false, error: 'Account read timed out; snapshot unavailable.', stderr })
+        return
+      }
       if (code !== 0) {
         resolve({ ok: false, error: `Python bridge exited with code ${code}`, stderr })
         return
@@ -64,6 +75,9 @@ export async function runPythonBridge<T>(scriptName: string, payload: unknown): 
       }
     })
 
+    child.stdin.on('error', () => {
+      child.kill('SIGKILL')
+    })
     child.stdin.write(JSON.stringify(payload))
     child.stdin.end()
   })

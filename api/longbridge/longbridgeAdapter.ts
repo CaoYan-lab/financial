@@ -22,6 +22,7 @@ import {
 import {
   longbridgeFinancingOpeningRestricted,
   longbridgeFinancingRiskLabel,
+  parseLongbridgeRiskLevel,
 } from './longbridgeRiskService.js'
 
 const LONGBRIDGE_SKILLS = [
@@ -117,16 +118,21 @@ export async function loadLongbridgeLiveAccountDashboard(
   const assets = sourceStatus.accountDataAvailable
     ? await loadAssetRecord(warnings, currency, options.force)
     : {}
-  const positions = sourceStatus.accountDataAvailable ? await loadPositions(warnings, currency) : []
-  const now = new Date().toISOString()
-  const availableCash = assetValue(assets, 'available_cash') ?? firstCashInfoValue(assets, 'available_cash') ?? assetValue(assets, 'total_cash')
+  let positions: LongbridgePosition[] = []
+  let positionsRead = sourceStatus.accountDataAvailable
+  try {
+    if (positionsRead) positions = await loadPositions(warnings, currency, true)
+  } catch {
+    positionsRead = false
+    warnings.push('长桥持仓查询失败，不能将缺失持仓视为空仓。')
+  }
+  const now = typeof assets.source_checked_at === 'string' ? assets.source_checked_at : new Date().toISOString()
+  const availableCash = assetValue(assets, 'available_cash') ?? firstCashInfoValue(assets, 'available_cash')
   const totalCash = assetValue(assets, 'total_cash') ?? firstCashInfoValue(assets, 'available_cash')
   const buyPower = assetValue(assets, 'buy_power')
   const netAssets = assetValue(assets, 'net_assets')
-  const financingRiskLevelValue = Number(assetValue(assets, 'risk_level'))
-  const financingRiskLevel = Number.isFinite(financingRiskLevelValue)
-    ? financingRiskLevelValue
-    : undefined
+  const financingRiskLevel = parseLongbridgeRiskLevel(assetValue(assets, 'risk_level'))
+  const currencyMatches = assets.currency === currency
   const initialMargin = formatCurrency(assetValue(assets, 'init_margin'), currency)
   const maintenanceMargin = formatCurrency(assetValue(assets, 'maintenance_margin'), currency)
   const marginCall = formatCurrency(assetValue(assets, 'margin_call'), currency)
@@ -140,7 +146,8 @@ export async function loadLongbridgeLiveAccountDashboard(
     marginCall,
   })
   return {
-    ok: sourceStatus.accountDataAvailable,
+    ok: sourceStatus.accountDataAvailable && positionsRead && currencyMatches
+      && Number.isFinite(Number(netAssets)) && Number.isFinite(Number(buyPower)),
     selectedAccountId: 'longbridge-real',
     summary: {
       accountId: 'longbridge-real',
@@ -150,6 +157,8 @@ export async function loadLongbridgeLiveAccountDashboard(
       availableFunds: formatCurrency(availableCash, currency),
       buyingPower: formatCurrency(buyPower, currency),
       financingRiskLevel,
+      financingCurrency: typeof assets.currency === 'string' ? assets.currency : undefined,
+      financingEquity: formatCurrency(netAssets, currency),
       financingRiskLabel: longbridgeFinancingRiskLabel(financingRiskLevel),
       financingOpeningRestricted,
       initialMargin,
@@ -230,7 +239,8 @@ async function loadAssetRecord(
 ): Promise<Record<string, unknown>> {
   if (longbridgeSdkCredentialsConfigured()) {
     try {
-      return (await loadLongbridgeSdkAccountSnapshot({ currency, force })).assets
+      const snapshot = await loadLongbridgeSdkAccountSnapshot({ currency, force })
+      return { ...snapshot.assets, source_checked_at: snapshot.checkedAt }
     } catch (error) {
       warnings.push(`Longbridge SDK 账户资产读取失败：${error instanceof Error ? error.message : String(error)}`)
       return {}
@@ -253,11 +263,13 @@ async function loadAssetRecord(
 async function loadPositions(
   warnings: string[],
   currency: LongbridgeAccountCurrency = 'USD',
+  strict = false,
 ): Promise<LongbridgePosition[]> {
   if (longbridgeSdkCredentialsConfigured()) {
     try {
       return (await loadLongbridgeSdkAccountSnapshot({ currency })).positions
     } catch (error) {
+      if (strict) throw error
       warnings.push(`Longbridge SDK 持仓读取失败：${error instanceof Error ? error.message : String(error)}`)
       return []
     }
@@ -265,11 +277,15 @@ async function loadPositions(
 
   const result = await runLongbridgeCli(['positions', '--format', 'json'])
   if (!result.ok) {
+    if (strict) throw new Error('Longbridge position query failed')
     warnings.push(`Longbridge positions 读取失败：${result.stderr || result.error || 'unknown error'}`)
     return []
   }
   const parsed = parseJsonOutput<unknown[]>(result)
-  if (!Array.isArray(parsed)) return []
+  if (!Array.isArray(parsed)) {
+    if (strict) throw new Error('Longbridge position response invalid')
+    return []
+  }
   return parsed.map((item) => normalizePosition(item as Record<string, unknown>))
 }
 
@@ -278,6 +294,7 @@ function normalizePosition(item: Record<string, unknown>): LongbridgePosition {
     symbol: formatUnknown(item.symbol ?? item.stock_code ?? item.code),
     name: formatUnknown(item.name ?? item.stock_name),
     quantity: formatUnknown(item.quantity ?? item.qty),
+    availableToClose: typeof item.available_quantity === 'number' ? item.available_quantity : null,
     marketValue: formatUnknown(item.market_value),
     averageCost: formatUnknown(item.average_cost ?? item.cost_price),
     currentPrice: formatUnknown(item.current_price ?? item.last_price),
@@ -297,6 +314,7 @@ function toSharedPosition(position: LongbridgePosition): Position {
     assetType: 'STOCK',
     underlyingTicker: ticker,
     quantity: position.quantity,
+    availableToClose: position.availableToClose ?? null,
     marketValue: position.marketValue,
     averageCost: position.averageCost,
     currentPrice: position.currentPrice,

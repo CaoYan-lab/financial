@@ -5,6 +5,7 @@ import { livePersistence } from './livePersistence.js'
 import { llmUniverseItem } from '../simulation/simulationUniverse.js'
 import { getActiveLivePortfolioReviewPrompt } from '../trade_strategy/tradeStrategyConfigService.js'
 import { logger } from '../utils/logger.js'
+import { candidateProductionEvidence } from './tradingPromptContext.js'
 
 export type LiveCandidateStatus = 'ACTIVE' | 'PROMOTED' | 'WATCH' | 'SUPPRESSED' | 'EXPIRED' | 'DISABLED_BY_MODE_SWITCH'
 
@@ -113,6 +114,7 @@ export class LiveCandidatePoolService {
 
   reviewCandidates(): LivePortfolioReviewCandidate[] {
     return this.activeCandidates().map((candidate) => ({
+      marketEvidence: candidateProductionEvidence(candidate),
       candidateId: candidate.candidateId,
       ticker: candidate.ticker,
       action: candidate.action,

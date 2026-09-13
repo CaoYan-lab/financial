@@ -4,6 +4,7 @@ import { orderSubmissionSessionFailureReason } from '../../../simulation/usOvern
 import { normalizeLongbridgeSymbol } from '../../../longbridge/longbridgeMarketSessionService.js'
 import { longbridgeTradingCurrency } from '../../../longbridge/longbridgeLotSizeService.js'
 import { longbridgeOpeningRiskRejectionReason } from '../../../longbridge/longbridgeRiskService.js'
+import { finalAccountOrderFailure, shadowOrderExecutionFailure } from '../../../live/brokerFinancingRisk.js'
 import {
   buildLongbridgeSdkOrderPayload,
   formatLongbridgeSubmittedPrice,
@@ -121,6 +122,8 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
       if (!pending || pending.status !== 'PENDING_CONFIRMATION') {
         throw new Error('未找到当前用户可提交的待确认订单')
       }
+      const shadowFailure = shadowOrderExecutionFailure(pending)
+      if (shadowFailure) throw new Error(shadowFailure)
       const symbol = normalizeLongbridgeSymbol(pending.intent.ticker)
       const account = await loadTenantAccountForTrading(
         connection,
@@ -133,7 +136,7 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
         confirmationId,
         intent: pending.intent,
       })
-      const riskFailure = longbridgeOpeningRiskRejectionReason(
+      const riskFailure = finalAccountOrderFailure('longbridge', account, pending.intent, longbridgeTradingCurrency(symbol)) ?? longbridgeOpeningRiskRejectionReason(
         account,
         {
           action: pending.intent.side,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { FutuOpenDProvider } from '../api/providers/futuOpenDProvider'
 import type { UniverseCompany } from '../shared/types'
 
@@ -70,5 +70,17 @@ describe('FutuOpenDProvider', () => {
     expect(bundle.rows[0].currentPrice).toBe('unavailable')
     expect(bundle.rows[0].sevenDayNews).toContain('Futu OpenD bridge failed')
   })
-})
 
+  it('报告快照子进程始终带超时上限', async () => {
+    const bridgeRunner = vi.fn(async () => ({ ok: false, error: 'timeout' }))
+    const provider = new FutuOpenDProvider(bridgeRunner)
+
+    await provider.fetchMarketSnapshot([universeCompany('NVDA')])
+
+    expect(bridgeRunner).toHaveBeenCalledWith(
+      'futu_snapshot.py',
+      expect.any(Object),
+      { timeoutMs: 240_000 },
+    )
+  })
+})

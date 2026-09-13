@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { createTradingPromptRouter } from './tradingPromptRoutes.js'
 import { loadLongbridgeLiveTradingConfig, loadLongbridgeSourceStatus, loadLongbridgeWorkbenchDashboard, updateLongbridgeLlmConfig, updateLongbridgeTradeStrategyConfig } from '../longbridge/longbridgeAdapter.js'
 import { longbridgeLiveTradingEngine } from '../longbridge/longbridgeLiveTradingEngine.js'
 import { ensureLongbridgeRealtimeSubscriptions, getLongbridgeRealtimeSubscriptionStatus, loadLongbridgeRealtimeStrategyMarketData } from '../longbridge/longbridgeRealtimeDataAdapter.js'
@@ -14,6 +15,7 @@ import type { LongbridgeBrokerOrderSideFilter, LongbridgeBrokerOrderStatusFilter
 import type { LivePendingOrderSideFilter, LivePendingOrderStatusFilter, LiveSignalDirectionFilter, LiveSignalLifecycleFilter } from '../../shared/types.js'
 
 const router = Router()
+router.use('/live-trading/prompt-mode', createTradingPromptRouter('longbridge'))
 
 router.get('/source/status', async (_req, res, next) => {
   try {

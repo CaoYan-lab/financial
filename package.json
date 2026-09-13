@@ -16,6 +16,7 @@
     "test:smoke:external": "./scripts/test-external-readonly.sh",
     "test:e2e": "playwright test",
     "test:release:local": "./scripts/run-local-release-tests.sh",
+    "test:prompt-matrix": "tsx scripts/test-prompt-version-matrix.ts",
     "longbridge:sdk-cache:concurrency": "tsx scripts/longbridge-sdk-cache-concurrency.ts",
     "server:dev": "nodemon",
     "server:cloud": "tsx api/cloud/cloudServer.ts",

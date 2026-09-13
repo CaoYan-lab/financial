@@ -134,9 +134,10 @@ function tradingAccount(
       marginCall: '$0.00',
       dailyPnL: '$0.00',
       totalPnL: '$0.00',
+      source: { source: 'test', accessedAt: new Date().toISOString() },
       ...summary,
     },
-    positions,
+    positions: positions.map(p => ({ assetType: 'STOCK', currency: 'USD', availableToClose: Math.abs(Number(p.quantity)), ...p })),
     risk: {
       concentrationRisk: '正常',
       largestPosition: '无',
@@ -323,7 +324,7 @@ describe('多用户 Worker runtime', () => {
 
     await expect(multiUserWorkerTestHarness.handleTenantJob(
       job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
-    )).rejects.toThrow('融资风险开仓保护已拦截')
+    )).rejects.toThrow('融资风险预警或未知')
     expect(mocks.runChild).not.toHaveBeenCalled()
   })
 
@@ -468,6 +469,7 @@ describe('多用户 Worker runtime', () => {
       },
     })
     mocks.loadLotSize.mockResolvedValueOnce(100)
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({ currency: 'HKD', tradingCurrency: 'HKD' }))
 
     await expect(multiUserWorkerTestHarness.handleTenantJob(
       job('multiuser.longbridge.submit_order', {
@@ -513,7 +515,7 @@ describe('多用户 Worker runtime', () => {
       { order_id: 'filled', payload: { submittedQuantity: 2, version: 1 }, created_at: old },
       {
         order_id: 'partial',
-        payload: { submittedQuantity: 3, orderType: 'LIMIT', submittedAt: 'old', version: 2 },
+        payload: { submittedQuantity: 3, orderType: 'LIMIT', submittedAt: old.toISOString(), version: 2 },
         created_at: old,
       },
       { order_id: 'failed-read', payload: {}, created_at: old },

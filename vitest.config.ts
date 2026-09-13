@@ -5,7 +5,7 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/**/*.integration.test.ts', 'tests/**/*.smoke.test.ts', 'tests/e2e/**'],
     pool: 'threads',
-    maxWorkers: 4,
+    maxWorkers: 2,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'html'],

@@ -280,6 +280,7 @@ describe('Longbridge order gate', () => {
     account.summary.financingRiskLabel = '危险'
     account.summary.financingOpeningRestricted = true
     account.positions = [{
+      assetType: 'STOCK',
       ticker: 'AAPL',
       name: 'Apple',
       quantity: '2',
@@ -355,6 +356,7 @@ describe('Longbridge order gate', () => {
     account.summary.buyingPower = '$3,000.00'
     account.summary.buyingPowerInTradingCurrency = '$3,000.00'
     account.positions = [{
+      assetType: 'STOCK',
       ticker: 'AAPL',
       name: 'Apple',
       quantity: '2',
@@ -395,6 +397,7 @@ describe('Longbridge order gate', () => {
     account.summary.buyingPower = '$2,000.00'
     account.summary.buyingPowerInTradingCurrency = '$2,000.00'
     account.positions = [{
+      assetType: 'STOCK',
       ticker: 'AAPL',
       name: 'Apple',
       quantity: '2',
@@ -438,6 +441,7 @@ describe('Longbridge order gate', () => {
     account.summary.buyingPower = '$2,000.00'
     account.summary.buyingPowerInTradingCurrency = '$2,000.00'
     account.positions = [{
+      assetType: 'STOCK',
       ticker: 'AAPL',
       name: 'Apple',
       quantity: '-2',

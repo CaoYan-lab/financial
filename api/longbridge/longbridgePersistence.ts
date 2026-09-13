@@ -4,6 +4,7 @@ import type { LiveCandidatePoolHistoryFilter, LiveCandidatePoolItem, LiveHistory
 import type { LongbridgeStrategyMarketData } from '../../shared/longbridgeTypes.js'
 
 type LongbridgeCandidateRecord = LiveCandidatePoolItem & {
+  trendContext?: import('../../shared/types.js').TrendContextSummary
   signal: LiveSignalHistoryItem
   decision: LlmTradingDecision
   marketData: Extract<LongbridgeStrategyMarketData, { ok: true }>

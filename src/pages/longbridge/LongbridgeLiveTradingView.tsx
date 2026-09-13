@@ -6,6 +6,7 @@ import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
 import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
+import TradingPromptModePanel from '@/components/trading/TradingPromptModePanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import BrokerOrdersTable from '@/components/BrokerOrdersTable'
 import { useLongbridgeLiveTradingConfig } from '@/hooks/useLongbridgeLiveTradingConfig'
@@ -338,6 +339,7 @@ export default function LongbridgeLiveTradingView() {
           </section>
         </section>
 
+        <TradingPromptModePanel broker="longbridge" />
         <TradeStrategyConfigPanel
           title="实盘策略与提示词版本"
           subtitle="沿用 trade_strategy 中同一份实盘策略和提示词 YAML；保存后从下一轮长桥评估生效，不绕过门禁或人工确认。"

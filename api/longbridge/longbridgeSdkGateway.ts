@@ -20,6 +20,7 @@ type TradeContextInstance = InstanceType<typeof TradeContext>
 export type LongbridgeAccountCurrency = 'USD' | 'HKD'
 
 export type LongbridgeSdkPosition = {
+  availableToClose?: number | null
   symbol: string
   name: string
   quantity: string
@@ -170,12 +171,13 @@ async function collectAccountSnapshot(
     trade.stockPositions(),
     trade.todayOrders(),
   ])
-  const balance = balances.find((item) => item.currency === currency) ?? balances[0]
+  const balance = balances.find((item) => item.currency === currency)
   const positions = positionsResponse.channels.flatMap((channel) =>
     channel.positions.map((position) => ({
       symbol: position.symbol,
       name: position.symbolName,
       quantity: decimalText(position.quantity),
+      availableToClose: position.availableQuantity == null ? null : Number(position.availableQuantity.toString()),
       averageCost: decimalText(position.costPrice),
       currency: position.currency,
     })),
@@ -197,9 +199,7 @@ async function collectAccountSnapshot(
       unrealizedPnL: finiteText((current - averageCost) * quantity),
     }
   })
-  const cashInfo = balance?.cashInfos.find((item) => item.currency === balance.currency)
-    ?? balance?.cashInfos.find((item) => item.currency === currency)
-    ?? balance?.cashInfos[0]
+  const cashInfo = balance?.cashInfos.find((item) => item.currency === currency)
 
   return {
     assets: balance
@@ -225,7 +225,7 @@ async function collectAccountSnapshot(
         }
       : {},
     positions: normalizedPositions,
-    accountReadAvailable: balances.length > 0,
+    accountReadAvailable: Boolean(balance),
     positionReadAvailable: Boolean(positionsResponse),
     orderReadAvailable: Array.isArray(orders),
     checkedAt: new Date().toISOString(),

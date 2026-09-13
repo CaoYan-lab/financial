@@ -5,12 +5,12 @@ import {
   saveBrokerExecutionSettings,
 } from '../cloud/state/brokerExecutionSettingsStore.js'
 
-let controls = defaultBrokerExecutionSettings('futu')
+let controls: BrokerExecutionSettings | undefined
 
 export function getFutuLiveSettings() {
   return {
     liveTradingEnabled: process.env.LIVE_TRADING_ENABLED === 'true' && process.env.FUTU_LIVE_TRD_ENV === 'REAL',
-    ...controls,
+    ...(controls ?? defaultBrokerExecutionSettings('futu')),
     updatedAt: new Date().toISOString(),
   }
 }
@@ -21,6 +21,9 @@ export async function hydrateFutuLiveSettings() {
 }
 
 export async function updateFutuLiveSettings(input: Partial<BrokerExecutionSettings>) {
-  controls = await saveBrokerExecutionSettings('futu', { ...controls, ...input })
+  controls = await saveBrokerExecutionSettings('futu', {
+    ...(controls ?? defaultBrokerExecutionSettings('futu')),
+    ...input,
+  })
   return getFutuLiveSettings()
 }

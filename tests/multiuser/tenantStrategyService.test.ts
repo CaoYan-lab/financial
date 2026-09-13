@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BrokerConnection } from '../../api/cloud/multiuser/types.js'
 
 const mocks = vi.hoisted(() => ({
@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => ({
   simulationTickers: vi.fn(() => ['AAPL', '00700']),
 }))
 
-vi.mock('../../api/cloud/db/pgClient.js', () => ({ query: mocks.query }))
+vi.mock('../../api/cloud/db/pgClient.js', () => ({ query: mocks.query, isPgEnabled: () => true, queryOne: vi.fn(async () => null) }))
 vi.mock('../../api/live/livePortfolioReviewDecisionService.js', () => ({
   requestLivePortfolioReviewDecision: mocks.portfolioReview,
 }))
@@ -92,6 +92,8 @@ import {
   runTenantStrategyOnce,
   runTenantStrategyPoolOnce,
 } from '../../api/cloud/multiuser/longbridge/tenantStrategyService.js'
+
+afterEach(() => vi.unstubAllEnvs())
 
 const connection: BrokerConnection = {
   id: 'binding-1',
@@ -227,6 +229,33 @@ describe('Longbridge 租户策略服务', () => {
     const result = await runTenantStrategyOnce('user-1', connection, 'aapl.us')
     expect(result).toMatchObject({ ok: true, signal: { lifecycleStatus: 'HOLD' } })
     expect(candidateEvents).toHaveLength(0)
+  })
+
+  it('新版单票影子传入租户订单与审计范围，不生成待确认单', async () => {
+    vi.stubEnv('LONGBRIDGE_SINGLE_PROMPT_MODE', 'shadow')
+    mocks.activeOrders.mockResolvedValue([{ id: 'pending-other', intent: { ticker: 'MSFT' } }])
+    mocks.tradingDecision.mockResolvedValueOnce(marketDecision({ ok: false, approved: false, action: 'HOLD', orderQuantity: 0 }))
+    const result = await runTenantStrategyOnce('user-1', connection, 'AAPL.US')
+    expect(mocks.tradingDecision).toHaveBeenCalledWith(expect.objectContaining({
+      promptScope: 'user-1:binding-1', pendingOrders: [{ ticker: 'MSFT' }],
+    }))
+    expect(result).not.toHaveProperty('pendingOrder')
+    expect(candidateEvents).toHaveLength(0)
+  })
+
+  it('新版组合影子传入候选自身行情且不晋级', async () => {
+    vi.stubEnv('LONGBRIDGE_PORTFOLIO_PROMPT_MODE', 'shadow')
+    mocks.portfolioReview.mockResolvedValueOnce({
+      ok: false, promotedCandidates: [], watchedCandidates: [], suppressedCandidates: [],
+      expiredCandidates: [], portfolioDecisionId: 'shadow', portfolioRationale: '只读', promptVersion: 'dual_broker_portfolio_shadow_v2',
+    })
+    const result = await runTenantStrategyOnce('user-1', connection, 'AAPL.US')
+    expect(result).not.toHaveProperty('pendingOrder')
+    const input = mocks.portfolioReview.mock.calls[0][0]
+    expect(input.candidates[0].marketEvidence.ticker).toBe('AAPL')
+    expect(input.candidates[0].marketEvidence.market.ticker).toBe('AAPL')
+    expect(input.candidates[0].marketEvidence.plan.limitPrice).toBe(100)
+    expect(candidateEvents.every(item => item.status !== 'REVIEW_FAILED')).toBe(true)
   })
 
   it('将租户长桥融资风险等级和保证金状态传给模型', async () => {
@@ -416,7 +445,7 @@ describe('Longbridge 租户策略服务', () => {
         account: expect.objectContaining({ selectedAccountId: connection.id }),
         positions: expect.arrayContaining([expect.objectContaining({ ticker: 'AAPL' })]),
       }),
-      { namespace: 'live' },
+      { namespace: 'live', broker: 'longbridge', promptScope: `user-1:${connection.id}` },
     )
   })
 

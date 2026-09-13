@@ -437,6 +437,7 @@ async function buildDecisionContexts(
     }
     contexts.push({
       order,
+      accountSnapshot: account,
       account: {
         totalAssets: account.summary.totalAssets,
         buyingPower: account.summary.buyingPower,

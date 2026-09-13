@@ -38,7 +38,16 @@ type FutuSnapshotPayload = {
   warnings: string[]
 }
 
-type BridgeRunner = <T>(scriptName: string, payload: unknown) => Promise<PythonBridgeResult<T>>
+type BridgeRunner = <T>(
+  scriptName: string,
+  payload: unknown,
+  options?: { timeoutMs?: number },
+) => Promise<PythonBridgeResult<T>>
+
+const FUTU_REPORT_SNAPSHOT_TIMEOUT_MS = Math.max(
+  30_000,
+  Number(process.env.FUTU_REPORT_SNAPSHOT_TIMEOUT_MS || 240_000) || 240_000,
+)
 
 export class FutuOpenDProvider implements DataProvider {
   constructor(private readonly bridgeRunner: BridgeRunner = runPythonBridge) {}
@@ -94,7 +103,7 @@ export class FutuOpenDProvider implements DataProvider {
       tickers: universe.map((company) => company.ticker),
       includeOptions: process.env.FUTU_ENABLE_OPTIONS !== 'false',
       includeTechnicals: process.env.FUTU_ENABLE_TECHNICALS !== 'false',
-    })
+    }, { timeoutMs: FUTU_REPORT_SNAPSHOT_TIMEOUT_MS })
 
     if (!bridge.ok || !bridge.data) {
       return {

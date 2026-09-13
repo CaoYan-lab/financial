@@ -6,8 +6,13 @@ import type {
 import { getActiveArkModel } from '../simulation/llmRuntimeConfigService.js'
 import { callArkResponses, parseJsonObject } from '../simulation/llmResponseUtils.js'
 import { logger } from '../utils/logger.js'
+import type { LiveAccountDashboardResponse } from '../../shared/types.js'
+import { buildManagedProductionContext } from './tradingPromptContext.js'
+import { requestProductionDecision } from './tradingPromptV2.js'
+import { resolveTradingPromptMode } from './tradingPromptReleaseService.js'
 
 export type ManagedOrderDecisionContext = {
+  accountSnapshot?: LiveAccountDashboardResponse
   order: ManagedOrder
   account: {
     totalAssets?: string
@@ -22,6 +27,28 @@ export async function requestManagedOrderDecisions(input: {
   orders: ManagedOrderDecisionContext[]
 }): Promise<Map<string, ManagedOrderDecision>> {
   if (!input.orders.length) return new Map()
+  try {
+    const mode = await resolveTradingPromptMode(input.platform, 'managed')
+    if (mode !== 'legacy') {
+      const audit = await requestProductionDecision(buildManagedProductionContext(input.platform, input.orders), mode)
+      if (mode === 'shadow' || !audit.contractValid || !audit.policyValid || !audit.output) return new Map()
+      const result = new Map<string, ManagedOrderDecision>()
+      for (const item of audit.output.decisions as Array<Record<string, unknown>>) {
+        result.set(`${item.platform}:${item.orderId}`, {
+          action: item.action as ManagedOrderDecision['action'],
+          confidence: 'high',
+          source: 'model',
+          reason: String(item.reason),
+          riskAssessment: String(item.riskAssessment),
+          decidedAt: audit.completedAt,
+        })
+      }
+      return result
+    }
+  } catch {
+    logger.warn({ event: 'managed_order.shadow.blocked', platform: input.platform }, '新版监管配置或上下文失败，不回退撤单')
+    return new Map()
+  }
   const response = await callArkResponses(buildManagedOrderPrompt(input))
   if (!response.ok) {
     const error = 'error' in response ? response.error : '挂单监管模型调用失败。'
@@ -56,7 +83,7 @@ export function buildManagedOrderPrompt(input: {
           '数据过期、状态未知或理由不足时必须 KEEP。',
           '不得建议改单、重下、修改数量或修改价格。',
         ],
-        managedOrders: input.orders,
+        managedOrders: input.orders.map(({ order, account, marketData }) => ({ order, account, marketData })),
         requiredJson: {
           decisions: [
             {

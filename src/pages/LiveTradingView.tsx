@@ -9,6 +9,7 @@ import BrokerOrdersTable from '@/components/BrokerOrdersTable'
 import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
 import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
+import TradingPromptModePanel from '@/components/trading/TradingPromptModePanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
 import { useLiveTrading } from '@/hooks/useLiveTrading'
 import { useUiStore } from '@/stores/uiStore'
@@ -327,6 +328,7 @@ export default function LiveTradingView() {
           </section>
         </section>
 
+        <TradingPromptModePanel broker="futu" />
         <TradeStrategyConfigPanel
           title="实盘策略与提示词版本"
           subtitle="实盘策略选择独立保存；保存后从下一轮评估生效，不绕过门禁或人工确认。"

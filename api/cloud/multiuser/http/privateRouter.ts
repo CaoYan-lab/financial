@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Response } from 'express'
+import { handlePromptMode } from '../../../routes/tradingPromptRoutes.js'
 import { query, queryOne } from '../../db/pgClient.js'
 import { multiUserEnabled } from '../auth/multiUserAuthService.js'
 import { validatePassword, verifyPassword } from '../auth/passwordService.js'
@@ -862,6 +863,11 @@ function registerTenantLongbridgeRoutes(router: Router): void {
       })
       res.json({ ok: true, expiredCount: expired.length, expired })
     }))
+
+  router.get('/longbridge/live-trading/prompt-mode', (req: MultiUserRequest, res, next) =>
+    memberOnly(req, res, next, async connection => { await handlePromptMode(req, res, 'longbridge', `${req.multiUser!.userId}:${connection.id}`) }))
+  router.put('/longbridge/live-trading/prompt-mode', (req: MultiUserRequest, res, next) =>
+    memberOnly(req, res, next, async connection => { await handlePromptMode(req, res, 'longbridge', `${req.multiUser!.userId}:${connection.id}`) }))
 
   router.use('/longbridge', (req: MultiUserRequest, res: Response, next: NextFunction) => {
     if (req.multiUser?.role === 'owner') {

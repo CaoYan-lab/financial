@@ -42,7 +42,7 @@ const productionPaths = [
   '/longbridge/live-trading/pending-orders/:id/confirm',
   '/longbridge/live-trading/pending-orders/:id/reject',
   '/longbridge/live-trading/pending-orders/batch-expire',
-  '/report/generate', '/report/latest', '/report/history',
+  '/report/generate', '/report/jobs/:jobId', '/report/latest', '/report/history',
   '/simulation/dashboard', '/simulation/start', '/simulation/stop', '/simulation/run-once',
   '/realtime/status', '/realtime/:ticker', '/trade/preview', '/source/status',
 ] as const

@@ -27,8 +27,8 @@ def main():
         target_currency = str(payload.get("tradingCurrency") or currency_for_market(target_market)).upper()
         trade_ctx = OpenSecTradeContext(filter_trdmarket=trd_market_enum(TrdMarket, target_market), host=host, port=port, ai_type=1)
         account_id = fetch_account_id(trade_ctx, payload.get("accountId"), target_market)
-        summary = fetch_summary(trade_ctx, TrdEnv, source, account_id, target_currency)
-        positions = fetch_positions(trade_ctx, TrdEnv, account_id)
+        summary = fetch_summary(trade_ctx, TrdEnv, source, account_id, target_currency, payload.get("refreshCache") is True)
+        positions = fetch_positions(trade_ctx, TrdEnv, account_id, payload.get("refreshCache") is True)
         risk = build_risk(summary, positions)
         write_json(
             {
@@ -85,29 +85,44 @@ def fetch_account_id(trade_ctx, requested_account_id=None, target_market="US"):
     return 0
 
 
-def fetch_summary(trade_ctx, TrdEnv, source, account_id=0, target_currency="USD"):
-    ret, data = trade_ctx.accinfo_query(trd_env=TrdEnv.REAL, acc_id=account_id)
+def first_number(*values):
+    for value in values:
+        number = safe_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def fetch_summary(trade_ctx, TrdEnv, source, account_id=0, target_currency="USD", refresh_cache=False):
+    ret, data = trade_ctx.accinfo_query(trd_env=TrdEnv.REAL, acc_id=account_id, refresh_cache=refresh_cache)
     if ret != 0 or data is None or data.empty:
-        return unavailable_summary(source)
+        raise RuntimeError("Account funds query failed or returned no account")
     row = data.iloc[0]
-    buying_power = row.get("max_power_short") or row.get("power")
-    generic_currency = str(row.get("currency", target_currency)).upper()
+    # power and max_power_short describe different trading directions.
+    buying_power = first_number(row.get("power"))
+    generic_currency = str(row.get("currency", "")).upper()
     total_assets_in_target = currency_specific_value(row, target_currency, "assets", row.get("total_assets"))
     cash_in_target = currency_specific_value(row, target_currency, "cash", row.get("cash"))
-    available_in_target = currency_specific_value(row, target_currency, "available", row.get("avl_withdrawal_cash") or row.get("available_funds"))
+    available_in_target = currency_specific_value(row, target_currency, "available", first_number(row.get("avl_withdrawal_cash"), row.get("available_funds")))
     buying_power_in_target = currency_specific_value(row, target_currency, "buying_power", buying_power)
     return {
         "accountId": str(row.get("acc_id", account_id or UNAVAILABLE)),
         "currency": generic_currency,
         "totalAssets": currency_money(row.get("total_assets"), generic_currency),
         "cash": currency_money(row.get("cash"), generic_currency),
-        "availableFunds": currency_money(row.get("avl_withdrawal_cash") or row.get("available_funds"), generic_currency),
+        "availableFunds": currency_money(first_number(row.get("avl_withdrawal_cash"), row.get("available_funds")), generic_currency),
         "buyingPower": currency_money(buying_power, generic_currency),
         "tradingCurrency": target_currency,
         "totalAssetsInTradingCurrency": currency_money(total_assets_in_target, target_currency),
         "cashInTradingCurrency": currency_money(cash_in_target, target_currency),
         "availableFundsInTradingCurrency": currency_money(available_in_target, target_currency),
         "buyingPowerInTradingCurrency": currency_money(buying_power_in_target, target_currency),
+        "futuExposureLevel": str(row.get("exposure_level", "NONE")),
+        "futuRiskStatus": str(row.get("risk_status", "NONE")),
+        "financingCurrency": generic_currency,
+        "financingEquity": currency_money(row.get("total_assets"), generic_currency),
+        "initialMargin": currency_money(row.get("initial_margin"), generic_currency),
+        "maintenanceMargin": currency_money(row.get("maintenance_margin"), generic_currency),
         "dailyPnL": currency_money(row.get("today_pl_val"), generic_currency),
         "totalPnL": currency_money(row.get("total_pl_val"), generic_currency),
         "source": source,
@@ -115,21 +130,23 @@ def fetch_summary(trade_ctx, TrdEnv, source, account_id=0, target_currency="USD"
 
 
 def currency_money(value, currency):
+    if currency not in ["USD", "HKD", "CNY"]:
+        return UNAVAILABLE
     formatted = money(value)
-    if formatted == UNAVAILABLE or str(currency).upper() != "HKD":
+    if formatted == UNAVAILABLE:
         return formatted
-    return f"HK{formatted}"
+    return f"HK{formatted}" if currency == "HKD" else f"CNY {formatted[1:]}" if currency == "CNY" else formatted
 
 
 def currency_specific_value(row, target_currency, kind, generic_value):
     target_currency = str(target_currency).upper()
     if target_currency == "USD":
         if kind == "assets":
-            return row.get("usd_assets")
+            return first_number(row.get("usd_assets"), generic_value if row.get("currency") == "USD" else None)
         if kind == "cash":
-            return row.get("us_cash")
+            return first_number(row.get("us_cash"), generic_value if row.get("currency") == "USD" else None)
         if kind == "available":
-            return row.get("us_avl_withdrawal_cash") or row.get("usd_net_cash_power")
+            return first_number(row.get("us_avl_withdrawal_cash"), row.get("usd_net_cash_power"), generic_value if row.get("currency") == "USD" else None)
         return trading_currency_value(row, generic_value)
     if target_currency == "HKD":
         for field in fields_for_currency("hk", kind):
@@ -155,37 +172,25 @@ def fields_for_currency(prefix, kind):
         return [f"{prefix}_cash"]
     if kind == "available":
         return [f"{prefix}_avl_withdrawal_cash", f"{prefix}_available_funds", f"{prefix}_net_cash_power"]
-    return [f"{prefix}_max_power_short", f"{prefix}_power", f"{prefix}_buying_power", f"{prefix}_net_cash_power"]
+    return [f"{prefix}_power", f"{prefix}_buying_power"]
 
 
 def trading_currency_value(row, value):
     numeric = safe_float(value)
     if numeric is None:
         return None
-    currency = str(row.get("currency", "USD")).upper()
+    currency = str(row.get("currency", "")).upper()
     if currency == "USD":
         return numeric
-    fx_rate = implied_usd_fx_rate(row)
-    if fx_rate is None or fx_rate <= 0:
-        return None
-    return numeric / fx_rate
-
-
-def implied_usd_fx_rate(row):
-    cash = safe_float(row.get("cash"))
-    us_cash = safe_float(row.get("us_cash"))
-    if cash and us_cash and us_cash > 0:
-        return cash / us_cash
-    total_assets = safe_float(row.get("total_assets"))
-    usd_assets = safe_float(row.get("usd_assets"))
-    if total_assets and usd_assets and usd_assets > 0:
-        return total_assets / usd_assets
+    # Currency balances are not an exchange rate or a convertible buying limit.
     return None
 
 
-def fetch_positions(trade_ctx, TrdEnv, account_id=0):
-    ret, data = trade_ctx.position_list_query(trd_env=TrdEnv.REAL, acc_id=account_id)
-    if ret != 0 or data is None or data.empty:
+def fetch_positions(trade_ctx, TrdEnv, account_id=0, refresh_cache=False):
+    ret, data = trade_ctx.position_list_query(trd_env=TrdEnv.REAL, acc_id=account_id, refresh_cache=refresh_cache)
+    if ret != 0 or data is None:
+        raise RuntimeError("Account positions query failed")
+    if data.empty:
         return []
     total_value = sum([safe_float(value) or 0 for value in data.get("market_val", [])]) or 0
     positions = []
@@ -216,6 +221,7 @@ def fetch_positions(trade_ctx, TrdEnv, account_id=0):
                 "optionPositionType": option_position,
                 "underlyingDirectionalExposure": underlying_exposure,
                 "quantity": str(row.get("qty", UNAVAILABLE)),
+                "availableToClose": available_to_close(row.get("can_sell_qty"), quantity),
                 "marketValue": market_cap(market_value),
                 "averageCost": money(row.get("cost_price")),
                 "currentPrice": money(row.get("nominal_price")),
@@ -227,6 +233,13 @@ def fetch_positions(trade_ctx, TrdEnv, account_id=0):
             }
         )
     return positions
+
+
+def available_to_close(raw, quantity):
+    value = safe_float(raw)
+    if value is None or quantity is None or value < 0 or value > abs(quantity):
+        return None
+    return value
 
 
 def detect_asset_type(row, ticker, code):
