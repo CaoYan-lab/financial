@@ -51,6 +51,7 @@ const runId = `prompt-matrix-${new Date().toISOString().replace(/[:.]/g, '-')}-$
 const startedAt = new Date().toISOString()
 const universe = [...LLM_SIMULATION_UNIVERSE]
 const totalCases = universe.length * 4
+const accountCache = new Map<string, { loadedAt: number; promise: Promise<LiveAccountDashboardResponse> }>()
 createTradingPromptComparisonRun({
   id: runId, startedAt, completedAt: null, status: 'RUNNING',
   universeCount: universe.length, totalCases, completedCases: 0,
@@ -233,8 +234,6 @@ async function evaluate(broker: TradingPromptBroker, mode: 'legacy' | 'live', co
     createdAt,
   })
 }
-
-const accountCache = new Map<string, { loadedAt: number; promise: Promise<LiveAccountDashboardResponse> }>()
 
 function freshAccount(broker: TradingPromptBroker, currency: 'USD' | 'HKD') {
   const key = `${broker}:${currency}`
