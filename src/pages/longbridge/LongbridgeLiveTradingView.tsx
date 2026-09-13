@@ -349,6 +349,7 @@ export default function LongbridgeLiveTradingView() {
           showPortfolioExecutionMode
           eyebrow="策略配置"
           accent="longbridge"
+          broker="longbridge"
           onSave={saveTradeStrategyConfig}
         />
 

@@ -11,7 +11,7 @@ vi.mock('../api/simulation/llmResponseUtils', () => ({
 vi.mock('../api/trade_strategy/tradeStrategyConfigService', () => ({
   getTradeStrategyRuntimeConfig: () => ({ activeStrategy: { id: 'real-config', riskControls: { portfolioHeat: { maxPctEquity: 0.05 } }, trendFilters: {} } }),
 }))
-import { requestProductionDecision, requestProductionShadow, tradingPromptMode, validateProductionOutput } from '../api/live/tradingPromptV2'
+import { buildProductionPrompt, productionPromptInstruction, requestProductionDecision, requestProductionShadow, tradingPromptMode, validateProductionOutput } from '../api/live/tradingPromptV2'
 import { buildSingleProductionContext, buildPortfolioProductionContext, buildManagedProductionContext, candidateProductionEvidence } from '../api/live/tradingPromptContext'
 import { requestLongbridgeLiveTradingDecision } from '../api/longbridge/longbridgeLiveDecisionService'
 import { requestLiveTradingDecision } from '../api/live/liveTradingDecisionService'
@@ -67,6 +67,12 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(tradingPromptMode('longbridge', 'single')).toBe('live')
     vi.stubEnv('LONGBRIDGE_PROMPT_MODE', 'invalid')
     expect(() => tradingPromptMode('longbridge', 'single')).toThrow()
+  })
+
+  it('界面展示的新版指令与模型请求使用同一生成函数', () => {
+    const ctx = buildSingleProductionContext('futu', single())
+    expect(productionPromptInstruction('futu', 'single', 'live')).toBe(buildProductionPrompt(ctx, 'live')[0].content)
+    expect(productionPromptInstruction('futu', 'single', 'shadow')).toBe(buildProductionPrompt(ctx, 'shadow')[0].content)
   })
 
   it.each(['futu', 'longbridge'] as const)('%s单票真实入口保留完整输出但不批准订单', async broker => {

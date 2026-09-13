@@ -9,6 +9,15 @@ export type TradingPromptReleaseStatus = {
   liveAvailable: boolean
   blockers: string[]
   updatedAt: string | null
+  productionPrompt: {
+    version: string
+    label: string
+    source: string
+    roles: Record<TradingPromptRole, {
+      label: string
+      instruction: string
+    }>
+  }
 }
 export type TradingPromptAudit = {
   requestId: string

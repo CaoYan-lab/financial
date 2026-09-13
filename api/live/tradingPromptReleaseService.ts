@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import type { TradingPromptBroker, TradingPromptReleaseStatus, TradingPromptRole } from '../../shared/tradingPromptTypes.js'
 import { isPgEnabled, queryOne } from '../cloud/db/pgClient.js'
+import { productionPromptInstruction, productionPromptVersion } from './tradingPromptV2.js'
 
 const roles: TradingPromptRole[] = ['single', 'portfolio', 'managed']
 type RecordValue = {
@@ -81,6 +82,15 @@ export async function tradingPromptReleaseStatus(broker: TradingPromptBroker, sc
     revision: record?.revision ?? 0, selectedMode: record?.mode ?? 'legacy', effectiveModes, environmentOverrides,
     updatedAt: record?.updatedAt ?? null, liveAvailable: scope === 'default',
     blockers: scope === 'default' ? [] : ['租户挂单模型监管链路尚未接入新版'],
+    productionPrompt: {
+      version: productionPromptVersion,
+      label: `双券商生产提示词 ${productionPromptVersion}`,
+      source: 'api/live/tradingPromptV2.ts',
+      roles: Object.fromEntries(roles.map(role => [role, {
+        label: role === 'single' ? '单票决策' : role === 'portfolio' ? '组合裁决' : '挂单监管',
+        instruction: productionPromptInstruction(broker, role, effectiveModes[role] === 'live' ? 'live' : 'shadow'),
+      }])) as TradingPromptReleaseStatus['productionPrompt']['roles'],
+    },
   }
 }
 

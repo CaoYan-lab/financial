@@ -336,6 +336,7 @@ export default function LiveTradingView() {
           saving={savingConfig}
           dark
           showPortfolioExecutionMode
+          broker="futu"
           onSave={saveTradeStrategyConfig}
         />
 

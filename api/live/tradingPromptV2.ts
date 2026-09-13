@@ -66,10 +66,24 @@ const rules: Record<TradingPromptRole, string> = {
   managed: '只能对已知订单KEEP/CANCEL，每单恰好一次。CANCEL仅撤未成交剩余量，不改单、不重下、不追价。状态未知、过期、不可撤、未确认归属或撤单中时KEEP并请求刷新订单。有效且确认是开仓的可撤单在明确融资风险BLOCKED时可建议CANCEL，即使行情过期；风险UNKNOWN不推断必须撤单。保护性减仓或回补单不可仅因融资预警、零购买力或行情缺失而撤掉。原始订单缺少positionEffect时，不以BUY/SELL和当前持仓猜测原订单的开平仓效果，KEEP并请求核验。不得把当前持仓为零当成原订单就是开仓。撤单确认前不释放预算。',
 }
 
+export function productionPromptInstruction(
+  broker: TradingPromptBroker,
+  role: TradingPromptRole,
+  mode: 'shadow' | 'live',
+) {
+  const live = mode === 'live'
+  return `${broker === 'futu' ? '富途' : '长桥'}。${common.replace(
+    '当前为生产真实数据只读影子模式，不下单不撤单。',
+    live
+      ? '当前为生产真实数据实盘决策模式；输出仍须经过后端硬风控、重新采样和原子提交。'
+      : '当前为生产真实数据只读影子模式，不下单不撤单。',
+  )}\n${rules[role]}`
+}
+
 export function buildProductionPrompt(ctx: ProductionPromptContext, mode: 'shadow' | 'live' = 'shadow') {
   const live = mode === 'live'
   return [
-    { role: 'system', content: `${ctx.broker === 'futu' ? '富途' : '长桥'}。${common.replace('当前为生产真实数据只读影子模式，不下单不撤单。', live ? '当前为生产真实数据实盘决策模式；输出仍须经过后端硬风控、重新采样和原子提交。' : '当前为生产真实数据只读影子模式，不下单不撤单。')}\n${rules[ctx.role]}` },
+    { role: 'system', content: productionPromptInstruction(ctx.broker, ctx.role, mode) },
     { role: 'user', content: JSON.stringify({ ...ctx.facts, runtime: { mode: live ? 'LIVE' : 'SHADOW', ordersEnabled: live }, dataGaps: ctx.dataGaps, evidenceCatalog: ctx.evidence, outputContract: productionOutputSchema(ctx) }) },
   ]
 }

@@ -339,13 +339,23 @@ for (const broker of ['futu', 'longbridge'] as const) {
     await page.route('**/prompt-mode', async route => {
       if (route.request().method() === 'PUT') {
         const body = route.request().postDataJSON()
-        expect(body).toEqual({ mode: 'live', expectedRevision: 0, confirmed: true })
+        expect(body).toEqual({ mode: revision === 0 ? 'live' : 'legacy', expectedRevision: revision, confirmed: true })
         revision++
         mode = body.mode
       }
       await route.fulfill({ json: {
         revision, selectedMode: mode, effectiveModes: { single: mode, portfolio: mode, managed: mode },
         environmentOverrides: {}, liveAvailable: true, updatedAt: null, blockers: [],
+        productionPrompt: {
+          version: 'dual-broker-production-v2.4.1-1',
+          label: '双券商生产提示词 dual-broker-production-v2.4.1-1',
+          source: 'api/live/tradingPromptV2.ts',
+          roles: {
+            single: { label: '单票决策', instruction: `${broker}新版单票指令` },
+            portfolio: { label: '组合裁决', instruction: `${broker}新版组合指令` },
+            managed: { label: '挂单监管', instruction: `${broker}新版挂单指令` },
+          },
+        },
       } })
     })
     await page.goto(broker === 'futu' ? '/live-trading' : '/longbridge/live-trading')
@@ -358,7 +368,19 @@ for (const broker of ['futu', 'longbridge'] as const) {
     expect(revision).toBe(0)
     await page.getByRole('button', { name: '确认切换', exact: true }).click()
     await expect(panel.getByText('单票：新版实盘', { exact: true })).toBeVisible()
+    const strategyPanel = page.getByRole('region', { name: '实盘策略与提示词版本' })
+    await expect(strategyPanel.getByRole('combobox', { name: '提示词版本' })).toHaveValue('__production__')
+    await expect(strategyPanel.getByRole('combobox', { name: '提示词版本' })).toBeDisabled()
+    await expect(strategyPanel.locator('strong').filter({ hasText: '双券商生产提示词 dual-broker-production-v2.4.1-1' })).toBeVisible()
+    await strategyPanel.getByText('查看策略和提示词全文').click()
+    await expect(strategyPanel.getByText(`${broker}新版单票指令`, { exact: false })).toBeVisible()
     expect(revision).toBe(1)
+    await panel.getByRole('combobox').selectOption('legacy')
+    await page.getByRole('button', { name: '确认切换', exact: true }).click()
+    await expect(panel.getByText('单票：旧版', { exact: true })).toBeVisible()
+    await expect(strategyPanel.getByRole('combobox', { name: '提示词版本' })).toBeEnabled()
+    await expect(strategyPanel.getByRole('combobox', { name: '提示词版本' })).not.toHaveValue('__production__')
+    expect(revision).toBe(2)
     const overflow = await panel.evaluate(el => el.scrollWidth - el.clientWidth)
     expect(overflow).toBeLessThanOrEqual(0)
     await panel.screenshot({ path: testInfo.outputPath(`${broker}-prompt-mode.png`) })

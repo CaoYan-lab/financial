@@ -1,4 +1,6 @@
+import { useEffect, useMemo, useState } from 'react'
 import type { TradeExecutionMode, TradeStrategyConfigResponse, UpdateTradeStrategyConfigRequest } from '../../../shared/types'
+import type { TradingPromptBroker, TradingPromptReleaseStatus } from '../../../shared/tradingPromptTypes'
 import { useUiStore, type UiLanguage } from '../../stores/uiStore'
 import Badge from '../common/Badge'
 
@@ -12,6 +14,7 @@ export default function TradeStrategyConfigPanel({
   enableTradingAgentExecutionMode = false,
   eyebrow = 'TRADE STRATEGY',
   accent = 'futu',
+  broker,
   onSave,
 }: {
   title: string
@@ -23,12 +26,38 @@ export default function TradeStrategyConfigPanel({
   enableTradingAgentExecutionMode?: boolean
   eyebrow?: string
   accent?: 'futu' | 'longbridge'
+  broker?: TradingPromptBroker
   onSave: (input: UpdateTradeStrategyConfigRequest) => void
 }) {
   const language = useUiStore((state) => state.language)
   const selection = config?.selection
   const activeStrategy = config?.activeStrategy
   const activePromptPack = config?.activePromptPack
+  const [promptRelease, setPromptRelease] = useState<TradingPromptReleaseStatus | null>(null)
+  useEffect(() => {
+    if (!broker) return
+    const url = `/api/${broker === 'longbridge' ? 'longbridge/' : ''}live-trading/prompt-mode`
+    const load = async () => {
+      const response = await fetch(url)
+      if (response.ok) setPromptRelease(await response.json())
+    }
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ broker: TradingPromptBroker; status: TradingPromptReleaseStatus }>).detail
+      if (detail?.broker === broker) setPromptRelease(detail.status)
+    }
+    void load()
+    window.addEventListener('trading-prompt-mode-changed', changed)
+    return () => window.removeEventListener('trading-prompt-mode-changed', changed)
+  }, [broker])
+  const promptMode = promptRelease?.effectiveModes.single ?? 'legacy'
+  const productionPromptActive = promptMode === 'live' || promptMode === 'shadow'
+  const productionPromptText = useMemo(() => {
+    if (!promptRelease || !productionPromptActive) return ''
+    return (['single', 'portfolio', 'managed'] as const).map(role => {
+      const item = promptRelease.productionPrompt.roles[role]
+      return `# ${item.label}（${promptRelease.effectiveModes[role] === 'live' ? '新版实盘' : promptRelease.effectiveModes[role] === 'shadow' ? '新版影子' : '旧版'}）\n${item.instruction}`
+    }).join('\n\n')
+  }, [productionPromptActive, promptRelease])
   const executionMode = selection?.executionMode ?? 'legacy_direct'
   const portfolioModeEnabled = executionMode === 'candidate_pool'
   const tradingAgentModeEnabled = executionMode === 'trading_agent'
@@ -92,7 +121,7 @@ export default function TradeStrategyConfigPanel({
       }
 
   return (
-    <section className={cardClass}>
+    <section className={cardClass} aria-label={title}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className={`text-xs font-semibold tracking-[0.25em] ${theme.eyebrow}`}>{eyebrow}</p>
@@ -119,10 +148,14 @@ export default function TradeStrategyConfigPanel({
             </label>
             <label className={labelClass}>
               {copy(language, '提示词版本', 'Prompt Version')}
-              <select className={inputClass} value={selection?.promptPackId ?? ''} onChange={(event) => onSave({ strategyId: selection?.strategyId, promptPackId: event.target.value })}>
-                {(config?.promptPackOptions ?? []).map((option) => (
-                  <option key={option.id} value={option.id}>{option.label}</option>
-                ))}
+              <select aria-label={copy(language, '提示词版本', 'Prompt Version')} className={inputClass} value={productionPromptActive ? '__production__' : selection?.promptPackId ?? ''}
+                disabled={productionPromptActive}
+                onChange={(event) => onSave({ strategyId: selection?.strategyId, promptPackId: event.target.value })}>
+                {productionPromptActive
+                  ? <option value="__production__">{promptRelease?.productionPrompt.label ?? '新版生产提示词'}</option>
+                  : (config?.promptPackOptions ?? []).map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
               </select>
             </label>
             <button
@@ -136,7 +169,11 @@ export default function TradeStrategyConfigPanel({
 
           <div className={`mt-4 grid gap-3 md:grid-cols-2 ${mutedClass}`}>
             <p><strong className={dark ? 'text-stone-950' : 'text-stone-900'}>{activeStrategy?.label ?? copy(language, '策略未加载', 'Strategy not loaded')}</strong><br />{activeStrategy?.summary ?? copy(language, '暂无策略摘要', 'No strategy summary')}</p>
-            <p><strong className={dark ? 'text-stone-950' : 'text-stone-900'}>{activePromptPack?.label ?? copy(language, '提示词未加载', 'Prompt not loaded')}</strong><br />{activePromptPack?.summary ?? copy(language, '暂无提示词摘要', 'No prompt summary')}</p>
+            <p><strong className={dark ? 'text-stone-950' : 'text-stone-900'}>
+              {productionPromptActive ? promptRelease?.productionPrompt.label : activePromptPack?.label ?? copy(language, '提示词未加载', 'Prompt not loaded')}
+            </strong><br />{productionPromptActive
+              ? copy(language, `当前由“交易提示词”${promptMode === 'live' ? '新版实盘' : '新版影子'}模式驱动；单票、组合与挂单分别使用对应生产指令。`, 'The active production prompt is controlled by the prompt mode selector.')
+              : activePromptPack?.summary ?? copy(language, '暂无提示词摘要', 'No prompt summary')}</p>
           </div>
 
           <details className="mt-4">
@@ -148,13 +185,15 @@ export default function TradeStrategyConfigPanel({
               </div>
               <div>
                 <p className={labelClass}>{copy(language, '提示词配置', 'Prompt YAML')}</p>
-                <pre className={preClass}>{activePromptPack?.rawYaml ?? JSON.stringify(activePromptPack, null, 2)}</pre>
+                <pre className={preClass}>{productionPromptActive ? productionPromptText : activePromptPack?.rawYaml ?? JSON.stringify(activePromptPack, null, 2)}</pre>
               </div>
             </div>
           </details>
 
           {config?.warnings.length ? <p className={`mt-3 rounded-2xl border p-3 text-sm ${theme.warning}`}>{config.warnings.join('；')}</p> : null}
-          <p className={`mt-3 text-xs ${dark ? 'text-stone-500' : 'text-stone-500'}`}>{copy(language, '保存后从下一轮评估生效；不会绕过实盘门禁或人工二次确认。', 'Changes apply from the next evaluation and never bypass live gates or manual confirmation.')}</p>
+          <p className={`mt-3 text-xs ${dark ? 'text-stone-500' : 'text-stone-500'}`}>{productionPromptActive
+            ? copy(language, '当前展示内容与模型请求使用同一生产提示词定义；提示词版本由上方“交易提示词”开关切换。', 'The displayed prompt and model request share the same production prompt definition.')
+            : copy(language, '当前展示并使用旧版 YAML 提示词；保存后从下一轮评估生效。', 'The legacy YAML prompt is displayed and used from the next evaluation.')}</p>
         </div>
 
         {showPortfolioExecutionMode ? (

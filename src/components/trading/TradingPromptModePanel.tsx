@@ -29,11 +29,14 @@ export default function TradingPromptModePanel({ broker }: { broker: TradingProm
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || '模式配置读取失败')
       setStatus(body)
+      window.dispatchEvent(new CustomEvent('trading-prompt-mode-changed', {
+        detail: { broker, status: body },
+      }))
       setSelection(null)
     } catch (error) {
       setError(error instanceof Error ? error.message : '模式配置暂不可用')
     } finally { setBusy(false) }
-  }, [url])
+  }, [broker, url])
   const requestComparison = useCallback(async () => {
     try {
       const response = await fetch(`${url}/comparison/latest`)

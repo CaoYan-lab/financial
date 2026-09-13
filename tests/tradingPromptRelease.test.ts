@@ -37,7 +37,11 @@ describe('提示词服务端模式门禁', () => {
     expect((await tradingPromptReleaseStatus('futu')).revision).toBe(2)
   }, 15_000)
   it('实盘模式可持久化，客户端仍不能伪造额外验收字段', async () => {
-    expect((await saveTradingPromptMode('futu', 'default', patch('live'))).selectedMode).toBe('live')
+    const status = await saveTradingPromptMode('futu', 'default', patch('live'))
+    expect(status.selectedMode).toBe('live')
+    expect(status.productionPrompt.version).toBe('dual-broker-production-v2.4.1-1')
+    expect(status.productionPrompt.roles.single.instruction).toContain('富途')
+    expect(status.productionPrompt.roles.single.instruction).toContain('生产真实数据实盘决策模式')
     await expect(saveTradingPromptMode('futu', 'default', { ...patch('shadow', 1), verified: true })).rejects.toThrow('字段无效')
     await expect(saveTradingPromptMode('futu', 'default', { ...patch('shadow'), confirmed: false })).rejects.toThrow()
     expect((await tradingPromptReleaseStatus('futu')).revision).toBe(1)

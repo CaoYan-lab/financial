@@ -11,6 +11,7 @@ import { realtimeSubscriptionService } from '../api/realtime/realtimeSubscriptio
 import { realtimeStore } from '../api/realtime/realtimeStore.js'
 import { loadStrategyMarketData, type StrategyMarketData } from '../api/simulation/realtimeDataAdapter.js'
 import { buildTrendContextSummary } from '../api/simulation/trendContextService.js'
+import { productionAccountRisk } from '../api/live/tradingPromptContext.js'
 import { loadLongbridgeLiveAccountDashboard } from '../api/longbridge/longbridgeAdapter.js'
 import { requestLongbridgeLiveTradingDecision } from '../api/longbridge/longbridgeLiveDecisionService.js'
 import { loadLongbridgeStrategyMarketData, normalizeLongbridgeSymbol } from '../api/longbridge/longbridgeMarketDataService.js'
@@ -170,7 +171,7 @@ async function evaluate(broker: TradingPromptBroker, mode: 'legacy' | 'live', co
       reason: !account.ok ? '账户上下文不可用' : market.reason,
       riskAssessment: '上下文读取失败，未请求模型。',
       errors: [...(!account.ok ? account.warnings : []), ...(!market.ok ? [market.reason] : [])],
-      rawOutput: null, contextSummary: contextSummary(account, market), createdAt,
+      rawOutput: null, contextSummary: contextSummary(broker, account, market), createdAt,
     })
     return
   }
@@ -201,7 +202,7 @@ async function evaluate(broker: TradingPromptBroker, mode: 'legacy' | 'live', co
       durationMs: Math.round(performance.now() - started),
       reason: error instanceof Error ? error.message : '模型调用异常',
       riskAssessment: '模型调用未完成。', errors: [error instanceof Error ? error.message : 'unknown error'],
-      rawOutput: null, contextSummary: contextSummary(account, market), createdAt,
+      rawOutput: null, contextSummary: contextSummary(broker, account, market), createdAt,
     })
     return
   }
@@ -228,7 +229,7 @@ async function evaluate(broker: TradingPromptBroker, mode: 'legacy' | 'live', co
     ],
     rawOutput: decision.promptAudit?.output ?? decision.rawText ?? null,
     contextSummary: {
-      ...contextSummary(account, market),
+      ...contextSummary(broker, account, market),
       route: mode === 'legacy' ? 'legacy-decision-service' : decision.promptAudit?.version ?? 'missing-new-audit',
     },
     createdAt,
@@ -255,11 +256,17 @@ function appendResult(result: Omit<TradingPromptComparisonResult, 'id'>) {
   console.log(`[${result.broker}/${result.mode}] ${result.ticker}: ${result.action} ${result.requestOk ? 'PASS' : 'FAIL'} ${result.durationMs}ms`)
 }
 
-function contextSummary(account: LiveAccountDashboardResponse, market: { ok: boolean; [key: string]: any }) {
+function contextSummary(broker: TradingPromptBroker, account: LiveAccountDashboardResponse, market: { ok: boolean; [key: string]: any }) {
+  const risk = productionAccountRisk(broker, account)
   return {
     accountOk: account.ok,
     accountSourceAt: account.summary.source?.timestamp ?? account.summary.source?.accessedAt ?? null,
     positionCount: account.positions.length,
+    openingRiskStatus: risk.openingRiskStatus,
+    rawExposureLevel: risk.rawExposureLevel ?? null,
+    rawRiskStatus: risk.rawRiskStatus ?? null,
+    financingRiskLevel: risk.financingLevel ?? null,
+    financingOpeningRestricted: risk.financingOpeningRestricted ?? null,
     marketOk: market.ok,
     marketPrice: market.ok ? market.lastPrice : null,
     marketUpdatedAt: market.ok ? market.updatedAt : null,
