@@ -24,6 +24,7 @@ type QueryInput = {
 }
 
 const CACHE_TTL_MS = 10_000
+const FUTU_ORDER_READ_TIMEOUT_MS = 30_000
 let cached: { key: string; expiresAt: number; response: FutuLiveOrdersResponse } | undefined
 
 export async function cancelFutuLiveOrder(input: {
@@ -104,7 +105,7 @@ export async function loadFutuLiveOrders(input: QueryInput): Promise<FutuLiveOrd
     ticker: input.ticker,
     status: input.status,
     side: input.side,
-  })
+  }, { timeoutMs: FUTU_ORDER_READ_TIMEOUT_MS })
 
   const response =
     bridge.ok && bridge.data
