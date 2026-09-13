@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import express from 'express'
 import type { Server } from 'node:http'
 import { resolveTradingPromptMode, saveTradingPromptMode, tradingPromptReleaseStatus } from '../api/live/tradingPromptReleaseService'
-import { createTradingPromptRouter } from '../api/routes/tradingPromptRoutes'
+import { createTradingPromptRouter, promptModeOriginAllowed } from '../api/routes/tradingPromptRoutes'
 
 describe('提示词服务端模式门禁', () => {
   let dir: string
@@ -86,5 +86,19 @@ describe('提示词服务端模式门禁', () => {
     expect((await put('shadow', 'http://localhost:5174', 1)).status).toBe(200)
     vi.stubEnv('CLOUD_MODE', '1')
     expect((await fetch(`${url}/mode`)).status).toBe(401)
+  })
+  it('云代理内外协议不一致时只接受已登录的浏览器同源请求', () => {
+    vi.stubEnv('CLOUD_MODE', '1')
+    const request = (site: string) => ({
+      protocol: 'http',
+      get: (name: string) => ({
+        host: 'internal-function:8000',
+        origin: 'https://financial.example.com',
+        'sec-fetch-site': site,
+      } as Record<string, string>)[name.toLowerCase()],
+    } as any)
+    expect(promptModeOriginAllowed(request('cross-site'), true)).toBe(false)
+    expect(promptModeOriginAllowed(request('same-origin'), false)).toBe(false)
+    expect(promptModeOriginAllowed(request('same-origin'), true)).toBe(true)
   })
 })

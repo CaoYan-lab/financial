@@ -40,6 +40,8 @@ Futu 与 Longbridge 均支持三种模式：
 
 其中 `BROKER` 为 `FUTU` 或 `LONGBRIDGE`，`ROLE` 为 `SINGLE`、`PORTFOLIO` 或 `MANAGED`。可选值为 `legacy|shadow|live`。
 
+云端建议设置 `TRADING_PROMPT_PUBLIC_ORIGIN=https://实际访问域名`。未设置时，经过反向代理的已登录浏览器请求必须由浏览器标记为 `Sec-Fetch-Site: same-origin`；跨站请求继续返回403。容器内HTTP与公网HTTPS协议差异不能作为跨源依据。
+
 ## 真实数据与风控
 
 - 输入来自当前券商账户、持仓、行情、趋势、订单和策略配置，不使用固定测试价格或预算。

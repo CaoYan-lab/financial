@@ -62,6 +62,7 @@ envs_array() {
         --arg multiuser "${MULTIUSER_ENABLED:-false}" \
         --arg multiowner "${MULTIUSER_OWNER_USERNAME:-$ADMIN_USERNAME}" \
         --arg multikey "${MULTIUSER_CREDENTIAL_MASTER_KEY:-}" \
+        --arg promptorigin "${TRADING_PROMPT_PUBLIC_ORIGIN:-}" \
         --arg live "${LIVE_TRADING_ENABLED:-false}" \
     '([
       {Key:"CLOUD_MODE",Value:"1"},
@@ -92,7 +93,8 @@ envs_array() {
         {Key:"LONGBRIDGE_ORDER_PROXY_URL",Value:$lbproxy},
         {Key:"LIVE_TRADING_ENABLED",Value:$live}
       ] else [
-        {Key:"APP_ROLE",Value:"web"}
+        {Key:"APP_ROLE",Value:"web"},
+        {Key:"TRADING_PROMPT_PUBLIC_ORIGIN",Value:$promptorigin}
       ] end))
     | map(select(.Value != "" and .Value != null))'
 }

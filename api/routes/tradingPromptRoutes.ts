@@ -14,13 +14,9 @@ export async function handlePromptMode(req: Request, res: Response, broker: Trad
     }
     if (req.method === 'PUT') {
       const origin = req.get('origin')
-      const configuredOrigin = process.env.TRADING_PROMPT_PUBLIC_ORIGIN
-      const expectedOrigin = configuredOrigin || `${req.protocol}://${req.get('host')}`
-      const originUrl = origin ? new URL(origin) : undefined
-      const localOrigin = process.env.CLOUD_MODE !== '1'
-        && originUrl
-        && ['localhost', '127.0.0.1', '[::1]'].includes(originUrl.hostname)
-      if (!originUrl || (!localOrigin && originUrl.origin !== new URL(expectedOrigin).origin)) {
+      const originUrl = parseOrigin(origin)
+      const localOrigin = isLocalOrigin(originUrl)
+      if (!promptModeOriginAllowed(req, authenticated)) {
         throw new PromptModeError('拒绝非同源模式切换。', 403)
       }
       if (!authenticated && !localOrigin) throw new PromptModeError('本地模式切换仅允许本机来源。', 403)
@@ -31,6 +27,19 @@ export async function handlePromptMode(req: Request, res: Response, broker: Trad
       ok: false, error: error instanceof PromptModeError ? error.message : '提示词配置暂不可用，未修改模式。',
     })
   }
+}
+
+export function promptModeOriginAllowed(req: Request, authenticated: boolean): boolean {
+  const originUrl = parseOrigin(req.get('origin'))
+  if (!originUrl) return false
+  const configuredOrigin = parseOrigin(process.env.TRADING_PROMPT_PUBLIC_ORIGIN)
+  const directOrigin = parseOrigin(`${req.protocol}://${req.get('host')}`)
+  if (isLocalOrigin(originUrl)
+    || originUrl.origin === configuredOrigin?.origin
+    || originUrl.origin === directOrigin?.origin) return true
+  return authenticated
+    && process.env.CLOUD_MODE === '1'
+    && req.get('sec-fetch-site') === 'same-origin'
 }
 
 export function createTradingPromptRouter(broker: TradingPromptBroker) {
@@ -48,4 +57,19 @@ export function createTradingPromptRouter(broker: TradingPromptBroker) {
   router.get('/', (req, res) => { void handlePromptMode(req, res, broker) })
   router.put('/', (req, res) => { void handlePromptMode(req, res, broker) })
   return router
+}
+
+function parseOrigin(value: string | undefined): URL | undefined {
+  if (!value) return undefined
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isLocalOrigin(origin: URL | undefined): boolean {
+  return process.env.CLOUD_MODE !== '1'
+    && Boolean(origin && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))
 }
