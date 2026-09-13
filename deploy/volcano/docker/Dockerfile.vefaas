@@ -4,7 +4,7 @@
 # 构建上下文为仓库根目录：docker build -f deploy/volcano/docker/Dockerfile.vefaas -t <image> .
 
 # ---------- Stage 1: 前端构建 ----------
-FROM node:20-trixie-slim AS frontend
+FROM node:22-trixie-slim AS frontend
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com \
@@ -15,7 +15,7 @@ COPY . .
 RUN npx vite build
 
 # ---------- Stage 2: 运行时（Node + Python 同镜像） ----------
-FROM node:20-trixie-slim AS runtime
+FROM node:22-trixie-slim AS runtime
 
 # Python 3.11 + pip，使用火山镜像源加速
 ENV DEBIAN_FRONTEND=noninteractive
