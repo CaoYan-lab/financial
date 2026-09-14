@@ -49,6 +49,10 @@ available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
 minimum_kb="$((6 * 1024 * 1024))"
 if (( available_kb < minimum_kb )); then
   echo "[准备] 可用磁盘低于 6GB，清理可重新生成的 Podman 镜像和构建缓存"
+  mapfile -t build_containers < <(podman ps -aq --external --filter name=working-container)
+  if (( ${#build_containers[@]} > 0 )); then
+    podman rm --force "${build_containers[@]}"
+  fi
   podman system prune --all --force
 fi
 
