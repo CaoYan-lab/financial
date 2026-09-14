@@ -45,6 +45,13 @@ if [[ ! -f .dockerignore ]]; then
   cp deploy/volcano/docker/.dockerignore .dockerignore
 fi
 
+available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+minimum_kb="$((6 * 1024 * 1024))"
+if (( available_kb < minimum_kb )); then
+  echo "[准备] 可用磁盘低于 6GB，清理可重新生成的 Podman 镜像和构建缓存"
+  podman system prune --all --force
+fi
+
 echo "[1/7] 构建镜像 $IMAGE"
 podman build --layers -f deploy/volcano/docker/Dockerfile.vefaas -t "$IMAGE" .
 
