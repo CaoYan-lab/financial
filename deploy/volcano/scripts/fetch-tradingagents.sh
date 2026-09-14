@@ -42,9 +42,20 @@ if [ -d "$REPO_PATH/.git" ]; then
 else
   mkdir -p "$(dirname "$REPO_PATH")"
   echo "[fetch-tradingagents] 克隆仓库（浅克隆到锁定 commit）..."
-  git init -q "$REPO_PATH"
-  git -C "$REPO_PATH" remote add origin "$REPO_URL"
-  git -C "$REPO_PATH" fetch --depth 1 origin "$PINNED_COMMIT"
+  for attempt in 1 2 3; do
+    rm -rf "$REPO_PATH"
+    git init -q "$REPO_PATH"
+    git -C "$REPO_PATH" remote add origin "$REPO_URL"
+    if git -C "$REPO_PATH" fetch --depth 1 origin "$PINNED_COMMIT"; then
+      break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+      echo "[fetch-tradingagents] 拉取失败，拒绝构建缺少报告依赖的镜像" >&2
+      exit 1
+    fi
+    echo "[fetch-tradingagents] 第 $attempt 次拉取失败，5 秒后重试..." >&2
+    sleep 5
+  done
   git -C "$REPO_PATH" checkout --quiet FETCH_HEAD
 fi
 

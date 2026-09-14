@@ -53,10 +53,10 @@ COPY . .
 COPY --from=frontend /app/dist ./dist
 
 # TradingAgents（A股多智能体）构建期拉取并装到独立 venv；
-# 失败不阻断镜像构建（A股 worker 启动时会报缺失，其余平台不受影响）。
+# 报告依赖缺失会导致运行时故障，因此拉取或安装失败必须阻断发布。
 ARG SKIP_TRADINGAGENTS=
 RUN if [ -z "$SKIP_TRADINGAGENTS" ]; then \
-      bash deploy/volcano/scripts/fetch-tradingagents.sh || echo "WARN: TradingAgents fetch skipped/failed"; \
+      bash deploy/volcano/scripts/fetch-tradingagents.sh; \
     fi
 
 # 启动脚本可执行
