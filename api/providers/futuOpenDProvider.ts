@@ -104,10 +104,19 @@ export class FutuOpenDProvider implements DataProvider {
       timestamp,
     }
     const tickers = universe.map((company) => company.ticker)
-    const quoteBridges = await Promise.all(
-      this.chunkTickers(tickers, FUTU_REPORT_QUOTE_BATCH_SIZE).map((batch, index) =>
-        this.runSnapshotPhase(`quotes-${index + 1}`, batch, false, false, FUTU_REPORT_QUOTE_TIMEOUT_MS)),
-    )
+    const quoteBridges: PythonBridgeResult<FutuSnapshotPayload>[] = []
+    const quoteBatches = this.chunkTickers(tickers, FUTU_REPORT_QUOTE_BATCH_SIZE)
+    for (const [index, batch] of quoteBatches.entries()) {
+      quoteBridges.push(
+        await this.runSnapshotPhase(
+          `quotes-${index + 1}`,
+          batch,
+          false,
+          false,
+          FUTU_REPORT_QUOTE_TIMEOUT_MS,
+        ),
+      )
+    }
     const usableQuoteBridges = quoteBridges.filter((bridge) => this.hasUsableBridgeData(bridge))
     if (usableQuoteBridges.length === 0) {
       return {
@@ -140,21 +149,29 @@ export class FutuOpenDProvider implements DataProvider {
       }
     }
 
-    const enrichmentPhases: Array<Promise<{ phase: string; bridge: PythonBridgeResult<FutuSnapshotPayload> }>> = []
+    const enrichmentPhases: Array<{
+      phase: string
+      includeTechnicals: boolean
+      includeOptions: boolean
+    }> = []
     if (process.env.FUTU_ENABLE_TECHNICALS !== 'false') {
       enrichmentPhases.push(
-        this.runSnapshotPhase('technicals', enrichmentTickers, true, false, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
-          .then((bridge) => ({ phase: 'technicals', bridge })),
+        { phase: 'technicals', includeTechnicals: true, includeOptions: false },
       )
     }
     if (process.env.FUTU_ENABLE_OPTIONS !== 'false') {
       enrichmentPhases.push(
-        this.runSnapshotPhase('options', enrichmentTickers, false, true, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
-          .then((bridge) => ({ phase: 'options', bridge })),
+        { phase: 'options', includeTechnicals: false, includeOptions: true },
       )
     }
-    const enrichmentResults = await Promise.all(enrichmentPhases)
-    for (const { phase, bridge } of enrichmentResults) {
+    for (const { phase, includeTechnicals, includeOptions } of enrichmentPhases) {
+      const bridge = await this.runSnapshotPhase(
+        phase,
+        enrichmentTickers,
+        includeTechnicals,
+        includeOptions,
+        FUTU_REPORT_SNAPSHOT_TIMEOUT_MS,
+      )
       if (this.hasUsableBridgeData(bridge)) {
         this.mergeAvailableRows(rowByTicker, bridge.data.rows)
         warnings.push(...(bridge.data.warnings ?? []))

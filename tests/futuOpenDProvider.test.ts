@@ -145,4 +145,47 @@ describe('FutuOpenDProvider', () => {
     expect(calls.filter((call) => !call.includeTechnicals && !call.includeOptions).map((call) => call.tickers.length)).toEqual([5, 1])
     expect(calls.filter((call) => call.includeTechnicals || call.includeOptions).every((call) => call.tickers.length === 1)).toBe(true)
   })
+
+  it('顺序执行报价批次和增强阶段，避免并发连接压垮 OpenD', async () => {
+    let activeCalls = 0
+    let maxActiveCalls = 0
+    const phases: string[] = []
+    const bridgeRunner = async <T>(_scriptName: string, payload: unknown): Promise<PythonBridgeResult<T>> => {
+      const phase = payload as { tickers: string[]; includeTechnicals: boolean; includeOptions: boolean }
+      activeCalls += 1
+      maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+      phases.push(
+        phase.includeTechnicals
+          ? 'technicals'
+          : phase.includeOptions
+            ? 'options'
+            : `quotes-${phase.tickers[0]}`,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      activeCalls -= 1
+      return {
+        ok: true,
+        data: {
+          ok: true,
+          source: {
+            source: 'Futu OpenD',
+            accessedAt: '2026-06-16T00:00:00.000Z',
+            timestamp: '2026-06-16 09:30:00',
+          },
+          warnings: [],
+          rows: phase.tickers.map((ticker) => ({
+            ticker,
+            currentPrice: '$100.00',
+          })),
+        } as T,
+      }
+    }
+    const provider = new FutuOpenDProvider(bridgeRunner)
+    const companies = Array.from({ length: 6 }, (_, index) => universeCompany(`TEST${index + 1}`, index + 1))
+
+    await provider.fetchMarketSnapshot(companies)
+
+    expect(maxActiveCalls).toBe(1)
+    expect(phases).toEqual(['quotes-TEST1', 'quotes-TEST6', 'technicals', 'options'])
+  })
 })
