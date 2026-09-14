@@ -34,6 +34,12 @@ COPY package.json package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com \
   && npm install --omit=dev \
   && npm install -g tsx \
+  && curl --fail --location --retry 3 --connect-timeout 15 --max-time 180 \
+       -o /tmp/longbridge-linux-x64-gnu.tgz \
+       https://registry.npmjs.org/longbridge-linux-x64-gnu/-/longbridge-linux-x64-gnu-4.3.2.tgz \
+  && echo "3c4328745d5e04d6946b1979fa9249b49e1997d57599ed738d32066d709616a40b814978e7b7d834bb47a52dc917f13f14dbb8f5ce9c8562e7e863a2d2bbc278  /tmp/longbridge-linux-x64-gnu.tgz" | sha512sum -c - \
+  && npm install --no-save /tmp/longbridge-linux-x64-gnu.tgz \
+  && rm -f /tmp/longbridge-linux-x64-gnu.tgz \
   && node -e "require('longbridge')"
 
 # Python 依赖（PG 驱动 + 数据处理）用火山 pypi 镜像；
