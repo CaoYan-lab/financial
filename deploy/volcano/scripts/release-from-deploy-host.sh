@@ -133,6 +133,7 @@ fi
 echo "[1/7] 构建镜像 $IMAGE"
 podman build \
   --layers \
+  --network host \
   --build-arg "WORKER_DEPLOYMENT_GENERATION=$GENERATION" \
   -f deploy/volcano/docker/Dockerfile.vefaas \
   -t "$IMAGE" \
