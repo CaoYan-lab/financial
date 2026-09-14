@@ -48,6 +48,10 @@ const FUTU_REPORT_SNAPSHOT_TIMEOUT_MS = Math.max(
   30_000,
   Number(process.env.FUTU_REPORT_SNAPSHOT_TIMEOUT_MS || 240_000) || 240_000,
 )
+const FUTU_REPORT_QUOTE_TIMEOUT_MS = Math.max(
+  10_000,
+  Number(process.env.FUTU_REPORT_QUOTE_TIMEOUT_MS || 30_000) || 30_000,
+)
 
 export class FutuOpenDProvider implements DataProvider {
   constructor(private readonly bridgeRunner: BridgeRunner = runPythonBridge) {}
@@ -98,28 +102,92 @@ export class FutuOpenDProvider implements DataProvider {
       accessedAt: timestamp,
       timestamp,
     }
-    const bridge = await this.bridgeRunner<FutuSnapshotPayload>('futu_snapshot.py', {
-      ...this.basePayload(),
-      tickers: universe.map((company) => company.ticker),
-      includeOptions: process.env.FUTU_ENABLE_OPTIONS !== 'false',
-      includeTechnicals: process.env.FUTU_ENABLE_TECHNICALS !== 'false',
-    }, { timeoutMs: FUTU_REPORT_SNAPSHOT_TIMEOUT_MS })
+    const tickers = universe.map((company) => company.ticker)
+    const quoteBridge = await this.runSnapshotPhase('quotes', tickers, false, false, FUTU_REPORT_QUOTE_TIMEOUT_MS)
 
-    if (!bridge.ok || !bridge.data) {
+    if (!this.hasUsableBridgeData(quoteBridge)) {
       return {
         source: fallbackSource,
-        warnings: [`Futu OpenD bridge failed: ${bridge.error ?? 'unknown error'}`, bridge.stderr ?? ''].filter(Boolean),
+        warnings: this.bridgeWarnings('quotes', quoteBridge),
         rows: this.unavailableRows(universe, fallbackSource, 'unavailable - Futu OpenD bridge failed'),
       }
     }
 
-    const rowByTicker = new Map(bridge.data.rows.map((row) => [row.ticker, row]))
-    const source = bridge.data.source ?? fallbackSource
+    const rowByTicker = new Map<string, FutuSnapshotRow>()
+    this.mergeAvailableRows(rowByTicker, quoteBridge.data.rows)
+    const source = quoteBridge.data.source ?? fallbackSource
+    const warnings = [...(quoteBridge.data.warnings ?? [])]
+
+    const enrichmentPhases: Array<Promise<{ phase: string; bridge: PythonBridgeResult<FutuSnapshotPayload> }>> = []
+    if (process.env.FUTU_ENABLE_TECHNICALS !== 'false') {
+      enrichmentPhases.push(
+        this.runSnapshotPhase('technicals', tickers, true, false, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
+          .then((bridge) => ({ phase: 'technicals', bridge })),
+      )
+    }
+    if (process.env.FUTU_ENABLE_OPTIONS !== 'false') {
+      enrichmentPhases.push(
+        this.runSnapshotPhase('options', tickers, false, true, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
+          .then((bridge) => ({ phase: 'options', bridge })),
+      )
+    }
+    const enrichmentResults = await Promise.all(enrichmentPhases)
+    for (const { phase, bridge } of enrichmentResults) {
+      if (this.hasUsableBridgeData(bridge)) {
+        this.mergeAvailableRows(rowByTicker, bridge.data.rows)
+        warnings.push(...(bridge.data.warnings ?? []))
+      } else {
+        warnings.push(...this.bridgeWarnings(phase, bridge))
+      }
+    }
 
     return {
       source,
-      warnings: bridge.data.warnings ?? [],
+      warnings,
       rows: universe.slice(0, 30).map((company) => this.normalizeRow(company, rowByTicker.get(company.ticker), source)),
+    }
+  }
+
+  private async runSnapshotPhase(
+    phase: string,
+    tickers: string[],
+    includeTechnicals: boolean,
+    includeOptions: boolean,
+    timeoutMs: number,
+  ): Promise<PythonBridgeResult<FutuSnapshotPayload>> {
+    const startedAt = Date.now()
+    const bridge = await this.bridgeRunner<FutuSnapshotPayload>('futu_snapshot.py', {
+      ...this.basePayload(),
+      tickers,
+      includeOptions,
+      includeTechnicals,
+    }, { timeoutMs })
+    // #region debug-point E:bridge-result
+    if (process.env.DEBUG_SERVER_URL) await fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: 'cloud-report-queue', runId: process.env.DEBUG_RUN_ID || 'post-fix', hypothesisId: 'E', location: 'futuOpenDProvider.runSnapshotPhase', msg: '[DEBUG] Futu report bridge phase completed', data: { phase, ok: bridge.ok && bridge.data?.ok !== false, durationMs: Date.now() - startedAt, tickerCount: tickers.length, error: bridge.error ?? bridge.data?.warnings?.[0] ?? null }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
+    return bridge
+  }
+
+  private hasUsableBridgeData(bridge: PythonBridgeResult<FutuSnapshotPayload>): bridge is PythonBridgeResult<FutuSnapshotPayload> & { data: FutuSnapshotPayload } {
+    return bridge.ok && Boolean(bridge.data) && bridge.data?.ok !== false
+  }
+
+  private bridgeWarnings(phase: string, bridge: PythonBridgeResult<FutuSnapshotPayload>): string[] {
+    return [
+      `Futu OpenD ${phase} bridge failed: ${bridge.error ?? bridge.data?.warnings?.[0] ?? 'unknown error'}`,
+      bridge.stderr ?? '',
+    ].filter(Boolean)
+  }
+
+  private mergeAvailableRows(target: Map<string, FutuSnapshotRow>, rows: FutuSnapshotRow[]): void {
+    for (const row of rows) {
+      const merged = { ...(target.get(row.ticker) ?? { ticker: row.ticker }) }
+      for (const [key, value] of Object.entries(row)) {
+        if (value === undefined || value === null) continue
+        if (typeof value === 'string' && value.toLowerCase().includes(UNAVAILABLE)) continue
+        Object.assign(merged, { [key]: value })
+      }
+      target.set(row.ticker, merged)
     }
   }
 

@@ -8,6 +8,13 @@ export async function collectRawData(provider: DataProvider, batchId: string, as
   const marketBundle = await provider.fetchMarketSnapshot(lockedUniverse)
   const generatedAt = new Date().toISOString()
   const dataQuality = buildDataQualityReport(batchId, generatedAt, marketBundle.rows, [marketBundle.source])
+  if (!dataQuality.isUsableForAnalysis) {
+    const blockingIssues = dataQuality.issues
+      .filter((issue) => issue.severity === 'blocking')
+      .map((issue) => issue.issue)
+      .join('; ')
+    throw new Error(`报告数据不可用：${blockingIssues || '关键行情字段缺失'}`)
+  }
 
   return {
     generatedAt,

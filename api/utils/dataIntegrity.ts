@@ -46,6 +46,14 @@ export function buildDataQualityReport(
     }
   }
 
+  if (rows.length > 0 && unavailableSummary.currentPrice === rows.length) {
+    issues.push({
+      field: 'currentPrice',
+      issue: 'Current price is unavailable for every row.',
+      severity: 'blocking',
+    })
+  }
+
   const marketSources = new Set(rows.map((row) => row.source.source))
   if (marketSources.size > 1) {
     issues.push({
@@ -64,4 +72,3 @@ export function buildDataQualityReport(
     isUsableForAnalysis: !issues.some((issue) => issue.severity === 'blocking'),
   }
 }
-
