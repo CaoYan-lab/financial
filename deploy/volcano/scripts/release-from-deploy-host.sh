@@ -6,6 +6,7 @@ TAG="${1:?用法: release-from-deploy-host.sh <vNN> [source-dir]}"
 SOURCE_DIR="${2:-$PWD}"
 EXPECTED_HOST="${FINANCIAL_DEPLOY_HOSTNAME:-ECS-0EJj-deploy}"
 REGISTRY="${CR_REGISTRY:-docker-cr-input-cn-beijing.cr.volces.com}"
+CR_INSTANCE="${CR_INSTANCE:-${REGISTRY%%-cn-*}}"
 NAMESPACE="${CR_NAMESPACE:-fin}"
 REPOSITORY="${CR_REPO:-financial-workbench}"
 WEB_FUNCTION_ID="${FIN_WEB_FUNCTION_ID:-5gn416ub}"
@@ -40,6 +41,79 @@ flock -n 9 || {
   exit 1
 }
 
+refresh_registry_login() {
+  local auth_json=""
+  local credential_json=""
+  local username=""
+  local token=""
+  local vefaas_auth_file="${VEFAAS_AUTH_FILE:-${VEFAAS_HOME:-$HOME}/.vefaas/auth.enc}"
+
+  if command -v ve >/dev/null 2>&1; then
+    auth_json="$(
+      ve cr GetAuthorizationToken \
+        --Registry "$CR_INSTANCE" \
+        -o json 2>/dev/null
+    )" || auth_json=""
+  fi
+
+  if [[ -z "$auth_json" && -r "$vefaas_auth_file" ]] &&
+     command -v node >/dev/null 2>&1 &&
+     command -v ve >/dev/null 2>&1; then
+    credential_json="$(
+      VEFAAS_AUTH_FILE="$vefaas_auth_file" node <<'NODE'
+const crypto = require('crypto')
+const fs = require('fs')
+
+const payload = JSON.parse(
+  fs.readFileSync(process.env.VEFAAS_AUTH_FILE, 'utf8'),
+)
+const key = crypto.pbkdf2Sync(
+  'vefaas-cli:credential-store:v1',
+  'vefaas-cli-salt-v1',
+  100_000,
+  32,
+  'sha256',
+)
+const decipher = crypto.createDecipheriv(
+  'aes-256-gcm',
+  key,
+  Buffer.from(payload.iv, 'base64'),
+  { authTagLength: 16 },
+)
+decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
+const credentials = JSON.parse(
+  Buffer.concat([
+    decipher.update(Buffer.from(payload.data, 'base64')),
+    decipher.final(),
+  ]).toString('utf8'),
+)
+process.stdout.write(JSON.stringify({
+  ak: credentials.ak,
+  sk: credentials.sk,
+}))
+NODE
+    )"
+
+    auth_json="$(
+      VOLCENGINE_ACCESS_KEY="$(jq -er '.ak' <<<"$credential_json")" \
+      VOLCENGINE_SECRET_KEY="$(jq -er '.sk' <<<"$credential_json")" \
+      VOLCENGINE_REGION="${VOLCENGINE_REGION:-cn-beijing}" \
+        ve cr GetAuthorizationToken \
+          --Registry "$CR_INSTANCE" \
+          -o json
+    )"
+  fi
+
+  username="$(jq -er '.Result.Username' <<<"$auth_json")"
+  token="$(jq -er '.Result.Token' <<<"$auth_json")"
+  printf '%s' "$token" |
+    podman login \
+      --username "$username" \
+      --password-stdin \
+      "$REGISTRY" >/dev/null
+  unset auth_json credential_json username token
+}
+
 cd "$SOURCE_DIR"
 if [[ ! -f .dockerignore ]]; then
   cp deploy/volcano/docker/.dockerignore .dockerignore
@@ -59,7 +133,8 @@ fi
 echo "[1/7] 构建镜像 $IMAGE"
 podman build --layers -f deploy/volcano/docker/Dockerfile.vefaas -t "$IMAGE" .
 
-echo "[2/7] 推送镜像"
+echo "[2/7] 刷新 CR 登录并推送镜像"
+refresh_registry_login
 podman push "$IMAGE"
 
 wait_release() {
