@@ -102,7 +102,7 @@ Futu 与 Longbridge 均支持三种模式：
 - Web 与 Worker 的正式发布统一在部署机 `115.191.35.144` 执行，本地开发机只负责测试、提交和传输已提交源码。
 - 发布入口固定为 `deploy/volcano/scripts/release-from-deploy-host.sh <vNN> <source-dir>`；脚本使用文件锁防止并发发布，并按 Worker、Web 顺序更新和发布同一镜像。
 - 发布脚本在每次推送前自动使用部署机现有静态 AK/SK 换取 CR 临时令牌并刷新 Podman 登录，不依赖人工续期或设备授权。
-- Worker 发布时从镜像标签提取单调递增的 `WORKER_DEPLOYMENT_GENERATION`，并在构建期固化到镜像；不得写成函数级环境变量，否则平台会同时修改旧 Revision 的代际。新代际启动后可在恢复锁保护下立即终止旧代际占用的 PostgreSQL advisory lock 并原子接管；同代际实例仍保持单 Leader。
+- Worker 发布时从镜像标签提取单调递增的 `WORKER_DEPLOYMENT_GENERATION`，构建期写入镜像内版本文件，再由 Worker 启动脚本导出；不得写成函数级环境变量，否则平台会同时修改旧 Revision 的代际。新代际启动后可在恢复锁保护下立即终止旧代际占用的 PostgreSQL advisory lock 并原子接管；同代际实例仍保持单 Leader。
 - 当前 Leader 每 5 秒检查目标代际，发现更高代际后主动退出。旧 Revision 即使被平台重新拉起，也不能反向抢占新代际 Leader。
 - 未配置发布代际时保留原有行为：只在心跳超过 `WORKER_LEADER_STALE_MS` 后回收过期连接，兼容本地运行和旧部署。
 

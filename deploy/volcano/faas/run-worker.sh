@@ -9,6 +9,12 @@ export CLOUD_MODE=1
 export CLOUD_PYTHON=1
 export PG_HISTORY_DRIVER=1
 export PORT="${PORT:-8000}"
+if [[ -z "${WORKER_DEPLOYMENT_GENERATION:-}" &&
+      -r /app/.worker-deployment-generation ]]; then
+  export WORKER_DEPLOYMENT_GENERATION="$(
+    tr -d '[:space:]' < /app/.worker-deployment-generation
+  )"
+fi
 # 引擎历史走 PG、订阅进程用容器内 python
 export FUTU_PYTHON_BIN="${FUTU_PYTHON_BIN:-/opt/venv/bin/python}"
 
