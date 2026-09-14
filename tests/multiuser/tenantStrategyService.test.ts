@@ -305,6 +305,8 @@ describe('Longbridge 租户策略服务', () => {
 
     expect(mocks.workbench).toHaveBeenCalledOnce()
     expect(mocks.workbench).toHaveBeenCalledWith(connection, 'HKD')
+    expect(mocks.activeOrders.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.workbench.mock.invocationCallOrder[0])
     const refreshedAccount = mocks.tradingDecision.mock.calls[0][0].account
     expect(Date.now() - Date.parse(refreshedAccount.summary.source.timestamp))
       .toBeLessThan(30_000)

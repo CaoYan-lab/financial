@@ -135,9 +135,6 @@ export async function runTenantStrategyOnce(
   }
 
   const trendBars = await tenantTrendBars(connection, symbol)
-  const account = tenantAccountSnapshotFresh(initialAccount)
-    ? initialAccount
-    : await loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol))
   const dataWindow = {
     kline1mBars: Math.max(1, marketData.bars.length),
     tickerPoints: Math.max(1, marketData.tickerPoints.length),
@@ -153,6 +150,12 @@ export async function runTenantStrategyOnce(
   const promptPendingOrders = promptMode === 'legacy'
     ? undefined
     : await listActiveTenantPendingOrders(userId, connection.id)
+  // Refresh after all pre-prompt I/O. In a sequential universe scan these
+  // queries can queue long enough to expire an account snapshot that was fresh
+  // when market collection started.
+  const account = tenantAccountSnapshotFresh(initialAccount)
+    ? initialAccount
+    : await loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol))
   const trendContext = buildTrendContextSummary(
     marketData.ticker,
     { lookbackTradingDays: 7, barInterval: '30m', currentPrice: marketData.lastPrice },
