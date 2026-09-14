@@ -128,7 +128,7 @@ export async function loadLongbridgeLiveAccountDashboard(
   }
   const now = typeof assets.source_checked_at === 'string' ? assets.source_checked_at : new Date().toISOString()
   const availableCash = assetValue(assets, 'available_cash') ?? firstCashInfoValue(assets, 'available_cash')
-  const totalCash = assetValue(assets, 'total_cash') ?? firstCashInfoValue(assets, 'available_cash')
+  const totalCash = assetValue(assets, 'total_cash')
   const buyPower = assetValue(assets, 'buy_power')
   const netAssets = assetValue(assets, 'net_assets')
   const financingRiskLevel = parseLongbridgeRiskLevel(assetValue(assets, 'risk_level'))
@@ -223,10 +223,15 @@ export function updateLongbridgeTradeStrategyConfig(input: UpdateTradeStrategyCo
 
 async function loadAccountMetrics(warnings: string[]): Promise<LongbridgeMetric[]> {
   const parsed = await loadAssetRecord(warnings)
-  const availableCash = assetValue(parsed, 'available_cash') ?? firstCashInfoValue(parsed, 'available_cash') ?? assetValue(parsed, 'total_cash')
+  return buildLongbridgeAccountMetrics(parsed)
+}
+
+export function buildLongbridgeAccountMetrics(parsed: Record<string, unknown>): LongbridgeMetric[] {
+  const availableCash = assetValue(parsed, 'available_cash') ?? firstCashInfoValue(parsed, 'available_cash')
   return [
     metric('美金总览', formatUsd(assetValue(parsed, 'net_assets')), '账户净资产，USD'),
-    metric('现金可用', formatUsd(availableCash), '可用现金，USD'),
+    metric('账户现金', formatUsd(assetValue(parsed, 'total_cash')), '现金余额；与持仓市值共同构成净资产，USD'),
+    metric('现金可用', formatUsd(availableCash), '扣除融资与冻结占用后的可用现金，USD'),
     metric('最大购买力', formatUsd(assetValue(parsed, 'buy_power')), '最大购买力，USD'),
     metric('风险等级', formatUnknown(parsed.risk_level), '账户风险等级'),
   ]
@@ -335,6 +340,7 @@ function normalizeAssetPayload(payload: unknown): Record<string, unknown> {
 function unavailableAccountMetrics(): LongbridgeMetric[] {
   return [
     metric('美金总览', '等待授权', '需要 Longbridge OAuth'),
+    metric('账户现金', '等待授权', '需要账户资产接口'),
     metric('现金可用', '等待授权', '需要 Quote permission'),
     metric('最大购买力', '等待授权', '需要账户资产接口'),
     metric('风险等级', '等待授权', '需要 Longbridge assets'),

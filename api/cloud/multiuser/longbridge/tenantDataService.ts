@@ -118,8 +118,8 @@ export async function loadTenantWorkbench(
     sourceStatus,
     accountMetrics: [
       { label: '账户净资产', value: currencyMoney(balance?.netAssets, currency), helper: balance?.currency ?? currency },
-      { label: '账户现金', value: currencyMoney(balance?.totalCash, currency), helper: balance?.currency ?? currency },
-      { label: '现金可用', value: currencyMoney(cashInfo?.availableCash, currency), helper: balance?.currency ?? currency },
+      { label: '账户现金', value: currencyMoney(balance?.totalCash, currency), helper: `现金余额；与持仓市值共同构成净资产，${balance?.currency ?? currency}` },
+      { label: '现金可用', value: currencyMoney(cashInfo?.availableCash, currency), helper: `扣除融资与冻结占用后的可用现金，${balance?.currency ?? currency}` },
       { label: '最大购买力', value: currencyMoney(balance?.buyPower, currency), helper: balance?.currency ?? currency },
       { label: '风险等级', value: String(balance?.riskLevel ?? '未知'), helper: '当前绑定账户' },
     ],

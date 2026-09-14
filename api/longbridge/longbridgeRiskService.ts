@@ -50,6 +50,26 @@ export function longbridgeOpeningRiskRejectionReason(
   if (!equity || !buyingPower) {
     return `长桥开仓风控被拦截：${tradingCurrency} 账户权益或最大购买力不可用。`
   }
+  if (
+    options.blockOpeningWhenCashNegative !== false
+    && decision.action === 'BUY'
+  ) {
+    const availableCash = parseMoney(
+      account.summary.availableFundsInTradingCurrency
+        ?? account.summary.availableFunds,
+    )
+    const requiredCash = notional + estimatedFee
+    if (
+      availableCash !== undefined
+      && (availableCash <= 0 || !Number.isFinite(requiredCash) || requiredCash > availableCash)
+    ) {
+      return [
+        `长桥现金开仓保护已拦截：${tradingCurrency} 可用现金 ${formatMoney(availableCash, tradingCurrency)}`,
+        `订单金额与预估费用合计 ${formatMoney(requiredCash, tradingCurrency)}`,
+        '当前设置禁止使用融资购买股票。',
+      ].join('；')
+    }
+  }
   if (controls.buyingPowerProtection?.mode !== 'off' && notional > buyingPower * buyingPowerPct) {
     return `长桥开仓风控被拦截：名义金额 ${formatMoney(notional, tradingCurrency)} 超过 ${tradingCurrency} 最大购买力保护线 ${formatMoney(buyingPower * buyingPowerPct, tradingCurrency)}（当前最大购买力 ${formatMoney(buyingPower, tradingCurrency)}）。`
   }

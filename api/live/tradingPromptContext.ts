@@ -75,6 +75,7 @@ function accountFacts(account: LiveAccountDashboardResponse) {
     equity: parseMoney(s.totalAssetsInTradingCurrency ?? s.totalAssets) ?? null,
     buyingPower: parseMoney(s.buyingPowerInTradingCurrency ?? s.buyingPower) ?? null,
     cash: parseMoney(s.cashInTradingCurrency ?? s.cash) ?? null,
+    availableCash: parseMoney(s.availableFundsInTradingCurrency ?? s.availableFunds) ?? null,
     sourceAt: s.source?.timestamp ?? s.source?.accessedAt ?? null,
     positions: account.positions.map(p => ({
       ticker: p.ticker, assetType: p.assetType, quantity: parseMoney(p.quantity) ?? null,
@@ -87,7 +88,7 @@ function accountFacts(account: LiveAccountDashboardResponse) {
 export function buildSingleProductionContext(broker: TradingPromptBroker, input: {
   account: LiveAccountDashboardResponse; marketData: Market; trendContext?: TrendContextSummary
   managedOpenOrders?: ManagedOrder[]; pendingOrders?: Array<{ ticker: string; [key: string]: unknown }>
-  scope?: string
+  scope?: string; blockOpeningWhenCashNegative?: boolean
 }): ProductionPromptContext {
   const ticker = normalizedTicker(input.marketData.ticker)
   const account = accountFacts(input.account), market = marketSnapshot(input.marketData)!
@@ -107,6 +108,8 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
   const ordersKnowledge = input.managedOpenOrders && input.pendingOrders ? 'known' : 'unknown'
   if (ordersKnowledge === 'unknown') dataGaps.push('未确认完整托管/待确认订单范围')
   const strategy = getTradeStrategyRuntimeConfig('live').activeStrategy
+  const cashOnlyBuy = broker === 'longbridge'
+    && input.blockOpeningWhenCashNegative !== false
   const riskControls = {
     ...strategy.riskControls,
     portfolioHeat: strategy.riskControls?.portfolioHeat && {
@@ -135,6 +138,13 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
         portfolioHeat: '组合内所有开仓方案按失效价计算的预计亏损总额上限，不是订单名义金额或单票仓位占比上限。',
         perTradeLossBudget: '单笔按失效价计算的预计亏损观察值，不是订单名义金额上限。',
         singleNameExposure: '多头单票集中度仅动态评估，不存在固定5%硬上限。',
+      },
+      cashOpeningPolicy: {
+        mode: cashOnlyBuy ? 'AVAILABLE_CASH_ONLY' : 'BUYING_POWER_ALLOWED',
+        availableCash: account.availableCash,
+        rule: cashOnlyBuy
+          ? '开仓买入的订单金额与预估费用必须小于等于同币种可用现金，不得使用购买力中的融资额度。账户现金只用于资产对账。'
+          : '允许在券商融资风险门禁通过后按购买力开仓。',
       },
       trendFilters: strategy.trendFilters,
     },

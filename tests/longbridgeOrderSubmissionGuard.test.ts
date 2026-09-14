@@ -105,6 +105,27 @@ describe('Longbridge 最终提交风控', () => {
     expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 
+  it('待确认期间同币种可用现金不足时拒绝融资买入', async () => {
+    mocks.loadAccount.mockResolvedValueOnce(tradingAccount({
+      availableFunds: '$500.00',
+      availableFundsInTradingCurrency: '$500.00',
+      buyingPower: '$20,000.00',
+      buyingPowerInTradingCurrency: '$20,000.00',
+    }))
+    const order = pendingOrder()
+    longbridgeOrderQueueService.createPendingOrder(order)
+
+    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id)
+
+    expect(result).toMatchObject({
+      ok: false,
+      blockedByGate: true,
+    })
+    expect(result.error).toContain('现金开仓保护已拦截')
+    expect(result.error).toContain('禁止使用融资购买股票')
+    expect(mocks.submitOrder).not.toHaveBeenCalled()
+  })
+
   it('提交和持久化均使用方向性归一化后的实际价格', async () => {
     const order = pendingOrder()
     order.intent.limitPrice = 982.369

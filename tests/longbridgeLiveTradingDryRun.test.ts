@@ -134,6 +134,9 @@ describe('Longbridge order gate', () => {
       },
       407.77,
       testStrategy(),
+      'TSLA.US',
+      1,
+      { blockOpeningWhenCashNegative: false },
     )
 
     expect(reason).toContain('最大购买力保护线')
@@ -173,6 +176,8 @@ describe('Longbridge order gate', () => {
       totalAssets: 'HK$10,126.39',
       buyingPower: 'HK$10,126.39',
       totalAssetsInTradingCurrency: 'HK$10,126.39',
+      availableFunds: 'HK$10,126.39',
+      availableFundsInTradingCurrency: 'HK$10,126.39',
       buyingPowerInTradingCurrency: 'HK$10,126.39',
     }
     const reason = longbridgeOpeningRiskRejectionReason(
@@ -235,6 +240,40 @@ describe('Longbridge order gate', () => {
       1,
       { blockOpeningWhenCashNegative: true },
     )).toContain('负现金开仓保护已拦截')
+  })
+
+  it('可用现金为正但不足时在下单前拒绝融资买入', () => {
+    const account = lowBuyingPowerAccount()
+    account.summary.totalAssets = '$10,000.00'
+    account.summary.totalAssetsInTradingCurrency = '$10,000.00'
+    account.summary.availableFunds = '$100.00'
+    account.summary.availableFundsInTradingCurrency = '$100.00'
+    account.summary.buyingPower = '$2,000.00'
+    account.summary.buyingPowerInTradingCurrency = '$2,000.00'
+
+    const reason = longbridgeOpeningRiskRejectionReason(
+      account,
+      {
+        ok: true,
+        approved: true,
+        action: 'BUY',
+        ticker: 'AAPL',
+        orderQuantity: 2,
+        limitPrice: 100,
+        confidence: 'medium',
+        reason: 'test',
+        riskAssessment: 'test',
+        dataWindowUsed: { kline1mBars: 30, tickerPoints: 30, orderBookDepth: 5 },
+      },
+      100,
+      testStrategy(),
+      'AAPL.US',
+      1,
+      { blockOpeningWhenCashNegative: true },
+    )
+
+    expect(reason).toContain('现金开仓保护已拦截')
+    expect(reason).toContain('禁止使用融资购买股票')
   })
 
   it('融资风险达到预警时即使购买力为正也拒绝新增开仓', () => {

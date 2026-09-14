@@ -323,6 +323,26 @@ describe('多用户 Worker runtime', () => {
     expect(mocks.runChild).not.toHaveBeenCalled()
   })
 
+  it('同币种可用现金为正但不足时拒绝进入租户券商提交', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+      availableFunds: '$100.00',
+      availableFundsInTradingCurrency: '$100.00',
+      buyingPower: '$5,000.00',
+      buyingPowerInTradingCurrency: '$5,000.00',
+    }))
+
+    await expect(multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )).rejects.toThrow('现金开仓保护已拦截')
+    expect(mocks.runChild).not.toHaveBeenCalled()
+  })
+
   it('融资风险达到预警时即使购买力为正也拒绝提交', async () => {
     mocks.query.mockResolvedValueOnce([{
       mode: 'live',
@@ -370,6 +390,10 @@ describe('多用户 Worker runtime', () => {
 
   it('多租户最终提交使用方向性价格归一化后的载荷', async () => {
     mocks.loadMarketStates.mockResolvedValueOnce(new Map([['MU.US', 'RTH']]))
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+      availableFunds: '$3,000.00',
+      availableFundsInTradingCurrency: '$3,000.00',
+    }))
     mocks.query.mockResolvedValueOnce([{
       mode: 'live',
       live_trading_enabled: true,

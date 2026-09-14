@@ -167,7 +167,7 @@ export default function LongbridgeLiveTradingView() {
               <Badge tone={liveEnabled ? 'emerald' : 'amber'}>{liveEnabled ? '提交门禁已开启' : '长桥提交门禁关闭'}</Badge>
               <Badge tone={autoSubmitEnabled ? 'red' : 'cyan'}>{autoSubmitEnabled ? '自动下单已开启' : '人工确认模式'}</Badge>
               <Badge tone={blockOpeningWhenCashNegative ? 'emerald' : 'amber'}>
-                {blockOpeningWhenCashNegative ? '负现金保护已开启' : '负现金保护已关闭'}
+                {blockOpeningWhenCashNegative ? '现金开仓保护已开启' : '融资开仓已允许'}
               </Badge>
               <Badge tone={executionMode === 'candidate_pool' ? 'violet' : 'cyan'}>
                 {executionMode === 'candidate_pool' ? '组合策略已开启' : '大模型直推'}
@@ -250,7 +250,7 @@ export default function LongbridgeLiveTradingView() {
             <Guard ok={liveEnabled}>长桥实盘提交门禁 {liveEnabled ? '已开启' : '未开启'}</Guard>
             <Guard ok={!autoSubmitEnabled}>当前模式：{autoSubmitEnabled ? '自动提交真实订单' : '人工确认后提交'}</Guard>
             <Guard ok={blockOpeningWhenCashNegative}>
-              {blockOpeningWhenCashNegative ? '负现金时仅允许平仓' : '允许融资继续开仓'}
+              {blockOpeningWhenCashNegative ? '买入不得超过同币种可用现金' : '允许使用融资购买力开仓'}
             </Guard>
             <Guard ok={authReady}>长桥账户授权 {authReady ? '已登录' : '不可用'}</Guard>
           </div>

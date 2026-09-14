@@ -98,6 +98,7 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
   const buyingPowerNumeric = parseMoney(buyingPower)
   const availableFunds = input.account.summary.availableFundsInTradingCurrency ?? input.account.summary.availableFunds
   const availableFundsNumeric = parseMoney(availableFunds)
+  const cashOnlyBuy = input.blockOpeningWhenCashNegative !== false
   const lotSize = input.marketData.lotSize ?? fallbackLotSize(input.marketData.symbol)
   const isHongKong = input.marketData.symbol.toUpperCase().endsWith('.HK')
   const tradingCurrency = input.account.summary.tradingCurrency ?? (isHongKong ? 'HKD' : 'USD')
@@ -137,6 +138,10 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
           availableFundsNumeric,
           buyingPowerNumeric,
           maxOpeningNotional: buyingPowerNumeric,
+          maxCashFundedBuyNotional:
+            cashOnlyBuy && availableFundsNumeric !== undefined
+              ? Math.max(0, availableFundsNumeric)
+              : null,
           financingRisk: {
             level: input.account.summary.financingRiskLevel ?? null,
             label: financingRiskLabel,
@@ -151,14 +156,17 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
               : '融资风险等级是购买力之前的开仓门禁；风险等级达到预警或危险时，即使 buyingPower 大于 0 也禁止新增仓位。',
           },
           blockOpeningWhenCashNegative:
-            input.blockOpeningWhenCashNegative !== false,
+            cashOnlyBuy,
           orderSizingConstraint:
             financingOpeningRestricted
               ? `长桥融资风险等级为${financingRiskLabel}，账户已禁止新增开仓；不得使用剩余购买力继续融资，必须 HOLD 或仅减仓/平仓。`
-              : input.blockOpeningWhenCashNegative !== false
+              : cashOnlyBuy
               && availableFundsNumeric !== undefined
               && availableFundsNumeric < 0
               ? `负现金开仓保护已开启，当前可用现金为 ${formatMoney(availableFundsNumeric, tradingCurrency)}；禁止 BUY 新增长仓和 SELL_SHORT 新增空仓，只允许 SELL_TO_CLOSE 或 BUY 回补现有空头。`
+              : cashOnlyBuy
+              && availableFundsNumeric !== undefined
+                ? `现金开仓保护已开启；开仓 BUY 的 orderQuantity * limitPrice + 预估费用不得超过同币种可用现金 ${formatMoney(availableFundsNumeric, tradingCurrency)}，不得使用最大购买力中的融资额度。`
               : buyingPowerNumeric !== undefined
                 ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric, tradingCurrency)}；若最小交易单位也超过最大购买力，必须 HOLD。`
                 : '最大购买力不可解析；开仓 BUY / SELL_SHORT 必须 HOLD。',
@@ -169,7 +177,9 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
               : '美股 orderQuantity 按正整数股计算，不套用港股整手约束。',
           },
           tradingCurrencyContext: {
-            rule: '交易币种必须跟随 targetInstrument.tradingCurrency。US 标的使用 USD 字段计算名义金额、权益占比和购买力；HK 标的使用对应交易币种口径，并按长桥返回的市场时段理解。availableFunds 是可用资金；buyingPower 是长桥最大购买力，判断能否买入应优先看 buyingPower。',
+            rule: cashOnlyBuy
+              ? '交易币种必须跟随 targetInstrument.tradingCurrency。账户现金只用于资产对账；开仓买入必须以同币种 availableFunds 为现金上限，不得使用 buyingPower 中的融资额度。'
+              : '交易币种必须跟随 targetInstrument.tradingCurrency。availableFunds 是同币种可用现金；buyingPower 是包含融资额度的最大购买力，当前允许按购买力判断能否开仓。',
             totalAssetsUsd: input.account.summary.totalAssetsInTradingCurrency ?? input.account.summary.totalAssets,
             cashUsd: input.account.summary.cashInTradingCurrency ?? input.account.summary.cash,
             availableFundsUsd: availableFunds,

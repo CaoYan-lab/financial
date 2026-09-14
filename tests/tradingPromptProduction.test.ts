@@ -25,7 +25,7 @@ const now = () => new Date().toISOString()
 const account = () => ({
   ok: true, selectedAccountId: 'account-a',
   summary: { accountId: 'account-a', currency: 'USD', tradingCurrency: 'USD', totalAssets: '$10000',
-    cash: '$5000', buyingPower: '$20000', financingRiskLevel: 0,
+    cash: '$5000', availableFunds: '$5000', buyingPower: '$20000', financingRiskLevel: 0,
     financingCurrency: 'USD', financingEquity: '$10000', initialMargin: '$0', maintenanceMargin: '$0',
     futuExposureLevel: 'SAFE', futuRiskStatus: 'LEVEL1', marginCall: '$0',
     source: { timestamp: now() } },
@@ -97,6 +97,13 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(sent.risk.notionalLimit).toBeNull()
     expect(sent.risk.notionalRule).toContain('不得将5%组合风险预算解释为只能买5%仓位')
     expect(sent.policy.riskControlSemantics.portfolioHeat).toContain('不是订单名义金额')
+    if (broker === 'longbridge') {
+      expect(sent.account.availableCash).toBe(5000)
+      expect(sent.policy.cashOpeningPolicy).toMatchObject({
+        mode: 'AVAILABLE_CASH_ONLY',
+        availableCash: 5000,
+      })
+    }
     expect(sent.policy.riskControls.portfolioHeat).toMatchObject({
       maxAggregateLossPctEquity: 0.05,
       metric: 'AGGREGATE_MAX_LOSS_AT_INVALIDATION',
@@ -139,6 +146,23 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     delete missing.exitCondition
     expect(validateProductionOutput(ctx, missing).contractErrors).toContain('$.exitCondition:missing')
     expect(validateProductionOutput(ctx, { ...hold(), orderQuantity: 0.5 }).contractErrors).toContain('decision_shape')
+  })
+
+  it('长桥现金开仓保护在模型输出校验阶段拒绝超出可用现金的买入', () => {
+    const input = single()
+    input.account.summary.availableFunds = '$100'
+    const ctx = buildSingleProductionContext('longbridge', input)
+    const output = {
+      ...hold(),
+      approved: true,
+      action: 'BUY',
+      orderQuantity: 1,
+      limitPrice: 180,
+      positionEffect: 'OPEN_LONG',
+      invalidationPrice: 170,
+    }
+
+    expect(validateProductionOutput(ctx, output).policyErrors).toContain('available_cash_exceeded')
   })
   it.each(['futu', 'longbridge'] as const)('%s即使模型批准开仓也返回HOLD，不生成执行授权', async broker => {
     const output = { ...hold(), approved: true, action: 'BUY', orderQuantity: 1, limitPrice: 180, positionEffect: 'OPEN_LONG', invalidationPrice: 179 }
