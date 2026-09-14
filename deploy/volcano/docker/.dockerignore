@@ -15,6 +15,7 @@ logs/
 .venv/
 .venv-*/
 node_modules/
+.build-assets/
 
 # 第三方仓库（构建期由 fetch-tradingagents.sh 重新拉取）
 third_party/

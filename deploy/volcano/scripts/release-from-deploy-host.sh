@@ -15,6 +15,7 @@ PUBLIC_HEALTH_URL="${FIN_PUBLIC_HEALTH_URL:-https://s0ii6ameg9bmnc9s8rrtt.apigat
 BUILD_ASSET_DIR="$SOURCE_DIR/.build-assets"
 TRADINGAGENTS_ARCHIVE="$BUILD_ASSET_DIR/tradingagents-85946c2f.tar.gz"
 LONGBRIDGE_NATIVE_ARCHIVE="$BUILD_ASSET_DIR/longbridge-linux-x64-gnu-4.3.2.tgz"
+MAX_IMAGE_SIZE_BYTES="${FIN_MAX_IMAGE_SIZE_BYTES:-1500000000}"
 
 if [[ "$(hostname)" != "$EXPECTED_HOST" ]]; then
   echo "拒绝发布：当前主机不是指定部署机 $EXPECTED_HOST" >&2
@@ -174,10 +175,26 @@ echo "[1/7] 构建镜像 $IMAGE"
 podman build \
   --layers \
   --network host \
+  --secret "id=tradingagents_archive,src=$TRADINGAGENTS_ARCHIVE" \
+  --secret "id=longbridge_native_archive,src=$LONGBRIDGE_NATIVE_ARCHIVE" \
   --build-arg "WORKER_DEPLOYMENT_GENERATION=$GENERATION" \
   -f deploy/volcano/docker/Dockerfile.vefaas \
   -t "$IMAGE" \
   .
+
+image_size_bytes="$(podman image inspect --format '{{.Size}}' "$IMAGE")"
+echo "[门禁] 镜像未压缩大小：$image_size_bytes bytes（上限：$MAX_IMAGE_SIZE_BYTES）"
+if (( image_size_bytes > MAX_IMAGE_SIZE_BYTES )); then
+  echo "镜像体积超过发布上限，拒绝推送：$IMAGE" >&2
+  exit 1
+fi
+podman run --rm --entrypoint bash "$IMAGE" -lc '
+  test ! -e /app/.build-assets
+  test ! -e /tmp/build-assets
+  test ! -d /app/node_modules/vite
+  node -e "require(\"longbridge\")"
+  /app/.venv-tradingagents/bin/python -c "import tradingagents"
+'
 
 echo "[2/7] 刷新 CR 登录并推送镜像"
 refresh_registry_login

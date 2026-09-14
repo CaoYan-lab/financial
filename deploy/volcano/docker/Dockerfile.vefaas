@@ -31,11 +31,17 @@ WORKDIR /app
 # longbridge-linux-* 是无关旧包（0.2.x），缺 4.x；故主依赖走 npmmirror 加速后，
 # 再安装发布机预下载并校验的 longbridge-linux-x64-gnu@4.3.2 制品。
 COPY package.json package-lock.json ./
-COPY .build-assets/ /tmp/build-assets/
-RUN npm config set registry https://registry.npmmirror.com \
+RUN --mount=type=secret,id=longbridge_native_archive,target=/tmp/longbridge-linux-x64-gnu-4.3.2.tgz \
+  npm config set registry https://registry.npmmirror.com \
   && npm install --omit=dev \
   && npm install -g tsx \
-  && npm install --no-save /tmp/build-assets/longbridge-linux-x64-gnu-4.3.2.tgz \
+  && npm install --no-save --omit=dev /tmp/longbridge-linux-x64-gnu-4.3.2.tgz \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends binutils \
+  && strip --strip-unneeded node_modules/longbridge-linux-x64-gnu/longbridge.linux-x64-gnu.node \
+  && apt-get purge -y --auto-remove binutils \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm cache clean --force \
   && node -e "require('longbridge')"
 
 # Python 依赖（PG 驱动 + 数据处理）用火山 pypi 镜像；
@@ -57,8 +63,9 @@ COPY --from=frontend /app/dist ./dist
 # TradingAgents（A股多智能体）构建期拉取并装到独立 venv；
 # 报告依赖缺失会导致运行时故障，因此拉取或安装失败必须阻断发布。
 ARG SKIP_TRADINGAGENTS=
-RUN if [ -z "$SKIP_TRADINGAGENTS" ]; then \
-      TRADINGAGENTS_ARCHIVE=/tmp/build-assets/tradingagents-85946c2f.tar.gz \
+RUN --mount=type=secret,id=tradingagents_archive,target=/tmp/tradingagents-85946c2f.tar.gz \
+    if [ -z "$SKIP_TRADINGAGENTS" ]; then \
+      TRADINGAGENTS_ARCHIVE=/tmp/tradingagents-85946c2f.tar.gz \
         bash deploy/volcano/scripts/fetch-tradingagents.sh; \
     fi
 

@@ -30,6 +30,7 @@ ARCHIVE="${TRADINGAGENTS_ARCHIVE:-}"
 PIP_INDEX_URL="${TRADINGAGENTS_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple/}"
 export PIP_INDEX_URL
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-60}"
+export PIP_NO_CACHE_DIR=1
 
 echo "[fetch-tradingagents] 项目根: $PROJECT_ROOT"
 echo "[fetch-tradingagents] 目标仓库: $REPO_PATH"
