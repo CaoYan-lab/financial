@@ -25,6 +25,8 @@ Futu 与 Longbridge 均支持三种模式：
 - `api/live/tradingPromptReleaseService.ts`：模式持久化、有效模式解析及当前生产提示词元数据。
 - `api/live/liveTradingDecisionService.ts`：Futu 单票模式分流。
 - `api/longbridge/longbridgeLiveDecisionService.ts`：Longbridge 单票模式分流。
+- `api/live/managedOrderDecisionService.ts`：默认账户和租户绑定的挂单监管模式分流。
+- `api/cloud/multiuser/worker/multiUserWorkerRuntime.ts`：租户挂单同步、模型复核、决策留痕及自动撤单最终复核。
 - `src/components/trading/TradingPromptModePanel.tsx`：模式切换。
 - `src/components/trading/TradeStrategyConfigPanel.tsx`：当前实际提示词版本和全文展示。
 
@@ -61,6 +63,15 @@ Futu 与 Longbridge 均支持三种模式：
 - 自动下单和自动撤单由独立门禁控制；切换提示词不会绕过这些门禁。
 - 影子模式不会创建候选订单、组合晋级或撤单授权。
 
+## 租户挂单监管
+
+- 租户提示词切换使用 `userId:bindingId` 作为作用域，单票、组合、挂单三类角色始终读取同一租户配置，不读取默认账户配置。
+- 挂单上下文只读取该绑定下 `multiuser.longbridge_managed_orders` 中的非终态订单，并使用该绑定的 Longbridge SDK Context 获取账户、持仓、订单和行情。
+- 新版影子模式调用并审计新版挂单提示词，但不写入撤单授权；新版实盘模式通过契约和政策校验后写入 `model_decided` 事件。
+- 只有原订单已持久化明确 `positionEffect`、订单归属已验证、状态可撤、快照未过期时，模型 `CANCEL` 才能通过后端校验；旧订单缺少开平仓效果时保持 `KEEP`。
+- 自动撤单还要求租户开启自动撤单、模型给出高置信度 `CANCEL`，并通过数据库原子认领及券商状态重新读取；影子模式、低置信度、不可撤或终态订单均不会调用撤单接口。
+- 模型 `KEEP` 会清除此前未执行的模型撤单建议并恢复券商实际跟踪状态。租户订单详情页可查看模型复核和撤单事件。
+
 ## 验证记录
 
 2026-09-13 已完成当前 20 个交易标的 × Futu/Longbridge × 旧版/新版的 80 项真实模型矩阵。测试独立禁用订单队列和券商提交：
@@ -70,6 +81,29 @@ Futu 与 Longbridge 均支持三种模式：
 - 修正版风险输入：Futu 20/20 为 `BLOCKED`，Longbridge 20/20 为 `ALLOWED`，不存在 `UNKNOWN`。
 - Futu `07747` 的新版减仓建议因模型耗时 107 秒导致快照过期，被最终门禁阻断；未提交订单。
 - 对比结果保存于 `.data/trading-prompt-comparison.sqlite3`，并在两个实盘页面展示。
+
+2026-09-14 本地新版提示词运行时修复 Longbridge 港股数据预检：
+
+- SDK 对 `09660`、`07709`、`07747` 均成功返回 1000 根缓存 K 线；原“数据不足”是读取层只保留最近单个交易日造成的误判，不是 SDK 拉取失败。
+- 盘初或低成交标的在当日不足 120 根时，改为按时间连续取最近 120 根，仍优先使用当日数据。
+- SDK quote 尚未产生首个推送时，以最新 1 分钟 K 线收盘价初始化报价，后续实时 quote 会覆盖该值。
+- 独立真实 SDK 验证三只标的均通过：`120` 根 K 线、有效最新价及盘口；`07747` 无成交 tick 时按既有规则使用 quote 最新价兜底。
+
+2026-09-14 本地租户挂单新版接入验证：
+
+- 全量 Vitest：86 个测试文件通过，531 项通过、1 项跳过；TypeScript、ESLint 和生产构建通过，ESLint 仅保留 6 条既有警告。
+- PostgreSQL 提示词模式集成测试通过，确认租户可保存 `legacy`、`shadow`、`live`，且模式版本使用数据库乐观锁。
+- 使用已验证、无活跃挂单且自动撤单关闭的普通租户完成真实接口和页面往返验证：旧版、新版影子、新版实盘下，单票、组合、挂单三类角色均与选择一致。
+- 三种模式均返回生产提示词版本 `dual-broker-production-v2.4.1-1`；新版模式由相同后端定义生成展示文本和模型请求。
+- 验证结束后租户模式已恢复为旧版；没有真实下单或撤单。Web 与 Worker 已使用最新代码重启于 `5173` 和 `4102`。
+
+## 云端发布与 Worker 接管
+
+- Web 与 Worker 的正式发布统一在部署机 `115.191.35.144` 执行，本地开发机只负责测试、提交和传输已提交源码。
+- 发布入口固定为 `deploy/volcano/scripts/release-from-deploy-host.sh <vNN> <source-dir>`；脚本使用文件锁防止并发发布，并按 Worker、Web 顺序更新和发布同一镜像。
+- Worker 发布时从镜像标签提取单调递增的 `WORKER_DEPLOYMENT_GENERATION`。新代际启动后可在恢复锁保护下立即终止旧代际占用的 PostgreSQL advisory lock 并原子接管；同代际实例仍保持单 Leader。
+- 当前 Leader 每 5 秒检查目标代际，发现更高代际后主动退出。旧 Revision 即使被平台重新拉起，也不能反向抢占新代际 Leader。
+- 未配置发布代际时保留原有行为：只在心跳超过 `WORKER_LEADER_STALE_MS` 后回收过期连接，兼容本地运行和旧部署。
 
 修正版报告：
 

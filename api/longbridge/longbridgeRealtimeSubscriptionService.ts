@@ -142,6 +142,7 @@ class LongbridgeRealtimeSubscriptionService {
     await mapLimit(symbols, DEFAULT_BACKFILL_CONCURRENCY, async (symbol) => {
       const snapshot = longbridgeRealtimeStore.getSnapshot(symbol)
       const existingBars = snapshot?.bars['1m']?.length ?? 0
+      seedQuoteFromLatestBar(symbol, snapshot)
       const lastSeededAt = this.historicalSeededAt.get(symbol) ?? 0
       if (existingBars >= requiredKlineCount && now - lastSeededAt < DEFAULT_HISTORICAL_SEED_TTL_MS) return
 
@@ -153,6 +154,7 @@ class LongbridgeRealtimeSubscriptionService {
         if (!this.ctx) throw new Error('Longbridge SDK QuoteContext 不可用。')
         const bars = await fetchLongbridgeHistoricalSeed(this.ctx, symbol, requiredKlineCount)
         longbridgeRealtimeStore.upsertBars(symbol, '1m', bars)
+        seedQuoteFromLatestBar(symbol, longbridgeRealtimeStore.getSnapshot(symbol))
         const updatedBars = longbridgeRealtimeStore.getSnapshot(symbol)?.bars['1m']?.length ?? 0
         if (updatedBars >= requiredKlineCount) {
           this.historicalSeededAt.set(symbol, Date.now())
@@ -207,6 +209,22 @@ class LongbridgeRealtimeSubscriptionService {
 }
 
 export const longbridgeRealtimeSubscriptionService = new LongbridgeRealtimeSubscriptionService()
+
+export function seedQuoteFromLatestBar(
+  symbol: string,
+  snapshot: ReturnType<typeof longbridgeRealtimeStore.getSnapshot>,
+): boolean {
+  if (snapshot?.quote) return false
+  const latestBar = snapshot?.bars['1m']?.at(-1)
+  if (!latestBar) return false
+  longbridgeRealtimeStore.upsertQuote({
+    symbol,
+    lastPrice: latestBar.close,
+    updatedAt: latestBar.time,
+    source: 'longbridge-sdk-cache',
+  })
+  return true
+}
 
 export async function fetchLongbridgeHistoricalSeed(
   context: Pick<QuoteContextLike, 'candlesticks'>,

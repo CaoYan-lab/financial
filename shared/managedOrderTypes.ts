@@ -33,6 +33,7 @@ export type ManagedOrder = {
   orderSession?: string
   strategy: string
   tradeHorizon?: string
+  positionEffect?: 'OPEN_LONG' | 'ADD_LONG' | 'OPEN_SHORT' | 'ADD_SHORT' | 'REDUCE_LONG' | 'COVER_SHORT'
   submittedQuantity: number
   executedQuantity: number
   remainingQuantity: number

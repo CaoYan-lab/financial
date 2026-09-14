@@ -1,4 +1,5 @@
 import { query } from '../../db/pgClient.js'
+import type { ManagedOrder } from '../../../../shared/managedOrderTypes.js'
 import { logger } from '../../../utils/logger.js'
 import { orderSubmissionSessionFailureReason } from '../../../simulation/usOvernightLlmGate.js'
 import { normalizeLongbridgeSymbol } from '../../../longbridge/longbridgeMarketSessionService.js'
@@ -38,10 +39,12 @@ import {
 } from '../longbridge/tenantMarketSessionService.js'
 import {
   loadTenantAccountForTrading,
+  loadTenantMarketData,
   runTenantStrategyOnce,
   runTenantStrategyPoolOnce,
 } from '../longbridge/tenantStrategyService.js'
 import { multiUserEnabled } from '../auth/multiUserAuthService.js'
+import { requestManagedOrderDecisions } from '../../../live/managedOrderDecisionService.js'
 
 const POLL_MS = Number(process.env.MULTIUSER_WORKER_POLL_MS || 3_000)
 const HEARTBEAT_MS = Number(process.env.MULTIUSER_HEARTBEAT_MS || 30_000)
@@ -63,6 +66,7 @@ let active = false
 let workerId = ''
 let jobTimer: NodeJS.Timeout | undefined
 let heartbeatTimer: NodeJS.Timeout | undefined
+const lastManagedReviewByBinding = new Map<string, number>()
 
 async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>> {
   if (job.jobType === 'multiuser.longbridge.verify_connection') {
@@ -223,6 +227,7 @@ async function handleTenantJob(job: TenantJob): Promise<Record<string, unknown>>
           orderSession: pending.intent.orderSession,
           strategy: pending.intent.strategy,
           tradeHorizon: pending.llmDecision.tradeHorizon,
+          positionEffect: managedPositionEffect(pending.llmDecision.promptAudit?.output?.positionEffect),
           submittedQuantity: pending.intent.quantity,
           executedQuantity: 0,
           remainingQuantity: pending.intent.quantity,
@@ -453,18 +458,22 @@ async function superviseTenantOrders(
     `SELECT order_id, payload, created_at
      FROM multiuser.longbridge_managed_orders
      WHERE user_id = $1 AND binding_id = $2
-       AND status IN ('TRACKING', 'PARTIALLY_FILLED', 'CANCEL_REQUESTED', 'CANCEL_PENDING')
+       AND status IN ('TRACKING', 'PARTIALLY_FILLED', 'CANCEL_RECOMMENDED', 'CANCEL_REQUESTED', 'CANCEL_PENDING')
      ORDER BY updated_at
      LIMIT 50`,
     [userId, connection.id],
   )
+  const reviewable: ManagedOrder[] = []
   for (const order of orders) {
     const detail = await runTenantOrderChild(connection, 'detail', {
       orderId: order.order_id,
       submittedAt: order.payload.submittedAt,
     })
     if (detail.ok !== true) continue
-    const status = managedStatus(Number(detail.status))
+    const brokerStatus = managedStatus(Number(detail.status))
+    const status = order.payload.status === 'CANCEL_RECOMMENDED' && !isTerminalManagedStatus(brokerStatus)
+      ? 'CANCEL_RECOMMENDED'
+      : brokerStatus
     const submittedQuantity = Number(detail.quantity ?? order.payload.submittedQuantity ?? 0)
     const executedQuantity = Number(detail.executedQuantity ?? 0)
     const canCancel = [1, 6, 7, 11].includes(Number(detail.status))
@@ -516,8 +525,177 @@ async function superviseTenantOrders(
          ON CONFLICT (user_id, binding_id, request_id) DO NOTHING`,
         [userId, connection.id, order.order_id, `auto-cancel:${order.order_id}`, JSON.stringify(cancelled)],
       )
+      continue
+    }
+    if (['TRACKING', 'PARTIALLY_FILLED', 'CANCEL_RECOMMENDED'].includes(status)) {
+      reviewable.push(next as ManagedOrder)
     }
   }
+  await reviewTenantManagedOrders(userId, connection, reviewable, autoCancelEnabled, settings)
+}
+
+async function reviewTenantManagedOrders(
+  userId: string,
+  connection: NonNullable<Awaited<ReturnType<typeof getOwnedConnection>>>,
+  orders: ManagedOrder[],
+  autoCancelEnabled: boolean,
+  settings: Record<string, unknown>,
+): Promise<void> {
+  if (!orders.length) return
+  const scope = `${userId}:${connection.id}`
+  const intervalMs = Math.max(5, Number(settings.modelReviewIntervalSeconds) || 60) * 1_000
+  const now = Date.now()
+  if (now - (lastManagedReviewByBinding.get(scope) ?? 0) < intervalMs) return
+  lastManagedReviewByBinding.set(scope, now)
+
+  const symbols = orders.map(order => normalizeLongbridgeSymbol(order.ticker))
+  const marketStates = await loadTenantMarketStates(connection, symbols).catch(
+    () => new Map(symbols.map(symbol => [symbol, 'UNAVAILABLE'])),
+  )
+  const accountByCurrency = new Map<string, Awaited<ReturnType<typeof loadTenantAccountForTrading>>>()
+  const contexts = []
+  for (const order of orders) {
+    const symbol = normalizeLongbridgeSymbol(order.ticker)
+    const currency = longbridgeTradingCurrency(symbol)
+    let account = accountByCurrency.get(currency)
+    if (!account) {
+      try {
+        account = await loadTenantAccountForTrading(connection, currency)
+        accountByCurrency.set(currency, account)
+      } catch {
+        contexts.push({
+          order,
+          account: { positions: [] },
+          marketData: { ok: false, ticker: order.ticker, reason: '当前租户账户快照不可用' },
+        })
+        continue
+      }
+    }
+    const marketData = await loadTenantMarketData(
+      connection,
+      symbol,
+      marketStates.get(symbol) ?? 'UNAVAILABLE',
+    )
+    contexts.push({
+      order,
+      accountSnapshot: account,
+      account: {
+        totalAssets: account.summary.totalAssets,
+        buyingPower: account.summary.buyingPower,
+        positions: account.positions,
+      },
+      marketData,
+    })
+  }
+
+  const decisions = await requestManagedOrderDecisions({
+    platform: 'longbridge',
+    orders: contexts,
+    promptScope: scope,
+  })
+  for (const order of orders) {
+    const decision = decisions.get(`longbridge:${order.orderId}`)
+    if (!decision) continue
+    const nextStatus = decision.action === 'CANCEL'
+      ? 'CANCEL_RECOMMENDED'
+      : order.executedQuantity > 0 ? 'PARTIALLY_FILLED' : 'TRACKING'
+    const next = { ...order, status: nextStatus, latestDecision: decision, updatedAt: decision.decidedAt }
+    const saved = await query<{ payload: ManagedOrder }>(
+      `UPDATE multiuser.longbridge_managed_orders
+       SET status = $4, payload = $5::jsonb, updated_at = now()
+       WHERE user_id = $1 AND binding_id = $2 AND order_id = $3
+         AND status IN ('TRACKING', 'PARTIALLY_FILLED', 'CANCEL_RECOMMENDED')
+       RETURNING payload`,
+      [userId, connection.id, order.orderId, nextStatus, JSON.stringify(next)],
+    )
+    if (!saved.length) continue
+    await query(
+      `INSERT INTO multiuser.longbridge_order_events
+         (user_id, binding_id, order_id, event_type, request_id, detail)
+       VALUES ($1, $2, $3, 'model_decided', $4, $5::jsonb)
+       ON CONFLICT (user_id, binding_id, request_id) DO NOTHING`,
+      [userId, connection.id, order.orderId, `model:${order.orderId}:${decision.decidedAt}`, JSON.stringify(decision)],
+    )
+    if (autoCancelEnabled && decision.action === 'CANCEL' && decision.confidence === 'high') {
+      await cancelTenantManagedOrder(userId, connection, saved[0].payload, decision.reason)
+    }
+  }
+}
+
+async function cancelTenantManagedOrder(
+  userId: string,
+  connection: NonNullable<Awaited<ReturnType<typeof getOwnedConnection>>>,
+  order: ManagedOrder,
+  reason: string,
+): Promise<void> {
+  const claimed = await query<{ payload: ManagedOrder }>(
+    `UPDATE multiuser.longbridge_managed_orders
+     SET status = 'CANCEL_REQUESTED',
+         payload = payload || jsonb_build_object(
+           'status', 'CANCEL_REQUESTED',
+           'cancelRequestId', $4::text,
+           'updatedAt', $5::text
+         ),
+         updated_at = now()
+     WHERE user_id = $1 AND binding_id = $2 AND order_id = $3
+       AND status = 'CANCEL_RECOMMENDED'
+       AND COALESCE((payload->>'ownershipVerified')::boolean, false) = true
+       AND COALESCE((payload->>'canCancel')::boolean, false) = true
+     RETURNING payload`,
+    [userId, connection.id, order.orderId, `model-cancel:${order.orderId}:${order.updatedAt}`, new Date().toISOString()],
+  )
+  if (!claimed.length) return
+  const detail = await runTenantOrderChild(connection, 'detail', {
+    orderId: order.orderId,
+    submittedAt: order.submittedAt,
+  })
+  const brokerStatus = detail.ok === true ? managedStatus(Number(detail.status)) : 'UNKNOWN'
+  const canCancel = detail.ok === true && [1, 6, 7, 11].includes(Number(detail.status))
+  if (!canCancel || isTerminalManagedStatus(brokerStatus)) {
+    await updateTenantManagedCancelResult(userId, connection.id, order, brokerStatus, false, detail)
+    return
+  }
+  const cancelled = await runTenantOrderChild(connection, 'cancel', { orderId: order.orderId })
+  await updateTenantManagedCancelResult(
+    userId,
+    connection.id,
+    order,
+    cancelled.ok === true ? 'CANCEL_PENDING' : brokerStatus,
+    cancelled.ok === true,
+    cancelled,
+  )
+  await query(
+    `INSERT INTO multiuser.longbridge_order_events
+       (user_id, binding_id, order_id, event_type, request_id, detail)
+     VALUES ($1, $2, $3, 'model_cancel_requested', $4, $5::jsonb)
+     ON CONFLICT (user_id, binding_id, request_id) DO NOTHING`,
+    [userId, connection.id, order.orderId, `model-cancel-result:${order.orderId}:${order.updatedAt}`, JSON.stringify({ reason, result: cancelled })],
+  )
+}
+
+async function updateTenantManagedCancelResult(
+  userId: string,
+  bindingId: string,
+  order: ManagedOrder,
+  status: string,
+  accepted: boolean,
+  detail: Record<string, unknown>,
+): Promise<void> {
+  const now = new Date().toISOString()
+  await query(
+    `UPDATE multiuser.longbridge_managed_orders
+     SET status = $4,
+         payload = payload || jsonb_build_object(
+           'status', $4::text,
+           'canCancel', $5::boolean,
+           'cancelError', $6::text,
+           'updatedAt', $7::text
+         ),
+         updated_at = now()
+     WHERE user_id = $1 AND binding_id = $2 AND order_id = $3
+       AND status = 'CANCEL_REQUESTED'`,
+    [userId, bindingId, order.orderId, status, false, accepted ? '' : String(detail.error ?? '券商当前状态不可撤'), now],
+  )
 }
 
 function managedStatus(status: number): string {
@@ -535,6 +713,12 @@ function isTerminalManagedStatus(status: string): boolean {
   return ['FILLED', 'CANCELED', 'PARTIALLY_CANCELED', 'REJECTED', 'EXPIRED'].includes(status)
 }
 
+function managedPositionEffect(value: unknown): ManagedOrder['positionEffect'] {
+  return ['OPEN_LONG', 'ADD_LONG', 'OPEN_SHORT', 'ADD_SHORT', 'REDUCE_LONG', 'COVER_SHORT'].includes(String(value))
+    ? value as ManagedOrder['positionEffect']
+    : undefined
+}
+
 export function startMultiUserWorkerRuntime(id: string): void {
   if (!multiUserEnabled() || active) return
   active = true
@@ -550,11 +734,13 @@ export function stopMultiUserWorkerRuntime(): void {
   if (heartbeatTimer) clearTimeout(heartbeatTimer)
   jobTimer = undefined
   heartbeatTimer = undefined
+  lastManagedReviewByBinding.clear()
 }
 
 export const multiUserWorkerTestHarness = {
   handleTenantJob,
   superviseTenantOrders,
+  reviewTenantManagedOrders,
   managedStatus,
   isTerminalManagedStatus,
 }

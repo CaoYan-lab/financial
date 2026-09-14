@@ -17,19 +17,30 @@ import { logger } from '../../utils/logger.js'
 // 固定锁 key（任意大整数，'fin cloud worker leader' 派生常量）
 export const LEADER_LOCK_KEY = 7129036401
 const LEADER_RECOVERY_LOCK_KEY = LEADER_LOCK_KEY + 1
+const LEADER_TARGET_GENERATION_KEY = 'cloud.worker.target_generation'
 const LEADER_STALE_MS = Math.max(
   30_000,
   Number(process.env.WORKER_LEADER_STALE_MS || 90_000) || 90_000,
 )
+
+export function workerDeploymentGeneration(): number {
+  const value = Number(process.env.WORKER_DEPLOYMENT_GENERATION || 0)
+  return Number.isSafeInteger(value) && value > 0 ? value : 0
+}
 
 /**
  * 尝试获取 leader 锁。
  * 成功：返回被持有、不可释放回池的连接（锁随其生命周期持有）；
  * 失败：连接已释放回池，返回 null（表示已有 leader）。
  */
-export async function tryAcquireLeader(): Promise<PoolClient | null> {
+export async function tryAcquireLeader(
+  candidateGeneration = workerDeploymentGeneration(),
+): Promise<PoolClient | null> {
   const client = await getPool().connect()
   try {
+    if (candidateGeneration > 0) {
+      await announceDeploymentGeneration(client, candidateGeneration)
+    }
     const res = await client.query<{ got: boolean }>(
       'SELECT pg_try_advisory_lock($1::bigint) AS got',
       [LEADER_LOCK_KEY],
@@ -37,7 +48,7 @@ export async function tryAcquireLeader(): Promise<PoolClient | null> {
     if (res.rows[0]?.got) {
       return client
     }
-    if (await recoverStaleLeader(client)) {
+    if (await recoverStaleLeader(client, candidateGeneration)) {
       return client
     }
     client.release()
@@ -48,7 +59,28 @@ export async function tryAcquireLeader(): Promise<PoolClient | null> {
   }
 }
 
-async function recoverStaleLeader(client: PoolClient): Promise<boolean> {
+async function announceDeploymentGeneration(
+  client: PoolClient,
+  generation: number,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO app_config(key, value, updated_at)
+     VALUES ($1, jsonb_build_object('generation', $2::bigint), now())
+     ON CONFLICT(key) DO UPDATE
+       SET value = EXCLUDED.value, updated_at = now()
+       WHERE CASE
+         WHEN app_config.value->>'generation' ~ '^[0-9]+$'
+           THEN (app_config.value->>'generation')::bigint
+         ELSE 0
+       END < $2::bigint`,
+    [LEADER_TARGET_GENERATION_KEY, generation],
+  )
+}
+
+async function recoverStaleLeader(
+  client: PoolClient,
+  candidateGeneration: number,
+): Promise<boolean> {
   const recovery = await client.query<{ got: boolean }>(
     'SELECT pg_try_advisory_lock($1::bigint) AS got',
     [LEADER_RECOVERY_LOCK_KEY],
@@ -56,18 +88,33 @@ async function recoverStaleLeader(client: PoolClient): Promise<boolean> {
   if (!recovery.rows[0]?.got) return false
 
   try {
-    const status = await client.query<{ stale: boolean }>(
-      `SELECT COALESCE(
-         (
-           SELECT heartbeat_at < now() - make_interval(secs => $1)
-           FROM cloud_worker_status
-           WHERE platform = 'leader'
-         ),
-         FALSE
-       ) AS stale`,
+    const status = await client.query<{ stale: boolean; leader_generation: string }>(
+      `SELECT
+         COALESCE(
+           (
+             SELECT heartbeat_at < now() - make_interval(secs => $1)
+             FROM cloud_worker_status
+             WHERE platform = 'leader'
+           ),
+           FALSE
+         ) AS stale,
+         COALESCE(
+           (
+             SELECT CASE
+               WHEN snapshot->>'deploymentGeneration' ~ '^[0-9]+$'
+                 THEN snapshot->>'deploymentGeneration'
+               ELSE '0'
+             END
+             FROM cloud_worker_status
+             WHERE platform = 'leader'
+           ),
+           '0'
+         ) AS leader_generation`,
       [Math.ceil(LEADER_STALE_MS / 1_000)],
     )
-    if (!status.rows[0]?.stale) return false
+    const leaderGeneration = Number(status.rows[0]?.leader_generation ?? 0)
+    const superseded = candidateGeneration > 0 && candidateGeneration > leaderGeneration
+    if (!status.rows[0]?.stale && !superseded) return false
 
     const lockClassId = Math.floor(LEADER_LOCK_KEY / 0x1_0000_0000)
     const lockObjectId = LEADER_LOCK_KEY >>> 0
@@ -97,9 +144,14 @@ async function recoverStaleLeader(client: PoolClient): Promise<boolean> {
       {
         event: 'cloud.worker.leader.stale_connection_recovered',
         staleAfterMs: LEADER_STALE_MS,
+        candidateGeneration,
+        leaderGeneration,
+        reason: superseded ? 'newer_deployment' : 'stale_heartbeat',
         backendPids: terminatedPids,
       },
-      '已回收过期 Leader 连接并原子接管 Leader 锁',
+      superseded
+        ? '新发布代际已回收旧 Leader 连接并原子接管'
+        : '已回收过期 Leader 连接并原子接管 Leader 锁',
     )
     return true
   } finally {
@@ -125,6 +177,36 @@ export async function releaseLeader(client: PoolClient | null): Promise<void> {
 /** leader 连接保活探活：返回 false 表示连接已断（锁已丢失），应退出重选。 */
 export async function leaderKeepAlive(client: PoolClient): Promise<boolean> {
   try {
+    const generation = workerDeploymentGeneration()
+    if (generation > 0) {
+      const target = await client.query<{ generation: string }>(
+        `SELECT COALESCE(
+           (
+             SELECT CASE
+               WHEN value->>'generation' ~ '^[0-9]+$'
+                 THEN value->>'generation'
+               ELSE '0'
+             END
+             FROM app_config
+             WHERE key = $1
+           ),
+           '0'
+         ) AS generation`,
+        [LEADER_TARGET_GENERATION_KEY],
+      )
+      const targetGeneration = Number(target.rows[0]?.generation ?? 0)
+      if (targetGeneration > generation) {
+        logger.warn(
+          {
+            event: 'cloud.worker.leader.handoff_requested',
+            deploymentGeneration: generation,
+            targetGeneration,
+          },
+          '检测到更高发布代际，主动释放 Leader',
+        )
+        return false
+      }
+    }
     await client.query('SELECT 1')
     return true
   } catch {

@@ -25,12 +25,16 @@ export type ManagedOrderDecisionContext = {
 export async function requestManagedOrderDecisions(input: {
   platform: ManagedBroker
   orders: ManagedOrderDecisionContext[]
+  promptScope?: string
 }): Promise<Map<string, ManagedOrderDecision>> {
   if (!input.orders.length) return new Map()
   try {
-    const mode = await resolveTradingPromptMode(input.platform, 'managed')
+    const mode = await resolveTradingPromptMode(input.platform, 'managed', input.promptScope)
     if (mode !== 'legacy') {
-      const audit = await requestProductionDecision(buildManagedProductionContext(input.platform, input.orders), mode)
+      const audit = await requestProductionDecision(
+        buildManagedProductionContext(input.platform, input.orders, input.promptScope),
+        mode,
+      )
       if (mode === 'shadow' || !audit.contractValid || !audit.policyValid || !audit.output) return new Map()
       const result = new Map<string, ManagedOrderDecision>()
       for (const item of audit.output.decisions as Array<Record<string, unknown>>) {

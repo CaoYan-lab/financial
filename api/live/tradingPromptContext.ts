@@ -202,17 +202,17 @@ function reservedPendingRisk(orders: Array<Record<string, any>>): number {
 
 export function buildManagedProductionContext(broker: TradingPromptBroker, orders: Array<{
   order: ManagedOrder; account: Record<string, any>; marketData: unknown; accountSnapshot?: LiveAccountDashboardResponse
-}>): ProductionPromptContext {
+}>, scope?: string): ProductionPromptContext {
   return {
     broker, role: 'managed',
-    scope: orders[0]?.accountSnapshot?.selectedAccountId ?? 'unavailable',
+    scope: scope ?? orders[0]?.accountSnapshot?.selectedAccountId ?? 'unavailable',
     facts: { orders: orders.map(c => ({
       order: {
         orderId: c.order.orderId, ticker: c.order.ticker, status: c.order.status, canCancel: c.order.canCancel,
         ownershipVerified: c.order.ownershipVerified, remainingQuantity: c.order.remainingQuantity,
         executedQuantity: c.order.executedQuantity, side: c.order.side, lastCheckedAt: c.order.lastCheckedAt ?? null,
       },
-      positionEffect: 'UNKNOWN',
+      positionEffect: c.order.positionEffect ?? 'UNKNOWN',
       orderFresh: fresh(c.order.lastCheckedAt),
       account: c.accountSnapshot ? accountFacts(c.accountSnapshot) : c.account,
       risk: c.accountSnapshot ? productionAccountRisk(broker, c.accountSnapshot) : { openingRiskStatus: 'UNKNOWN' },

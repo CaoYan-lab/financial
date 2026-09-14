@@ -75,13 +75,11 @@ export async function tradingPromptReleaseStatus(broker: TradingPromptBroker, sc
     if (env) environmentOverrides[role] = env.key
     const mode = env?.value ?? record?.mode ?? 'legacy'
     effectiveModes[role] = mode === 'legacy' || mode === 'shadow' || mode === 'live' ? mode : 'blocked'
-    if (scope !== 'default' && role === 'managed' && mode === 'shadow') effectiveModes[role] = 'blocked'
   }
-  // These are implementation gaps, not evidence that can be cleared by a client.
   return {
     revision: record?.revision ?? 0, selectedMode: record?.mode ?? 'legacy', effectiveModes, environmentOverrides,
-    updatedAt: record?.updatedAt ?? null, liveAvailable: scope === 'default',
-    blockers: scope === 'default' ? [] : ['租户挂单模型监管链路尚未接入新版'],
+    updatedAt: record?.updatedAt ?? null, liveAvailable: true,
+    blockers: [],
     productionPrompt: {
       version: productionPromptVersion,
       label: `双券商生产提示词 ${productionPromptVersion}`,
@@ -100,7 +98,6 @@ export async function saveTradingPromptMode(broker: TradingPromptBroker, scope: 
   if (Object.keys(input).some(key => !['mode', 'expectedRevision', 'confirmed'].includes(key))
     || input.confirmed !== true || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0
     || !['legacy', 'shadow', 'live'].includes(String(input.mode))) throw new PromptModeError('模式、版本或确认字段无效。', 400)
-  if (input.mode === 'live' && scope !== 'default') throw new PromptModeError('租户新版挂单监管尚未完成，禁止切换。')
   if (roles.some(role => override(broker, role))) throw new PromptModeError('环境变量正在覆盖提示词模式，请先由部署配置解除覆盖。')
   const current = await load(broker, scope)
   if ((current?.revision ?? 0) !== input.expectedRevision) throw new PromptModeError('配置已更新，请刷新后重试。')

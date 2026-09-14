@@ -281,6 +281,7 @@ export async function registerSubmittedManagedOrder(
     orderSession: result.orderSession,
     strategy: result.strategy,
     tradeHorizon: decision?.tradeHorizon,
+    positionEffect: managedPositionEffect(decision),
     submittedQuantity: quantity,
     executedQuantity: 0,
     remainingQuantity: quantity,
@@ -299,6 +300,13 @@ export async function registerSubmittedManagedOrder(
     createdAt: now,
     updatedAt: now,
   })
+}
+
+function managedPositionEffect(decision?: LlmTradingDecision): ManagedOrder['positionEffect'] {
+  const value = decision?.promptAudit?.output?.positionEffect
+  return ['OPEN_LONG', 'ADD_LONG', 'OPEN_SHORT', 'ADD_SHORT', 'REDUCE_LONG', 'COVER_SHORT'].includes(String(value))
+    ? value as ManagedOrder['positionEffect']
+    : undefined
 }
 
 export async function requestManagedOrderCancel(input: {

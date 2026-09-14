@@ -101,7 +101,7 @@ export async function runTenantStrategyOnce(
   }
   const [account, marketData, blockOpeningWhenCashNegative] = await Promise.all([
     options.account ?? loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol)),
-    tenantMarketData(connection, symbol, marketState),
+    loadTenantMarketData(connection, symbol, marketState),
     options.blockOpeningWhenCashNegative
       ?? tenantNegativeCashGuardEnabled(userId, connection.id),
   ])
@@ -144,8 +144,10 @@ export async function runTenantStrategyOnce(
     source: 'fallback' as const,
     reason: '当前用户独立 Longbridge SDK 数据窗口。',
   }
-  const promptPendingOrders = await resolveTradingPromptMode('longbridge', 'single', `${userId}:${connection.id}`) === 'shadow'
-    ? await listActiveTenantPendingOrders(userId, connection.id) : undefined
+  const promptMode = await resolveTradingPromptMode('longbridge', 'single', `${userId}:${connection.id}`)
+  const promptPendingOrders = promptMode === 'legacy'
+    ? undefined
+    : await listActiveTenantPendingOrders(userId, connection.id)
   const trendContext = buildTrendContextSummary(
     marketData.ticker,
     { lookbackTradingDays: 7, barInterval: '30m', currentPrice: marketData.lastPrice },
@@ -538,7 +540,7 @@ export async function loadTenantAccountForTrading(
   }
 }
 
-async function tenantMarketData(
+export async function loadTenantMarketData(
   connection: BrokerConnection,
   symbol: string,
   marketState: string,

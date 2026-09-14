@@ -17,7 +17,12 @@ import { closePool } from '../db/pgClient.js'
 import { logger } from '../../utils/logger.js'
 import { claimNextJob, completeJob, failJob, getEngineDesired, getWorkerStatus, upsertWorkerStatus } from '../state/taskStores.js'
 import { collectEngineSnapshots, handleJob, mergeEngineSnapshot } from '../jobs/jobHandlers.js'
-import { tryAcquireLeader, releaseLeader, leaderKeepAlive } from '../state/leaderLock.js'
+import {
+  tryAcquireLeader,
+  releaseLeader,
+  leaderKeepAlive,
+  workerDeploymentGeneration,
+} from '../state/leaderLock.js'
 import { managedOrderSupervisor } from '../../live/managedOrderSupervisor.js'
 import { startMultiUserWorkerRuntime, stopMultiUserWorkerRuntime } from '../multiuser/worker/multiUserWorkerRuntime.js'
 import { longbridgeOrderProxyConfigured } from '../../longbridge/longbridgeOrderProxy.js'
@@ -29,6 +34,8 @@ const PORT = Number(process.env.PORT || 8000)
 const JOB_POLL_INTERVAL_MS = Number(process.env.WORKER_JOB_POLL_MS || 5_000)
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WORKER_HEARTBEAT_MS || 15_000)
 const LEADER_POLL_INTERVAL_MS = Number(process.env.WORKER_LEADER_POLL_MS || 10_000)
+const LEADER_KEEPALIVE_INTERVAL_MS = Number(process.env.WORKER_LEADER_KEEPALIVE_MS || 5_000)
+const DEPLOYMENT_GENERATION = workerDeploymentGeneration()
 
 let startedAt = new Date().toISOString()
 let lastJobAt: string | null = null
@@ -50,6 +57,7 @@ function buildStatus() {
     startedAt,
     lastJobAt,
     processing,
+    deploymentGeneration: DEPLOYMENT_GENERATION,
     longbridgeOrderProxyConfigured: longbridgeOrderProxyConfigured(),
     now: new Date().toISOString(),
   }
@@ -236,11 +244,18 @@ function startLeaderKeepalive(client: PoolClient): void {
   setInterval(() => {
     void leaderKeepAlive(client).then((ok) => {
       if (!ok) {
-        logger.error({ event: 'cloud.worker.leader.lost', workerId: WORKER_ID }, 'leader 连接丢失（锁已释放），退出以重新竞选')
+        logger.warn(
+          {
+            event: 'cloud.worker.leader.lost',
+            workerId: WORKER_ID,
+            deploymentGeneration: DEPLOYMENT_GENERATION,
+          },
+          'Leader 租约失效或新发布代际已接管，退出当前 Worker',
+        )
         process.exit(1)
       }
     })
-  }, 15_000)
+  }, LEADER_KEEPALIVE_INTERVAL_MS)
 }
 
 async function bootstrap(): Promise<void> {

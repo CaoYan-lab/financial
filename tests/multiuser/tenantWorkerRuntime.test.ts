@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   setDesired: vi.fn(),
   runStrategy: vi.fn(),
   runStrategyPool: vi.fn(),
+  loadMarketData: vi.fn(),
+  requestManaged: vi.fn(),
   loadTradingAccount: vi.fn(),
   loadLotSize: vi.fn(),
   loadMarketStates: vi.fn(),
@@ -42,8 +44,12 @@ vi.mock('../../api/cloud/multiuser/longbridge/tenantDataService.js', () => ({
 }))
 vi.mock('../../api/cloud/multiuser/longbridge/tenantStrategyService.js', () => ({
   loadTenantAccountForTrading: mocks.loadTradingAccount,
+  loadTenantMarketData: mocks.loadMarketData,
   runTenantStrategyOnce: mocks.runStrategy,
   runTenantStrategyPoolOnce: mocks.runStrategyPool,
+}))
+vi.mock('../../api/live/managedOrderDecisionService.js', () => ({
+  requestManagedOrderDecisions: mocks.requestManaged,
 }))
 vi.mock('../../api/cloud/multiuser/longbridge/tenantMarketSessionService.js', () => ({
   loadTenantLotSize: mocks.loadLotSize,
@@ -170,6 +176,22 @@ describe('多用户 Worker runtime', () => {
     mocks.loadTradingAccount.mockResolvedValue(tradingAccount())
     mocks.runStrategy.mockResolvedValue({ ok: true })
     mocks.runStrategyPool.mockResolvedValue({ ok: true, evaluatedCount: 20 })
+    mocks.loadMarketData.mockResolvedValue({
+      ok: true,
+      ticker: 'AAPL',
+      symbol: 'AAPL.US',
+      source: 'longbridge-sdk-cache',
+      lastPrice: 100,
+      bars: [],
+      tickerPoints: [],
+      asks: [],
+      bids: [],
+      lotSize: 1,
+      marketState: 'RTH',
+      updatedAt: new Date().toISOString(),
+      warnings: [],
+    })
+    mocks.requestManaged.mockResolvedValue(new Map())
     mocks.loadMarketStates.mockResolvedValue(new Map([['AAPL.US', 'RTH']]))
     mocks.loadDashboard.mockResolvedValue({ ok: true })
     mocks.claimJob.mockResolvedValue(null)
@@ -540,6 +562,154 @@ describe('多用户 Worker runtime', () => {
     expect(mocks.runChild).toHaveBeenCalledWith(connection, 'cancel', { orderId: 'partial' })
     expect(mocks.query.mock.calls.some(([, params]) => Array.isArray(params) && params.includes('FILLED'))).toBe(true)
     expect(mocks.query.mock.calls.some(([, params]) => Array.isArray(params) && params.includes('PARTIALLY_FILLED'))).toBe(true)
+  })
+
+  it('租户挂单监管使用租户作用域和绑定账户调用新版模型', async () => {
+    const createdAt = new Date()
+    const managedOrder = {
+      platform: 'longbridge',
+      orderId: 'managed-1',
+      pendingOrderId: 'pending-1',
+      signalId: 'signal-1',
+      ticker: 'AAPL',
+      side: 'BUY',
+      orderType: 'LIMIT',
+      orderSession: 'RTH',
+      strategy: 'test',
+      positionEffect: 'OPEN_LONG',
+      submittedQuantity: 2,
+      executedQuantity: 0,
+      remainingQuantity: 2,
+      submittedPrice: 100,
+      executedPrice: null,
+      latestPrice: null,
+      priceDriftPct: null,
+      brokerStatus: '已提交',
+      status: 'TRACKING',
+      canCancel: true,
+      submittedAt: createdAt.toISOString(),
+      ownershipVerified: true,
+      hardRuleReasons: [],
+      version: 1,
+      createdAt: createdAt.toISOString(),
+      updatedAt: createdAt.toISOString(),
+    }
+    mocks.query
+      .mockResolvedValueOnce([{ order_id: 'managed-1', payload: managedOrder, created_at: createdAt }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ payload: managedOrder }])
+      .mockResolvedValueOnce([])
+    mocks.runChild.mockResolvedValueOnce({
+      ok: true,
+      status: 1,
+      statusLabel: '待成交',
+      quantity: 2,
+      executedQuantity: 0,
+      executedPrice: null,
+      updatedAt: new Date().toISOString(),
+    })
+    mocks.requestManaged.mockResolvedValueOnce(new Map([[
+      'longbridge:managed-1',
+      {
+        action: 'KEEP',
+        confidence: 'high',
+        source: 'model',
+        reason: '继续等待',
+        riskAssessment: '价格仍有效',
+        decidedAt: new Date().toISOString(),
+      },
+    ]]))
+
+    await multiUserWorkerTestHarness.superviseTenantOrders(
+      'user-1',
+      connection,
+      false,
+      { modelReviewIntervalSeconds: 60 },
+    )
+
+    expect(mocks.requestManaged).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'longbridge',
+      promptScope: 'user-1:binding-1',
+      orders: [expect.objectContaining({
+        order: expect.objectContaining({ orderId: 'managed-1', positionEffect: 'OPEN_LONG' }),
+        accountSnapshot: expect.objectContaining({ selectedAccountId: 'binding-1' }),
+      })],
+    }))
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("'model_decided'"))).toBe(true)
+  })
+
+  it('新版模型高置信度撤单经原子认领和券商复核后执行', async () => {
+    const createdAt = new Date()
+    const managedOrder = {
+      platform: 'longbridge',
+      orderId: 'managed-cancel',
+      pendingOrderId: 'pending-1',
+      signalId: 'signal-1',
+      ticker: 'AAPL',
+      side: 'BUY',
+      orderType: 'LIMIT',
+      orderSession: 'RTH',
+      strategy: 'test',
+      positionEffect: 'OPEN_LONG',
+      submittedQuantity: 2,
+      executedQuantity: 0,
+      remainingQuantity: 2,
+      submittedPrice: 100,
+      executedPrice: null,
+      latestPrice: null,
+      priceDriftPct: null,
+      brokerStatus: '待成交',
+      status: 'TRACKING',
+      canCancel: true,
+      submittedAt: createdAt.toISOString(),
+      ownershipVerified: true,
+      hardRuleReasons: [],
+      version: 1,
+      createdAt: createdAt.toISOString(),
+      updatedAt: createdAt.toISOString(),
+    }
+    mocks.query
+      .mockResolvedValueOnce([{ order_id: managedOrder.orderId, payload: managedOrder, created_at: createdAt }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ payload: { ...managedOrder, status: 'CANCEL_RECOMMENDED' } }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ payload: { ...managedOrder, status: 'CANCEL_REQUESTED' } }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+    mocks.runChild
+      .mockResolvedValueOnce({
+        ok: true, status: 1, statusLabel: '待成交', quantity: 2,
+        executedQuantity: 0, executedPrice: null, updatedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        ok: true, status: 1, statusLabel: '待成交', quantity: 2,
+        executedQuantity: 0, executedPrice: null, updatedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({ ok: true })
+    mocks.requestManaged.mockResolvedValueOnce(new Map([[
+      `longbridge:${managedOrder.orderId}`,
+      {
+        action: 'CANCEL',
+        confidence: 'high',
+        source: 'model',
+        reason: '开仓风险已阻断',
+        riskAssessment: '仅撤销未成交余量',
+        decidedAt: new Date().toISOString(),
+      },
+    ]]))
+
+    await multiUserWorkerTestHarness.superviseTenantOrders(
+      'user-1',
+      connection,
+      true,
+      { modelReviewIntervalSeconds: 60, limitTimeoutSeconds: 600 },
+    )
+
+    expect(mocks.runChild).toHaveBeenLastCalledWith(connection, 'cancel', { orderId: managedOrder.orderId })
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("status = 'CANCEL_REQUESTED'"))).toBe(true)
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("'model_cancel_requested'"))).toBe(true)
   })
 
   it('覆盖所有券商状态映射和终态判断', () => {

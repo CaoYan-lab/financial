@@ -5,6 +5,7 @@ import { longbridgeRealtimeStore } from '../api/longbridge/longbridgeRealtimeSto
 import {
   fetchLongbridgeHistoricalSeed,
   longbridgeRealtimeSubscriptionService,
+  seedQuoteFromLatestBar,
 } from '../api/longbridge/longbridgeRealtimeSubscriptionService'
 
 describe('Longbridge realtime SDK cache', () => {
@@ -69,6 +70,47 @@ describe('Longbridge realtime SDK cache', () => {
     expect(data.ok).toBe(true)
     if (!data.ok) throw new Error(data.reason)
     expect(data.bars).toEqual([{ time: '2026-06-23T12:49:00.000Z', open: 18.64, high: 18.64, low: 18.63, close: 18.63 }])
+  })
+
+  it('港股盘初或低成交标的从最近交易日连续补足执行窗口', async () => {
+    longbridgeRealtimeStore.markSubscribed(['7747.HK'])
+    longbridgeRealtimeStore.upsertQuote({
+      symbol: '7747.HK',
+      lastPrice: 68.28,
+      marketState: 'Afternoon',
+      updatedAt: '2026-09-14T02:18:00.000Z',
+      source: 'longbridge-sdk-cache',
+    })
+    const bars = Array.from({ length: 150 }, (_, index) => {
+      const previousSession = index < 100
+      const minute = previousSession ? index : index - 100
+      const time = new Date(`${previousSession ? '2026-09-11' : '2026-09-14'}T01:30:00.000Z`)
+      time.setUTCMinutes(time.getUTCMinutes() + minute)
+      return { time: time.toISOString(), open: 68, high: 69, low: 67, close: 68 + index / 100 }
+    })
+    longbridgeRealtimeStore.upsertBars('7747.HK', '1m', bars)
+
+    const data = await loadLongbridgeRealtimeStrategyMarketData('7747.HK', { klineCount: 120, allowFallback: false })
+
+    expect(data.ok).toBe(true)
+    if (!data.ok) throw new Error(data.reason)
+    expect(data.bars).toHaveLength(120)
+    expect(data.bars[0].time).toBe(bars[30].time)
+    expect(data.bars.at(-1)?.time).toBe(bars.at(-1)?.time)
+  })
+
+  it('SDK quote 尚未首推时用最新 K 线初始化报价', async () => {
+    longbridgeRealtimeStore.markSubscribed(['7709.HK'])
+    longbridgeRealtimeStore.upsertBars('7709.HK', '1m', [
+      { time: '2026-09-14T02:18:00.000Z', open: 38.6, high: 38.8, low: 38.5, close: 38.7 },
+    ])
+
+    expect(seedQuoteFromLatestBar('7709.HK', longbridgeRealtimeStore.getSnapshot('7709.HK'))).toBe(true)
+    expect(longbridgeRealtimeStore.getSnapshot('7709.HK')?.quote).toMatchObject({
+      lastPrice: 38.7,
+      updatedAt: '2026-09-14T02:18:00.000Z',
+      source: 'longbridge-sdk-cache',
+    })
   })
 
   it('实盘评估可禁止 SDK cache 不足时临时 CLI 兜底', async () => {

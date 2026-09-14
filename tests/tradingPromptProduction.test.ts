@@ -230,6 +230,34 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(ctx.facts.orders[0].risk.openingRiskStatus).toBe(broker === 'futu' ? 'UNKNOWN' : 'ALLOWED')
   })
 
+  it('租户新版实盘挂单使用租户作用域并返回通过校验的撤单建议', async () => {
+    vi.stubEnv('TRADING_PROMPT_MODE', undefined)
+    vi.stubEnv('LONGBRIDGE_MANAGED_PROMPT_MODE', 'live')
+    const contexts = [{
+      order: { ...order(), positionEffect: 'OPEN_LONG' },
+      account: { positions: [] },
+      accountSnapshot: account(),
+      marketData: market(),
+    }]
+    mocks.call.mockResolvedValue({ ok: true, text: JSON.stringify({
+      decisions: [{
+        platform: 'longbridge', orderId: 'order-a', action: 'CANCEL', evidenceIds: ['O1'],
+        reason: '融资风险已阻断新增风险', riskAssessment: '仅撤销未成交余量',
+        requestedFollowUp: 'NONE',
+      }],
+      portfolioRationale: '撤销已确认的开仓挂单',
+    }) })
+
+    const result = await requestManagedOrderDecisions({
+      platform: 'longbridge',
+      orders: contexts as any,
+      promptScope: 'tenant-a:binding-a',
+    })
+
+    expect(result.get('longbridge:order-a')).toMatchObject({ action: 'CANCEL', source: 'model' })
+    expect(JSON.parse(mocks.call.mock.calls[0][0][1].content).runtime.mode).toBe('LIVE')
+  })
+
   it('租户审计路径隔离且不包含明文用户标识', async () => {
     const ctx = buildSingleProductionContext('longbridge', single())
     const first = await requestProductionShadow({ ...ctx, scope: 'tenant-one/binding' })

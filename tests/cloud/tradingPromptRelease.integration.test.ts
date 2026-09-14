@@ -15,6 +15,12 @@ describe.skipIf(process.env.RUN_PG_INTEGRATION !== '1')('提示词配置PostgreS
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1)
     expect((await tradingPromptReleaseStatus('longbridge', 'test:a')).revision).toBe(1)
     expect(await resolveTradingPromptMode('longbridge', 'single', 'test:b')).toBe('legacy')
-    await expect(saveTradingPromptMode('longbridge', 'test:a', { mode: 'live', expectedRevision: 1, confirmed: true })).rejects.toThrow('尚未通过')
+    const current = await tradingPromptReleaseStatus('longbridge', 'test:a')
+    const live = await saveTradingPromptMode('longbridge', 'test:a', {
+      mode: 'live',
+      expectedRevision: current.revision,
+      confirmed: true,
+    })
+    expect(live.effectiveModes.managed).toBe('live')
   })
 })

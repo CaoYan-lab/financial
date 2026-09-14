@@ -153,19 +153,14 @@ function latestSessionItems<T extends { time: string }>(items: T[], marketState:
   if (!latest) return []
   const latestDate = marketDatePart(latest.time, symbol)
   if (isOvernightState(marketState)) return latestOvernightItems(sorted, latestDate, symbol)
-  if (isPreMarketState(marketState) || isEarlyMorningState(marketState, latest.time, symbol)) return latestDateWithPreviousIfNeeded(sorted, latestDate, required, symbol)
+  if (required > 0) return latestDatesUntilRequired(sorted, latestDate, required, symbol)
   return sorted.filter((item) => marketDatePart(item.time, symbol) === latestDate)
 }
 
-function latestDateWithPreviousIfNeeded<T extends { time: string }>(items: T[], latestDate: string, required: number, symbol: string): T[] {
+function latestDatesUntilRequired<T extends { time: string }>(items: T[], latestDate: string, required: number, symbol: string): T[] {
   const latestDateItems = items.filter((item) => marketDatePart(item.time, symbol) === latestDate)
   if (required > 0 && latestDateItems.length >= required) return latestDateItems
-  const previousDate = previousAvailableDate(items, latestDate, symbol)
-  if (!previousDate) return latestDateItems
-  return items.filter((item) => {
-    const itemDate = marketDatePart(item.time, symbol)
-    return itemDate === latestDate || itemDate === previousDate
-  })
+  return items.slice(-required)
 }
 
 function latestOvernightItems<T extends { time: string }>(items: T[], latestDate: string, symbol: string): T[] {
@@ -194,16 +189,6 @@ function supplementTickerPointsFromBars(points: { time: string; price: number }[
   for (const bar of bars) byTime.set(bar.time, { time: bar.time, price: bar.close })
   for (const point of points) byTime.set(point.time, point)
   return [...byTime.values()].sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime())
-}
-
-function isPreMarketState(state: string | undefined) {
-  return /PRE[_\s-]?MARKET/i.test(state ?? '')
-}
-
-function isEarlyMorningState(state: string | undefined, latestTimeValue: string, symbol: string) {
-  const marketTime = marketTimePart(latestTimeValue, symbol)
-  if (!marketTime || marketTime >= '10:00:00') return false
-  return /MORNING|NORMAL/i.test(state ?? '') || isHongKongSymbol(symbol)
 }
 
 function isOvernightState(state: string | undefined) {

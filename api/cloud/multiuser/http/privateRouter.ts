@@ -718,7 +718,9 @@ function registerTenantLongbridgeRoutes(router: Router): void {
           platform: 'longbridge',
           orderId: event.order_id,
           eventType: event.event_type,
-          source: event.event_type.includes('cancel') ? 'hard_rule' : 'reconcile',
+          source: event.event_type === 'model_decided' || event.event_type === 'model_cancel_requested'
+            ? 'model'
+            : event.event_type.includes('cancel') ? 'hard_rule' : 'reconcile',
           detail: event.detail,
           createdAt: event.created_at.toISOString(),
         })),
