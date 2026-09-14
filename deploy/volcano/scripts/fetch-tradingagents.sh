@@ -42,21 +42,23 @@ if [ -d "$REPO_PATH/.git" ]; then
 else
   mkdir -p "$(dirname "$REPO_PATH")"
   echo "[fetch-tradingagents] 克隆仓库（浅克隆到锁定 commit）..."
-  for attempt in 1 2 3; do
+  rm -rf "$REPO_PATH"
+  git init -q "$REPO_PATH"
+  git -C "$REPO_PATH" remote add origin "$REPO_URL"
+  if git -C "$REPO_PATH" fetch --depth 1 origin "$PINNED_COMMIT"; then
+    git -C "$REPO_PATH" checkout --quiet FETCH_HEAD
+  else
+    echo "[fetch-tradingagents] Git 拉取失败，改用固定提交源码归档..." >&2
     rm -rf "$REPO_PATH"
-    git init -q "$REPO_PATH"
-    git -C "$REPO_PATH" remote add origin "$REPO_URL"
-    if git -C "$REPO_PATH" fetch --depth 1 origin "$PINNED_COMMIT"; then
-      break
-    fi
-    if [ "$attempt" -eq 3 ]; then
+    mkdir -p "$REPO_PATH"
+    if ! curl --fail --location \
+      --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 \
+      "https://codeload.github.com/TauricResearch/TradingAgents/tar.gz/$PINNED_COMMIT" |
+      tar -xz --strip-components=1 -C "$REPO_PATH"; then
       echo "[fetch-tradingagents] 拉取失败，拒绝构建缺少报告依赖的镜像" >&2
       exit 1
     fi
-    echo "[fetch-tradingagents] 第 $attempt 次拉取失败，5 秒后重试..." >&2
-    sleep 5
-  done
-  git -C "$REPO_PATH" checkout --quiet FETCH_HEAD
+  fi
 fi
 
 # 2) 创建独立 venv（Python >= 3.10）
