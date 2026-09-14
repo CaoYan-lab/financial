@@ -34,7 +34,7 @@ COPY package.json package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com \
   && npm install --omit=dev \
   && npm install -g tsx \
-  && npm install --no-save --registry=https://registry.npmjs.org longbridge@4.3.2
+  && node -e "require('longbridge')"
 
 # Python 依赖（PG 驱动 + 数据处理）用火山 pypi 镜像；
 # futu-api 必须为 10.x（OpenSecTradeContext/OpenQuoteContext 支持 ai_type 参数，
