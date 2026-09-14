@@ -4,7 +4,7 @@
 # 构建上下文为仓库根目录：docker build -f deploy/volcano/docker/Dockerfile.vefaas -t <image> .
 
 # ---------- Stage 1: 前端构建 ----------
-FROM node:22-trixie-slim AS frontend
+FROM docker.m.daocloud.io/library/node:22-trixie-slim AS frontend
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com \
@@ -15,7 +15,7 @@ COPY . .
 RUN npx vite build
 
 # ---------- Stage 2: 运行时（Node + Python 同镜像） ----------
-FROM node:22-trixie-slim AS runtime
+FROM docker.m.daocloud.io/library/node:22-trixie-slim AS runtime
 
 # Python 3.11 + pip，使用火山镜像源加速
 ENV DEBIAN_FRONTEND=noninteractive
@@ -29,7 +29,7 @@ WORKDIR /app
 # Node 依赖（仅生产依赖 + tsx 用于运行 TS）
 # 注意：longbridge 含按平台分发的原生 .node（optionalDependencies）。npmmirror 上的
 # longbridge-linux-* 是无关旧包（0.2.x），缺 4.x；故主依赖走 npmmirror 加速后，
-# 再从官方 registry 重装 longbridge，让其按 linux 平台正确拉取 longbridge-linux-x64-gnu@4.3.2。
+# 再安装发布机预下载并校验的 longbridge-linux-x64-gnu@4.3.2 制品。
 COPY package.json package-lock.json ./
 COPY .build-assets/ /tmp/build-assets/
 RUN npm config set registry https://registry.npmmirror.com \
