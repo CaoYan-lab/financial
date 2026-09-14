@@ -29,6 +29,47 @@ export function workerDeploymentGeneration(): number {
 }
 
 /**
+ * 每个 Worker 进程启动时原子领取代际。平台可能在正式发布前用新配置重启旧
+ * Revision，因此不能只依赖函数环境变量或镜像标签区分新旧实例。
+ */
+export async function reserveWorkerDeploymentGeneration(
+  configuredGeneration = workerDeploymentGeneration(),
+): Promise<number> {
+  const client = await getPool().connect()
+  try {
+    const result = await client.query<{ generation: string }>(
+      `INSERT INTO app_config(key, value, updated_at)
+       VALUES (
+         $1,
+         jsonb_build_object(
+           'generation',
+           GREATEST($2::bigint, 1::bigint)
+         ),
+         now()
+       )
+       ON CONFLICT(key) DO UPDATE
+         SET value = jsonb_build_object(
+               'generation',
+               GREATEST(
+                 CASE
+                   WHEN app_config.value->>'generation' ~ '^[0-9]+$'
+                     THEN (app_config.value->>'generation')::bigint + 1
+                   ELSE 1
+                 END,
+                 $2::bigint
+               )
+             ),
+             updated_at = now()
+       RETURNING value->>'generation' AS generation`,
+      [LEADER_TARGET_GENERATION_KEY, configuredGeneration],
+    )
+    return Number(result.rows[0]?.generation ?? configuredGeneration)
+  } finally {
+    client.release()
+  }
+}
+
+/**
  * 尝试获取 leader 锁。
  * 成功：返回被持有、不可释放回池的连接（锁随其生命周期持有）；
  * 失败：连接已释放回池，返回 null（表示已有 leader）。
@@ -175,9 +216,11 @@ export async function releaseLeader(client: PoolClient | null): Promise<void> {
 }
 
 /** leader 连接保活探活：返回 false 表示连接已断（锁已丢失），应退出重选。 */
-export async function leaderKeepAlive(client: PoolClient): Promise<boolean> {
+export async function leaderKeepAlive(
+  client: PoolClient,
+  generation = workerDeploymentGeneration(),
+): Promise<boolean> {
   try {
-    const generation = workerDeploymentGeneration()
     if (generation > 0) {
       const target = await client.query<{ generation: string }>(
         `SELECT COALESCE(

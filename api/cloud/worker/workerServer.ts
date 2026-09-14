@@ -20,6 +20,7 @@ import { collectEngineSnapshots, handleJob, mergeEngineSnapshot } from '../jobs/
 import {
   tryAcquireLeader,
   releaseLeader,
+  reserveWorkerDeploymentGeneration,
   leaderKeepAlive,
   workerDeploymentGeneration,
 } from '../state/leaderLock.js'
@@ -35,7 +36,8 @@ const JOB_POLL_INTERVAL_MS = Number(process.env.WORKER_JOB_POLL_MS || 5_000)
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WORKER_HEARTBEAT_MS || 15_000)
 const LEADER_POLL_INTERVAL_MS = Number(process.env.WORKER_LEADER_POLL_MS || 10_000)
 const LEADER_KEEPALIVE_INTERVAL_MS = Number(process.env.WORKER_LEADER_KEEPALIVE_MS || 5_000)
-const DEPLOYMENT_GENERATION = workerDeploymentGeneration()
+let deploymentGeneration = workerDeploymentGeneration()
+let deploymentGenerationReserved = false
 
 let startedAt = new Date().toISOString()
 let lastJobAt: string | null = null
@@ -57,7 +59,7 @@ function buildStatus() {
     startedAt,
     lastJobAt,
     processing,
-    deploymentGeneration: DEPLOYMENT_GENERATION,
+    deploymentGeneration,
     longbridgeOrderProxyConfigured: longbridgeOrderProxyConfigured(),
     now: new Date().toISOString(),
   }
@@ -213,7 +215,25 @@ export function createWorkerServer(): http.Server {
 async function campaignLeadership(): Promise<void> {
   while (running) {
     try {
-      const client = await tryAcquireLeader()
+      if (!deploymentGenerationReserved) {
+        deploymentGeneration =
+          await reserveWorkerDeploymentGeneration(
+            deploymentGeneration,
+          )
+        deploymentGenerationReserved = true
+        logger.info(
+          {
+            event:
+              'cloud.worker.deployment_generation.reserved',
+            workerId: WORKER_ID,
+            deploymentGeneration,
+          },
+          'Worker 已领取部署代际',
+        )
+      }
+      const client = await tryAcquireLeader(
+        deploymentGeneration,
+      )
       if (client) {
         leaderClient = client
         logger.info({ event: 'cloud.worker.leader.acquired', workerId: WORKER_ID }, '本实例成为 leader，开始驱动引擎')
@@ -242,13 +262,16 @@ async function campaignLeadership(): Promise<void> {
 
 function startLeaderKeepalive(client: PoolClient): void {
   setInterval(() => {
-    void leaderKeepAlive(client).then((ok) => {
+    void leaderKeepAlive(
+      client,
+      deploymentGeneration,
+    ).then((ok) => {
       if (!ok) {
         logger.warn(
           {
             event: 'cloud.worker.leader.lost',
             workerId: WORKER_ID,
-            deploymentGeneration: DEPLOYMENT_GENERATION,
+            deploymentGeneration,
           },
           'Leader 租约失效或新发布代际已接管，退出当前 Worker',
         )

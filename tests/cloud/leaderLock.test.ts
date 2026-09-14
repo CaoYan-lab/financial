@@ -13,7 +13,11 @@ vi.mock('../../api/utils/logger.js', () => ({
   logger: { warn: mocks.warn },
 }))
 
-import { leaderKeepAlive, tryAcquireLeader } from '../../api/cloud/state/leaderLock.js'
+import {
+  leaderKeepAlive,
+  reserveWorkerDeploymentGeneration,
+  tryAcquireLeader,
+} from '../../api/cloud/state/leaderLock.js'
 
 describe('worker leader lock', () => {
   beforeEach(() => {
@@ -23,6 +27,28 @@ describe('worker leader lock', () => {
 
   afterEach(() => {
     delete process.env.WORKER_DEPLOYMENT_GENERATION
+  })
+
+  it('atomically reserves a process-specific deployment generation', async () => {
+    const client = {
+      query: vi.fn().mockResolvedValueOnce({
+        rows: [{ generation: '59' }],
+      }),
+      release: vi.fn(),
+    }
+    mocks.connect.mockResolvedValue(client)
+
+    await expect(
+      reserveWorkerDeploymentGeneration(58),
+    ).resolves.toBe(59)
+    expect(client.query.mock.calls[0]?.[0]).toContain(
+      "(app_config.value->>'generation')::bigint + 1",
+    )
+    expect(client.query.mock.calls[0]?.[1]).toEqual([
+      'cloud.worker.target_generation',
+      58,
+    ])
+    expect(client.release).toHaveBeenCalledOnce()
   })
 
   it('returns the held connection when the advisory lock is acquired', async () => {
