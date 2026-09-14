@@ -281,6 +281,35 @@ describe('Longbridge 租户策略服务', () => {
     }))
   })
 
+  it('构造提示词前刷新超过30秒的租户账户快照', async () => {
+    mocks.tradingDecision.mockResolvedValue(marketDecision({
+      action: 'HOLD',
+      approved: false,
+      orderQuantity: 0,
+    }))
+    await runTenantStrategyOnce('user-1', connection, '07747', {
+      marketState: 'MORNING',
+    })
+    const staleAccount = structuredClone(
+      mocks.tradingDecision.mock.calls[0][0].account,
+    )
+    staleAccount.summary.source.accessedAt = '2020-01-01T00:00:00.000Z'
+    staleAccount.summary.source.timestamp = '2020-01-01T00:00:00.000Z'
+    mocks.workbench.mockClear()
+    mocks.tradingDecision.mockClear()
+
+    await runTenantStrategyOnce('user-1', connection, '07747', {
+      account: staleAccount,
+      marketState: 'MORNING',
+    })
+
+    expect(mocks.workbench).toHaveBeenCalledOnce()
+    expect(mocks.workbench).toHaveBeenCalledWith(connection, 'HKD')
+    const refreshedAccount = mocks.tradingDecision.mock.calls[0][0].account
+    expect(Date.now() - Date.parse(refreshedAccount.summary.source.timestamp))
+      .toBeLessThan(30_000)
+  })
+
   it('统一市场门禁命中时不请求模型且不落信号数据', async () => {
     mocks.sessionSkipReason.mockReturnValueOnce('港股休市后不评估')
     const result = await runTenantStrategyOnce('user-1', connection, '07747', {

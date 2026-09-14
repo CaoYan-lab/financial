@@ -45,6 +45,8 @@ type StrategyRunOptions = {
   now?: Date
   blockOpeningWhenCashNegative?: boolean
 }
+const PROMPT_ACCOUNT_MAX_AGE_MS = 30_000
+
 type TenantSignal = Omit<QuantSignal, 'source'> & {
   source: 'longbridge-sdk-cache'
   lifecycleStatus: string
@@ -99,7 +101,7 @@ export async function runTenantStrategyOnce(
       error: preflightSkipReason,
     }
   }
-  const [account, marketData, blockOpeningWhenCashNegative] = await Promise.all([
+  const [initialAccount, marketData, blockOpeningWhenCashNegative] = await Promise.all([
     options.account ?? loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol)),
     loadTenantMarketData(connection, symbol, marketState),
     options.blockOpeningWhenCashNegative
@@ -133,6 +135,9 @@ export async function runTenantStrategyOnce(
   }
 
   const trendBars = await tenantTrendBars(connection, symbol)
+  const account = tenantAccountSnapshotFresh(initialAccount)
+    ? initialAccount
+    : await loadTenantAccountForTrading(connection, longbridgeTradingCurrency(symbol))
   const dataWindow = {
     kline1mBars: Math.max(1, marketData.bars.length),
     tickerPoints: Math.max(1, marketData.tickerPoints.length),
@@ -538,6 +543,17 @@ export async function loadTenantAccountForTrading(
     missingCapabilities: [],
     warnings: [],
   }
+}
+
+function tenantAccountSnapshotFresh(account: LiveAccountDashboardResponse): boolean {
+  const sourceAt = account.summary.source?.timestamp
+    ?? account.summary.source?.accessedAt
+  const sourceTime = Date.parse(sourceAt ?? '')
+  const age = Date.now() - sourceTime
+  return account.ok
+    && Number.isFinite(sourceTime)
+    && age >= -5_000
+    && age <= PROMPT_ACCOUNT_MAX_AGE_MS
 }
 
 export async function loadTenantMarketData(
