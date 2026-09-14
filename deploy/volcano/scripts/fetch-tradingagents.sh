@@ -11,6 +11,7 @@
 #   TRADINGAGENTS_REPO_PATH  目标目录（默认 <项目根>/third_party/TradingAgents）
 #   TRADINGAGENTS_VENV       独立 venv 目录（默认 <项目根>/.venv-tradingagents）
 #   PYTHON_BIN               用于建 venv 的解释器（默认 python3，需 >=3.10）
+#   TRADINGAGENTS_PIP_INDEX_URL  Python 包镜像（默认清华镜像）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +27,9 @@ REPO_PATH="${TRADINGAGENTS_REPO_PATH:-$PROJECT_ROOT/third_party/TradingAgents}"
 VENV_DIR="${TRADINGAGENTS_VENV:-$PROJECT_ROOT/.venv-tradingagents}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ARCHIVE="${TRADINGAGENTS_ARCHIVE:-}"
+PIP_INDEX_URL="${TRADINGAGENTS_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple/}"
+export PIP_INDEX_URL
+export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-60}"
 
 echo "[fetch-tradingagents] 项目根: $PROJECT_ROOT"
 echo "[fetch-tradingagents] 目标仓库: $REPO_PATH"
@@ -73,11 +77,11 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 # shellcheck disable=SC1091
-"$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
+"$VENV_DIR/bin/python" -m pip install --retries 3 --upgrade pip >/dev/null
 
 # 3) 安装 TradingAgents 及其依赖（按 pyproject.toml）
 echo "[fetch-tradingagents] 安装 tradingagents（pip install .）..."
-"$VENV_DIR/bin/python" -m pip install "$REPO_PATH"
+"$VENV_DIR/bin/python" -m pip install --retries 3 "$REPO_PATH"
 
 # 4) 自检
 "$VENV_DIR/bin/python" - <<'PY'
