@@ -52,6 +52,7 @@ const FUTU_REPORT_QUOTE_TIMEOUT_MS = Math.max(
   10_000,
   Number(process.env.FUTU_REPORT_QUOTE_TIMEOUT_MS || 60_000) || 60_000,
 )
+const FUTU_REPORT_QUOTE_BATCH_SIZE = 5
 
 export class FutuOpenDProvider implements DataProvider {
   constructor(private readonly bridgeRunner: BridgeRunner = runPythonBridge) {}
@@ -103,31 +104,52 @@ export class FutuOpenDProvider implements DataProvider {
       timestamp,
     }
     const tickers = universe.map((company) => company.ticker)
-    const quoteBridge = await this.runSnapshotPhase('quotes', tickers, false, false, FUTU_REPORT_QUOTE_TIMEOUT_MS)
-
-    if (!this.hasUsableBridgeData(quoteBridge)) {
+    const quoteBridges = await Promise.all(
+      this.chunkTickers(tickers, FUTU_REPORT_QUOTE_BATCH_SIZE).map((batch, index) =>
+        this.runSnapshotPhase(`quotes-${index + 1}`, batch, false, false, FUTU_REPORT_QUOTE_TIMEOUT_MS)),
+    )
+    const usableQuoteBridges = quoteBridges.filter((bridge) => this.hasUsableBridgeData(bridge))
+    if (usableQuoteBridges.length === 0) {
       return {
         source: fallbackSource,
-        warnings: this.bridgeWarnings('quotes', quoteBridge),
+        warnings: quoteBridges.flatMap((bridge, index) => this.bridgeWarnings(`quotes-${index + 1}`, bridge)),
         rows: this.unavailableRows(universe, fallbackSource, 'unavailable - Futu OpenD bridge failed'),
       }
     }
 
     const rowByTicker = new Map<string, FutuSnapshotRow>()
-    this.mergeAvailableRows(rowByTicker, quoteBridge.data.rows)
-    const source = quoteBridge.data.source ?? fallbackSource
-    const warnings = [...(quoteBridge.data.warnings ?? [])]
+    const warnings: string[] = []
+    quoteBridges.forEach((bridge, index) => {
+      if (this.hasUsableBridgeData(bridge)) {
+        this.mergeAvailableRows(rowByTicker, bridge.data.rows)
+        warnings.push(...(bridge.data.warnings ?? []))
+      } else {
+        warnings.push(...this.bridgeWarnings(`quotes-${index + 1}`, bridge))
+      }
+    })
+    const source = usableQuoteBridges[0].data.source ?? fallbackSource
+    const enrichmentTickers = tickers.filter((ticker) => {
+      const price = rowByTicker.get(ticker)?.currentPrice
+      return typeof price === 'string' && !price.toLowerCase().includes(UNAVAILABLE)
+    })
+    if (enrichmentTickers.length === 0) {
+      return {
+        source,
+        warnings,
+        rows: universe.slice(0, 30).map((company) => this.normalizeRow(company, rowByTicker.get(company.ticker), source)),
+      }
+    }
 
     const enrichmentPhases: Array<Promise<{ phase: string; bridge: PythonBridgeResult<FutuSnapshotPayload> }>> = []
     if (process.env.FUTU_ENABLE_TECHNICALS !== 'false') {
       enrichmentPhases.push(
-        this.runSnapshotPhase('technicals', tickers, true, false, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
+        this.runSnapshotPhase('technicals', enrichmentTickers, true, false, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
           .then((bridge) => ({ phase: 'technicals', bridge })),
       )
     }
     if (process.env.FUTU_ENABLE_OPTIONS !== 'false') {
       enrichmentPhases.push(
-        this.runSnapshotPhase('options', tickers, false, true, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
+        this.runSnapshotPhase('options', enrichmentTickers, false, true, FUTU_REPORT_SNAPSHOT_TIMEOUT_MS)
           .then((bridge) => ({ phase: 'options', bridge })),
       )
     }
@@ -189,6 +211,14 @@ export class FutuOpenDProvider implements DataProvider {
       }
       target.set(row.ticker, merged)
     }
+  }
+
+  private chunkTickers(tickers: string[], size: number): string[][] {
+    const chunks: string[][] = []
+    for (let index = 0; index < tickers.length; index += size) {
+      chunks.push(tickers.slice(index, index + size))
+    }
+    return chunks
   }
 
   private basePayload() {

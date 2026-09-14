@@ -60,7 +60,7 @@ describe('FutuOpenDProvider', () => {
     const provider = new FutuOpenDProvider(async () => ({ ok: false, error: 'OpenD down' }))
     const bundle = await provider.fetchMarketSnapshot([universeCompany('MSFT')])
 
-    expect(bundle.warnings[0]).toContain('Futu OpenD quotes bridge failed')
+    expect(bundle.warnings[0]).toContain('Futu OpenD quotes-1 bridge failed')
     expect(bundle.rows[0].currentPrice).toBe('unavailable')
     expect(bundle.rows[0].sevenDayNews).toContain('Futu OpenD bridge failed')
   })
@@ -108,5 +108,41 @@ describe('FutuOpenDProvider', () => {
       expect.stringContaining('technicals bridge failed'),
       expect.stringContaining('options bridge failed'),
     ]))
+  })
+
+  it('单个报价批次超时时保留其他批次结果', async () => {
+    const calls: Array<{ tickers: string[]; includeTechnicals: boolean; includeOptions: boolean }> = []
+    const bridgeRunner = async <T>(_scriptName: string, payload: unknown): Promise<PythonBridgeResult<T>> => {
+      const phase = payload as { tickers: string[]; includeTechnicals: boolean; includeOptions: boolean }
+      calls.push(phase)
+      if (!phase.includeTechnicals && !phase.includeOptions && phase.tickers.length === 5) {
+        return { ok: false, error: 'timeout' }
+      }
+      if (!phase.includeTechnicals && !phase.includeOptions) {
+        return {
+          ok: true,
+          data: {
+            ok: true,
+            source: {
+              source: 'Futu OpenD',
+              accessedAt: '2026-06-16T00:00:00.000Z',
+              timestamp: '2026-06-16 09:30:00',
+            },
+            warnings: [],
+            rows: [{ ticker: phase.tickers[0], currentPrice: '$88.00' }],
+          } as T,
+        }
+      }
+      return { ok: false, error: 'timeout' }
+    }
+    const provider = new FutuOpenDProvider(bridgeRunner)
+    const companies = Array.from({ length: 6 }, (_, index) => universeCompany(`TEST${index + 1}`, index + 1))
+
+    const bundle = await provider.fetchMarketSnapshot(companies)
+
+    expect(bundle.rows.slice(0, 5).every((row) => row.currentPrice === 'unavailable')).toBe(true)
+    expect(bundle.rows[5].currentPrice).toBe('$88.00')
+    expect(calls.filter((call) => !call.includeTechnicals && !call.includeOptions).map((call) => call.tickers.length)).toEqual([5, 1])
+    expect(calls.filter((call) => call.includeTechnicals || call.includeOptions).every((call) => call.tickers.length === 1)).toBe(true)
   })
 })
