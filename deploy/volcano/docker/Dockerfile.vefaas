@@ -62,8 +62,10 @@ RUN if [ -z "$SKIP_TRADINGAGENTS" ]; then \
 # 启动脚本可执行
 RUN chmod +x deploy/volcano/faas/run-web.sh deploy/volcano/faas/run-worker.sh
 
+ARG WORKER_DEPLOYMENT_GENERATION=0
 ENV NODE_ENV=production \
     PORT=8000 \
+    WORKER_DEPLOYMENT_GENERATION=${WORKER_DEPLOYMENT_GENERATION} \
     FUTU_PYTHON_BIN=/opt/venv/bin/python \
     VOLCANO_CLOUD_PYTHONPATH=/app/deploy/volcano/pg/python \
     PYTHONPATH=/app/deploy/volcano/pg/python \

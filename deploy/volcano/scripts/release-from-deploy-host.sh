@@ -131,7 +131,12 @@ if (( available_kb < minimum_kb )); then
 fi
 
 echo "[1/7] 构建镜像 $IMAGE"
-podman build --layers -f deploy/volcano/docker/Dockerfile.vefaas -t "$IMAGE" .
+podman build \
+  --layers \
+  --build-arg "WORKER_DEPLOYMENT_GENERATION=$GENERATION" \
+  -f deploy/volcano/docker/Dockerfile.vefaas \
+  -t "$IMAGE" \
+  .
 
 echo "[2/7] 刷新 CR 登录并推送镜像"
 refresh_registry_login
@@ -158,10 +163,10 @@ wait_release() {
 }
 
 echo "[3/7] 更新 Worker 镜像和发布代际"
+vefaas fn env unset WORKER_DEPLOYMENT_GENERATION \
+  --id "$WORKER_FUNCTION_ID" -y -o json >/dev/null
 vefaas fn config --id "$WORKER_FUNCTION_ID" \
   --source "$IMAGE" --sourceType image -y -o json >/dev/null
-vefaas fn env set "WORKER_DEPLOYMENT_GENERATION=$GENERATION" \
-  --id "$WORKER_FUNCTION_ID" -y -o json >/dev/null
 
 echo "[4/7] 发布 Worker"
 vefaas fn release --id "$WORKER_FUNCTION_ID" \
