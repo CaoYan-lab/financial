@@ -281,7 +281,7 @@ describe('Longbridge 租户策略服务', () => {
     }))
   })
 
-  it('构造提示词前刷新超过30秒的租户账户快照', async () => {
+  it('每个模型请求前都重新读取租户账户，不复用批次快照', async () => {
     mocks.tradingDecision.mockResolvedValue(marketDecision({
       action: 'HOLD',
       approved: false,
@@ -362,7 +362,7 @@ describe('Longbridge 租户策略服务', () => {
       Array.isArray(params) && params[2] === 'signals')).toBe(false)
   })
 
-  it('未指定标的时按完整股票池逐一评估并按市场复用账户快照', async () => {
+  it('未指定标的时按完整股票池逐一评估并逐标的刷新账户快照', async () => {
     mocks.tradingDecision.mockResolvedValue(marketDecision({
       action: 'HOLD',
       approved: false,

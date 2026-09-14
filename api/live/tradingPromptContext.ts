@@ -57,7 +57,11 @@ export function productionAccountRisk(broker: TradingPromptBroker, account: Live
   return {
     openingRiskStatus, sourceAt: accessedAt ?? null, availableRiskBudget, reservedRisk: effectiveReservedRisk,
     maxPortfolioRisk, maxPerTradeRisk,
-    reason: normalized === 'UNKNOWN' ? '融资风险原始字段未可靠映射，不能推断安全' : '按策略权益风险上限扣除当前待确认订单预留',
+    budgetUnit: 'MAX_LOSS_AT_INVALIDATION',
+    budgetFormula: '预计损失=数量×|入场价-失效价|+费用与滑点；只将预计损失与风险预算比较。',
+    notionalLimit: null,
+    notionalRule: '风险预算不是单股价格、订单名义金额或持仓占权益比例上限。不得将5%组合风险预算解释为只能买5%仓位，也不得因单股价格高于风险预算而拒绝买入。',
+    reason: normalized === 'UNKNOWN' ? '融资风险原始字段未可靠映射，不能推断安全' : '按策略权益最大可承受亏损预算扣除当前待确认订单预留',
     rawExposureLevel: s.futuExposureLevel ?? null, rawRiskStatus: s.futuRiskStatus ?? null,
     broker, financingLevel: broker === 'longbridge' ? level ?? null : null,
     initialMargin: s.initialMargin ?? null, maintenanceMargin: s.maintenanceMargin ?? null,
@@ -99,6 +103,19 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
   const ordersKnowledge = input.managedOpenOrders && input.pendingOrders ? 'known' : 'unknown'
   if (ordersKnowledge === 'unknown') dataGaps.push('未确认完整托管/待确认订单范围')
   const strategy = getTradeStrategyRuntimeConfig('live').activeStrategy
+  const riskControls = {
+    ...strategy.riskControls,
+    portfolioHeat: strategy.riskControls?.portfolioHeat && {
+      mode: strategy.riskControls.portfolioHeat.mode,
+      maxAggregateLossPctEquity: strategy.riskControls.portfolioHeat.maxPctEquity,
+      metric: 'AGGREGATE_MAX_LOSS_AT_INVALIDATION',
+    },
+    perTradeLossBudget: strategy.riskControls?.perTradeLossBudget && {
+      mode: strategy.riskControls.perTradeLossBudget.mode,
+      maxLossPctEquity: strategy.riskControls.perTradeLossBudget.maxPctEquity,
+      metric: 'MAX_LOSS_AT_INVALIDATION',
+    },
+  }
   const facts = {
     instrument: { ticker, currency, lotSize: /^\d+$/.test(ticker) ? market.lotSize ?? null : 1 },
     account, risk: productionAccountRisk(broker, input.account, pendingRisk), marketData: market,
@@ -107,7 +124,16 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
     ordersKnowledge,
     orders: [...(input.managedOpenOrders ?? []).map(o => ({ ticker: normalizedTicker(o.ticker), status: o.status, remainingQuantity: o.remainingQuantity, sourceAt: o.lastCheckedAt ?? null })),
       ...(input.pendingOrders ?? []).map(o => ({ ticker: normalizedTicker(o.ticker), status: 'PENDING_CONFIRMATION', sourceAt: null }))],
-    policy: { id: strategy.id, riskControls: strategy.riskControls, trendFilters: strategy.trendFilters },
+    policy: {
+      id: strategy.id,
+      riskControls,
+      riskControlSemantics: {
+        portfolioHeat: '组合内所有开仓方案按失效价计算的预计亏损总额上限，不是订单名义金额或单票仓位占比上限。',
+        perTradeLossBudget: '单笔按失效价计算的预计亏损观察值，不是订单名义金额上限。',
+        singleNameExposure: '多头单票集中度仅动态评估，不存在固定5%硬上限。',
+      },
+      trendFilters: strategy.trendFilters,
+    },
     costs: { source: 'unavailable', reason: '数量尚未确定，不将固定每股成本当成真实费用；融资借券成本未知。' },
   }
   return {

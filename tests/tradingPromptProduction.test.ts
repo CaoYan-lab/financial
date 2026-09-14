@@ -22,7 +22,9 @@ const now = () => new Date().toISOString()
 const account = () => ({
   ok: true, selectedAccountId: 'account-a',
   summary: { accountId: 'account-a', currency: 'USD', tradingCurrency: 'USD', totalAssets: '$10000',
-    cash: '$5000', buyingPower: '$20000', financingRiskLevel: 0, initialMargin: '$0', marginCall: '$0',
+    cash: '$5000', buyingPower: '$20000', financingRiskLevel: 0,
+    financingCurrency: 'USD', financingEquity: '$10000', initialMargin: '$0', maintenanceMargin: '$0',
+    futuExposureLevel: 'SAFE', futuRiskStatus: 'LEVEL1', marginCall: '$0',
     source: { timestamp: now() } },
   positions: [],
 } as any)
@@ -87,8 +89,17 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     const sent = JSON.parse(mocks.call.mock.calls[0][0][1].content)
     expect(sent.marketData.lastPrice).toBe(180)
     expect(sent.risk.availableRiskBudget).toBe(500)
+    expect(sent.risk.openingRiskStatus).toBe('ALLOWED')
+    expect(sent.risk.budgetUnit).toBe('MAX_LOSS_AT_INVALIDATION')
+    expect(sent.risk.notionalLimit).toBeNull()
+    expect(sent.risk.notionalRule).toContain('不得将5%组合风险预算解释为只能买5%仓位')
+    expect(sent.policy.riskControlSemantics.portfolioHeat).toContain('不是订单名义金额')
+    expect(sent.policy.riskControls.portfolioHeat).toMatchObject({
+      maxAggregateLossPctEquity: 0.05,
+      metric: 'AGGREGATE_MAX_LOSS_AT_INVALIDATION',
+    })
+    expect(sent.policy.riskControls.portfolioHeat).not.toHaveProperty('maxPctEquity')
     expect(sent).not.toHaveProperty('synthetic')
-    if (broker === 'futu') expect(sent.risk.openingRiskStatus).toBe('UNKNOWN')
     const [scope] = await readdir(dir)
     const [file] = await readdir(join(dir, scope))
     expect((await stat(join(dir, scope, file))).mode & 0o777).toBe(0o600)
@@ -113,8 +124,7 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(r.approved).toBe(false)
     expect(r.action).toBe('HOLD')
     expect(r.promptAudit?.output?.action).toBe('BUY')
-    expect(r.promptAudit?.policyValid).toBe(broker === 'longbridge')
-    if (broker === 'futu') expect(r.promptAudit?.errors).toContain('opening_risk_unavailable')
+    expect(r.promptAudit?.policyValid).toBe(true)
   })
 
   it('期权不是正股，源时间不重写，外币与可平数量缺失可观测', () => {
@@ -227,7 +237,7 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(mocks.call).toHaveBeenCalledTimes(1)
     const ctx = buildManagedProductionContext(broker, contexts)
     expect(ctx.facts.orders[0].positionEffect).toBe('UNKNOWN')
-    expect(ctx.facts.orders[0].risk.openingRiskStatus).toBe(broker === 'futu' ? 'UNKNOWN' : 'ALLOWED')
+    expect(ctx.facts.orders[0].risk.openingRiskStatus).toBe('ALLOWED')
   })
 
   it('租户新版实盘挂单使用租户作用域并返回通过校验的撤单建议', async () => {

@@ -180,14 +180,6 @@ class LiveTradingEngine {
       )
     }
     const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
-    const accountByCurrency = new Map<string, LiveAccountDashboardResponse>([['USD', account]])
-    if (activeUniverse.some((ticker) => llmUniverseItem(ticker)?.market === 'HK')) {
-      accountByCurrency.set('HKD', await loadLiveAccountDashboard({
-        accountId: this.engine.accountId,
-        market: 'HK',
-        tradingCurrency: 'HKD',
-      }))
-    }
     const managedOpenOrders = await listManagedOrders('futu', true)
     const positions = stockPositionsByTicker(account.positions)
     const decisionConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
@@ -232,7 +224,7 @@ class LiveTradingEngine {
         return { ticker, skipped: marketData.reason }
       }
       const position = positions.get(ticker)
-      const tickerAccount = accountByCurrency.get(universeItem?.market === 'HK' ? 'HKD' : 'USD') ?? account
+      const tradingCurrency = universeItem?.market === 'HK' ? 'HKD' : 'USD'
       logger.info(
         {
           event: 'live.market_data.ready',
@@ -271,6 +263,14 @@ class LiveTradingEngine {
         'Live trend context loaded',
       )
       await waitForLlmRequestSlot({ index: requestIndex, ticker, batch: llmPacingBatch })
+      // Pacing and trend loading can outlive the batch snapshot. Refresh at
+      // the final boundary so every prompt starts from current account data.
+      const tickerAccount = await loadLiveAccountDashboard({
+        accountId: this.engine.accountId,
+        market: universeItem?.market === 'HK' ? 'HK' : 'US',
+        tradingCurrency,
+        refreshCache: true,
+      })
       const decision = await requestLiveTradingDecision({
         ticker,
         universe: LLM_SIMULATION_UNIVERSE,

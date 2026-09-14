@@ -149,8 +149,9 @@ describe('live trading execution modes', { timeout: 30_000 }, () => {
     expect(pendingOrders[0].decisionMode).toBe('legacy_direct')
     expect(pendingOrders[0].candidateId).toBeUndefined()
     expect(vi.mocked(loadLiveAccountDashboard)).toHaveBeenCalledWith(expect.objectContaining({
-      market: 'HK',
-      tradingCurrency: 'HKD',
+      market: 'US',
+      tradingCurrency: 'USD',
+      refreshCache: true,
     }))
   })
 
