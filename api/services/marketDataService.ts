@@ -13,7 +13,8 @@ export async function collectRawData(provider: DataProvider, batchId: string, as
       .filter((issue) => issue.severity === 'blocking')
       .map((issue) => issue.issue)
       .join('; ')
-    throw new Error(`报告数据不可用：${blockingIssues || '关键行情字段缺失'}`)
+    const providerWarnings = marketBundle.warnings.filter(Boolean).join('; ')
+    throw new Error(`报告数据不可用：${blockingIssues || '关键行情字段缺失'}${providerWarnings ? `；${providerWarnings}` : ''}`)
   }
 
   return {

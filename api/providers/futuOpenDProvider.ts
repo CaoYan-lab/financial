@@ -50,7 +50,7 @@ const FUTU_REPORT_SNAPSHOT_TIMEOUT_MS = Math.max(
 )
 const FUTU_REPORT_QUOTE_TIMEOUT_MS = Math.max(
   10_000,
-  Number(process.env.FUTU_REPORT_QUOTE_TIMEOUT_MS || 30_000) || 30_000,
+  Number(process.env.FUTU_REPORT_QUOTE_TIMEOUT_MS || 60_000) || 60_000,
 )
 
 export class FutuOpenDProvider implements DataProvider {

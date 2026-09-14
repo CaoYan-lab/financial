@@ -74,7 +74,7 @@ describe('FutuOpenDProvider', () => {
     expect(bridgeRunner).toHaveBeenCalledWith(
       'futu_snapshot.py',
       expect.objectContaining({ includeTechnicals: false, includeOptions: false }),
-      { timeoutMs: 30_000 },
+      { timeoutMs: 60_000 },
     )
   })
 

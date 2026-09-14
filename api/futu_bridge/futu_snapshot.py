@@ -123,22 +123,28 @@ def fetch_technicals(quote_ctx, codes, KLType, AuType):
 
 def fetch_snapshots(quote_ctx, codes, RET_OK):
     warnings = []
-    ret, snapshot = quote_ctx.get_market_snapshot(codes)
-    if ret == RET_OK and snapshot is not None and not snapshot.empty:
-        return {row["code"]: row for _, row in snapshot.iterrows()}, warnings
-
-    warnings.append(f"Batch snapshot failed: {snapshot}")
     result = {}
-    for code in codes:
+
+    def fetch_batch(batch):
         try:
-            ret_one, snapshot_one = quote_ctx.get_market_snapshot([code])
-            if ret_one == RET_OK and snapshot_one is not None and not snapshot_one.empty:
-                for _, row in snapshot_one.iterrows():
+            ret, snapshot = quote_ctx.get_market_snapshot(batch)
+            if ret == RET_OK and snapshot is not None and not snapshot.empty:
+                for _, row in snapshot.iterrows():
                     result[row["code"]] = row
-            else:
-                warnings.append(f"{code} snapshot unavailable: {snapshot_one}")
+                return
+            failure_message = str(snapshot)
         except Exception as exc:
-            warnings.append(f"{code} snapshot exception: {exc}")
+            failure_message = str(exc)
+
+        if len(batch) == 1:
+            warnings.append(f"{batch[0]} snapshot unavailable: {failure_message}")
+            return
+        midpoint = len(batch) // 2
+        fetch_batch(batch[:midpoint])
+        fetch_batch(batch[midpoint:])
+
+    if codes:
+        fetch_batch(codes)
     return result, warnings
 
 
