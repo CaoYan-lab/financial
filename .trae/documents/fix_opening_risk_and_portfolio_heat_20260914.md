@@ -7,7 +7,9 @@
 
 ## 修复
 
-- Futu 和多租户 Longbridge 均在每个标的构建模型请求前强制读取新账户快照，不再复用整批快照。
+- Futu、多租户 Longbridge 和全局 Longbridge 均在每个标的构建模型请求前强制读取新账户快照，不再复用整批快照。
+- 全局 Longbridge 若最终账户快照读取失败或融资风险等级仍未知，直接跳过模型，不再生成带 `openingRiskStatus=UNKNOWN` 的新信号。
+- 旧待确认订单缺少结构化失效价时，按单笔最大亏损预算保守预留，不再按无限风险占满整个组合预算。
 - 保留订单提交前的独立账户复核，模型前刷新不能替代执行前风控。
 - 风险上下文新增明确语义：
   - `budgetUnit=MAX_LOSS_AT_INVALIDATION`
@@ -24,4 +26,6 @@
 
 - 新鲜且字段完整的 Futu/Longbridge 账户必须生成 `openingRiskStatus=ALLOWED`。
 - 批量扫描的每个标的必须在模型请求前重新读取账户。
+- 全局 Longbridge 批量扫描不得通过 `options.account` 向后续标的复用批次级账户对象。
+- 单个旧待确认订单缺少失效价时，不得导致所有标的的 `availableRiskBudget` 直接归零。
 - 单股价格或订单名义金额高于 5% 权益时，不得仅据此拒绝；只比较按失效价计算的预计亏损。

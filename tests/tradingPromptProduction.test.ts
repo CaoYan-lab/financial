@@ -9,7 +9,10 @@ vi.mock('../api/simulation/llmResponseUtils', () => ({
   parseJsonObject: (text: string) => { try { return JSON.parse(text) } catch { return undefined } },
 }))
 vi.mock('../api/trade_strategy/tradeStrategyConfigService', () => ({
-  getTradeStrategyRuntimeConfig: () => ({ activeStrategy: { id: 'real-config', riskControls: { portfolioHeat: { maxPctEquity: 0.05 } }, trendFilters: {} } }),
+  getTradeStrategyRuntimeConfig: () => ({ activeStrategy: { id: 'real-config', riskControls: {
+    portfolioHeat: { maxPctEquity: 0.05 },
+    perTradeLossBudget: { maxPctEquity: 0.005 },
+  }, trendFilters: {} } }),
 }))
 import { buildProductionPrompt, productionPromptInstruction, requestProductionDecision, requestProductionShadow, tradingPromptMode, validateProductionOutput } from '../api/live/tradingPromptV2'
 import { buildSingleProductionContext, buildPortfolioProductionContext, buildManagedProductionContext, candidateProductionEvidence } from '../api/live/tradingPromptContext'
@@ -104,6 +107,27 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     const [file] = await readdir(join(dir, scope))
     expect((await stat(join(dir, scope, file))).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(join(dir, scope, file), 'utf8')).audit.rawText).toBe(JSON.stringify(hold()))
+  })
+
+  it('旧待确认订单缺少失效价时按单笔风险预算预留而非占满组合预算', () => {
+    const input = single()
+    input.pendingOrders = [{
+      ticker: 'TSM',
+      intent: {
+        ticker: 'TSM',
+        quantity: 1,
+        limitPrice: 100,
+        feeContext: { feeAmount: 1 },
+      },
+      llmDecision: {},
+    }]
+
+    const ctx = buildSingleProductionContext('longbridge', input)
+
+    expect(ctx.facts.risk.maxPortfolioRisk).toBe(500)
+    expect(ctx.facts.risk.maxPerTradeRisk).toBe(50)
+    expect(ctx.facts.risk.reservedRisk).toBe(50)
+    expect(ctx.facts.risk.availableRiskBudget).toBe(450)
   })
 
   it('正数动作、缺字段和未知证据严格校验，不靠补默认值通过', () => {

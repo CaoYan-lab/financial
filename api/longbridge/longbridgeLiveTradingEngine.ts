@@ -24,6 +24,7 @@ import { longbridgePersistence } from './longbridgePersistence.js'
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
 import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
+import { financingOpeningStatus } from '../live/brokerFinancingRisk.js'
 import { hasManagedOrderConflict } from '../live/managedOrderPolicy.js'
 import { buildLiveEvaluationStatus, liveEvaluationSkipReason } from '../trading/liveEvaluationStatusService.js'
 import { getLongbridgeSdkContexts } from './longbridgeSdkGateway.js'
@@ -51,6 +52,19 @@ const DEFAULT_DATA_WINDOW: LlmDataWindowRecommendation = {
   strategyHorizon: 'SWING_1_TO_7_DAYS',
   source: 'fallback',
   reason: 'Longbridge dry-run default data window.',
+}
+
+export function loadLongbridgeFinalPromptAccount(symbol: string) {
+  return loadLongbridgeLiveAccountDashboard(longbridgeTradingCurrency(symbol), { force: true })
+}
+
+export function longbridgePromptAccountFailure(
+  account: LiveAccountDashboardResponse,
+): string | undefined {
+  if (!account.ok) return '长桥账户快照读取失败，本轮不调用模型。'
+  if (financingOpeningStatus('longbridge', account.summary) === 'UNKNOWN') {
+    return '长桥账户融资风险等级不可用，本轮不调用模型。'
+  }
 }
 
 class LongbridgeLiveTradingEngine {
@@ -108,8 +122,6 @@ class LongbridgeLiveTradingEngine {
     try {
       const universe = this.engine.universe.length ? this.engine.universe : llmSimulationTickers()
       await ensureLongbridgeRealtimeSubscriptions(universe, { waitForSeed: true, requiredKlineCount: DEFAULT_DATA_WINDOW.kline1mBars })
-      const account = await loadLongbridgeLiveAccountDashboard()
-      this.account = account
       const runtimeConfig = getLlmRuntimeConfig().config
       const marketStates = await this.loadMarketStates(universe)
       const marketSessionSkipped = marketSessionSkipsFromCalendar(universe, marketStates, runtimeConfig.disableUsOvernightLlm)
@@ -121,12 +133,6 @@ class LongbridgeLiveTradingEngine {
         )
       }
       const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
-      const accountByCurrency = new Map([
-        ['USD', account] as const,
-        ...(activeUniverse.some((ticker) => longbridgeTradingCurrency(ticker) === 'HKD')
-          ? [['HKD', await loadLongbridgeLiveAccountDashboard('HKD')] as const]
-          : []),
-      ])
       const llmConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
       const concurrency = Math.min(llmConcurrency, LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY)
       const llmPacingBatch = { batchStartedAt: performance.now(), totalRequests: activeUniverse.length }
@@ -146,7 +152,6 @@ class LongbridgeLiveTradingEngine {
       await mapLimit(activeUniverse, concurrency, async (ticker, requestIndex) => this.runOnceDryRun(ticker, {
         reviewAfterCandidate: options.reviewAfterCandidate ?? false,
         ensureRealtime: false,
-        account: accountByCurrency.get(longbridgeTradingCurrency(ticker)) ?? account,
         llmPacingBatch,
         requestIndex,
         marketState: marketStates.get(normalizeLongbridgeSymbol(ticker)),
@@ -158,13 +163,10 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
-  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; account?: LiveAccountDashboardResponse; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number; marketState?: string } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
+  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number; marketState?: string } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
     const warnings: string[] = []
     const accountCurrency = longbridgeTradingCurrency(symbol)
-    const account = options.account ?? (await loadLongbridgeLiveAccountDashboard(accountCurrency))
     const managedOpenOrders = await listManagedOrders('longbridge', true)
-    if (accountCurrency === 'USD') this.account = account
-    warnings.push(...account.warnings)
     const marketState = options.marketState
       ?? (await this.loadMarketStates([symbol])).get(normalizeLongbridgeSymbol(symbol))
       ?? 'UNAVAILABLE'
@@ -236,6 +238,32 @@ class LongbridgeLiveTradingEngine {
     if (!trendContext.window.available) warnings.push(trendContext.window.reason ?? trendContext.summary)
 
     if (options.llmPacingBatch && options.requestIndex !== undefined) await waitForLlmRequestSlot({ index: options.requestIndex, ticker: marketData.symbol, batch: options.llmPacingBatch })
+    const account = await loadLongbridgeFinalPromptAccount(symbol)
+    if (accountCurrency === 'USD') this.account = account
+    warnings.push(...account.warnings)
+    const accountFailure = longbridgePromptAccountFailure(account)
+    if (accountFailure) {
+      const reason = accountFailure
+      recordLongbridgeSkipped(symbol, reason)
+      logger.warn(
+        {
+          event: 'longbridge.live.ticker.skipped_before_llm',
+          symbol,
+          reason,
+          accountSourceAt: account.summary.source?.accessedAt,
+          financingRiskLevel: account.summary.financingRiskLevel,
+        },
+        'Longbridge live ticker skipped before LLM decision',
+      )
+      return {
+        ok: false,
+        symbol,
+        marketData,
+        candidatePool: longbridgeCandidatePoolService.snapshot(executionMode),
+        pendingOrders: longbridgeOrderQueueService.activePendingOrders(),
+        warnings: [...warnings, reason],
+      }
+    }
     const blockOpeningWhenCashNegative =
       getLongbridgeLiveSettings().blockOpeningWhenCashNegative
     const decision = await requestLongbridgeLiveTradingDecision({

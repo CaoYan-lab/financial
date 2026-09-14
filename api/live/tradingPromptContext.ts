@@ -95,7 +95,11 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
   const direct = account.positions.filter(p => normalizedTicker(p.ticker) === ticker && ['STOCK', 'ETF'].includes(p.assetType))
   const known = input.account.ok && fresh(account.sourceAt) && direct.every(p => p.quantity !== null)
   const quantity = known ? direct.reduce((sum, p) => sum + p.quantity!, 0) : null
-  const pendingRisk = reservedPendingRisk(input.pendingOrders ?? [])
+  const baselineRisk = productionAccountRisk(broker, input.account)
+  const pendingRisk = reservedPendingRisk(
+    input.pendingOrders ?? [],
+    baselineRisk.maxPerTradeRisk,
+  )
   const dataGaps = ['融资与借券成本未知']
   if (!known || direct.some(p => p.availableToClose === null)) dataGaps.push('券商可平数量未提供')
   if (financingOpeningStatus(broker, input.account.summary) === 'UNKNOWN') dataGaps.push('融资风险字段未知')
@@ -212,16 +216,29 @@ export function buildPortfolioProductionContext(broker: TradingPromptBroker, inp
   }
 }
 
-function reservedPendingRisk(orders: Array<Record<string, any>>): number {
+function reservedPendingRisk(
+  orders: Array<Record<string, any>>,
+  unknownOrderFallback: number | null,
+): number {
   let total = 0
   for (const order of orders) {
     const intent = order.intent
     const output = order.llmDecision?.promptAudit?.output
-    if (!intent || !output || typeof output.invalidationPrice !== 'number') return Number.POSITIVE_INFINITY
+    if (!intent || !output || typeof output.invalidationPrice !== 'number') {
+      if (unknownOrderFallback === null) return Number.POSITIVE_INFINITY
+      total += unknownOrderFallback
+      continue
+    }
     const quantity = Number(intent.quantity)
     const price = Number(intent.limitPrice)
-    if (!(quantity > 0) || !(price > 0)) return Number.POSITIVE_INFINITY
+    if (!(quantity > 0) || !(price > 0)) {
+      if (unknownOrderFallback === null) return Number.POSITIVE_INFINITY
+      total += unknownOrderFallback
+      continue
+    }
+    const fee = Number(intent.feeContext?.estimatedAmount ?? intent.feeContext?.feeAmount ?? 0)
     total += Math.abs(price - output.invalidationPrice) * quantity
+      + (Number.isFinite(fee) && fee > 0 ? fee * 2 : 0)
   }
   return total
 }
