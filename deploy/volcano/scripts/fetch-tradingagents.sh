@@ -25,13 +25,19 @@ PINNED_TAG="$(grep '^PINNED_TAG=' "$VERSION_FILE" | cut -d= -f2-)"
 REPO_PATH="${TRADINGAGENTS_REPO_PATH:-$PROJECT_ROOT/third_party/TradingAgents}"
 VENV_DIR="${TRADINGAGENTS_VENV:-$PROJECT_ROOT/.venv-tradingagents}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+ARCHIVE="${TRADINGAGENTS_ARCHIVE:-}"
 
 echo "[fetch-tradingagents] 项目根: $PROJECT_ROOT"
 echo "[fetch-tradingagents] 目标仓库: $REPO_PATH"
 echo "[fetch-tradingagents] 版本锁定: $PINNED_TAG ($PINNED_COMMIT)"
 
-# 1) 克隆 / 更新到锁定 commit
-if [ -d "$REPO_PATH/.git" ]; then
+# 1) 优先使用发布机已校验并放入构建上下文的源码归档。
+if [ -n "$ARCHIVE" ] && [ -r "$ARCHIVE" ]; then
+  echo "[fetch-tradingagents] 使用固定提交源码归档: $ARCHIVE"
+  rm -rf "$REPO_PATH"
+  mkdir -p "$REPO_PATH"
+  tar -xzf "$ARCHIVE" --strip-components=1 -C "$REPO_PATH"
+elif [ -d "$REPO_PATH/.git" ]; then
   echo "[fetch-tradingagents] 仓库已存在，校验 commit..."
   CURRENT="$(git -C "$REPO_PATH" rev-parse HEAD)"
   if [ "$CURRENT" != "$PINNED_COMMIT" ]; then

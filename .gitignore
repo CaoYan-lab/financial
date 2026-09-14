@@ -56,3 +56,7 @@ coverage/
 playwright-report/
 test-results/
 .data/test-results/
+
+# 发布机预下载的固定版本构建制品
+.build-assets/*
+!.build-assets/.gitkeep

@@ -12,6 +12,9 @@ REPOSITORY="${CR_REPO:-financial-workbench}"
 WEB_FUNCTION_ID="${FIN_WEB_FUNCTION_ID:-5gn416ub}"
 WORKER_FUNCTION_ID="${FIN_WORKER_FUNCTION_ID:-a0hgmf9x}"
 PUBLIC_HEALTH_URL="${FIN_PUBLIC_HEALTH_URL:-https://s0ii6ameg9bmnc9s8rrtt.apigateway-cn-beijing.volceapi.com/api/health}"
+BUILD_ASSET_DIR="$SOURCE_DIR/.build-assets"
+TRADINGAGENTS_ARCHIVE="$BUILD_ASSET_DIR/tradingagents-85946c2f.tar.gz"
+LONGBRIDGE_NATIVE_ARCHIVE="$BUILD_ASSET_DIR/longbridge-linux-x64-gnu-4.3.2.tgz"
 
 if [[ "$(hostname)" != "$EXPECTED_HOST" ]]; then
   echo "拒绝发布：当前主机不是指定部署机 $EXPECTED_HOST" >&2
@@ -115,6 +118,43 @@ NODE
 }
 
 cd "$SOURCE_DIR"
+mkdir -p "$BUILD_ASSET_DIR"
+
+download_and_verify() {
+  local url="$1"
+  local target="$2"
+  local checksum_command="$3"
+  local expected="$4"
+  local actual=""
+
+  if [[ -f "$target" ]]; then
+    actual="$($checksum_command "$target" | awk '{print $1}')"
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    rm -f "$target.tmp"
+    curl --fail --location --retry 3 --retry-delay 5 \
+      --connect-timeout 15 --max-time 300 \
+      -o "$target.tmp" "$url"
+    actual="$($checksum_command "$target.tmp" | awk '{print $1}')"
+    [[ "$actual" == "$expected" ]] || {
+      echo "构建制品校验失败：$target" >&2
+      rm -f "$target.tmp"
+      exit 1
+    }
+    mv "$target.tmp" "$target"
+  fi
+}
+
+echo "[准备] 下载并校验固定版本构建制品"
+download_and_verify \
+  "https://codeload.github.com/TauricResearch/TradingAgents/tar.gz/85946c2f60768ab2dae23a5a36cd927662feef94" \
+  "$TRADINGAGENTS_ARCHIVE" sha256sum \
+  "610c58bbcdbcdce46f4f9239cee06bf27be5602db8a1e28032bacf74e11ebac5"
+download_and_verify \
+  "https://registry.npmjs.org/longbridge-linux-x64-gnu/-/longbridge-linux-x64-gnu-4.3.2.tgz" \
+  "$LONGBRIDGE_NATIVE_ARCHIVE" sha512sum \
+  "3c4328745d5e04d6946b1979fa9249b49e1997d57599ed738d32066d709616a40b814978e7b7d834bb47a52dc917f13f14dbb8f5ce9c8562e7e863a2d2bbc278"
+
 if [[ ! -f .dockerignore ]]; then
   cp deploy/volcano/docker/.dockerignore .dockerignore
 fi
