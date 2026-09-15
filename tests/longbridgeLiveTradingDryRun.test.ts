@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { longbridgeLiveTradingEngine, longbridgeSignalLifecycle } from '../api/longbridge/longbridgeLiveTradingEngine'
+import {
+  longbridgeEngineFailurePolicy,
+  longbridgeLiveTradingEngine,
+  longbridgeSignalLifecycle,
+} from '../api/longbridge/longbridgeLiveTradingEngine'
 import {
   buildLongbridgeSdkOrderPayload,
   formatLongbridgeSubmittedPrice,
@@ -12,6 +16,28 @@ import { updateTradeStrategyRuntimeConfig } from '../api/trade_strategy/tradeStr
 import type { LiveAccountDashboardResponse, LivePendingOrder, TradeStrategyConfig } from '../shared/types'
 
 const runDryRun = process.env.RUN_LONGBRIDGE_DRY_RUN === '1' && process.env.RUN_LONGBRIDGE_INTEGRATION === '1' && process.env.RUN_LONGBRIDGE_LLM_INTEGRATION === '1' ? describe : describe.skip
+
+describe('Longbridge engine failure policy', () => {
+  it('keeps scheduling after a PostgreSQL connection establishment timeout', () => {
+    expect(longbridgeEngineFailurePolicy(
+      new Error('Connection terminated due to connection timeout'),
+      '长桥实盘评估引擎运行失败。',
+    )).toEqual({
+      message: 'Connection terminated due to connection timeout',
+      recoverable: true,
+    })
+  })
+
+  it('stops the engine for non-transient failures', () => {
+    expect(longbridgeEngineFailurePolicy(
+      new Error('invalid account credentials'),
+      '长桥实盘评估引擎运行失败。',
+    )).toEqual({
+      message: 'invalid account credentials',
+      recoverable: false,
+    })
+  })
+})
 
 describe('Longbridge order gate', () => {
   beforeEach(() => {

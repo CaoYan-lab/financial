@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../api/cloud/db/pgClient.js', () => ({
-  getPool: () => ({ connect: mocks.connect }),
+  connectPgClient: mocks.connect,
 }))
 
 vi.mock('../../api/utils/logger.js', () => ({

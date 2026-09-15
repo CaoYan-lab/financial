@@ -24,6 +24,7 @@ import { longbridgePersistence } from './longbridgePersistence.js'
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 import { longbridgeOpeningRiskRejectionReason } from './longbridgeRiskService.js'
 import { listManagedOrders } from '../cloud/state/managedOrderStore.js'
+import { isRetryablePgConnectionError } from '../cloud/db/pgClient.js'
 import { financingOpeningStatus } from '../live/brokerFinancingRisk.js'
 import { hasManagedOrderConflict } from '../live/managedOrderPolicy.js'
 import { buildLiveEvaluationStatus, liveEvaluationSkipReason } from '../trading/liveEvaluationStatusService.js'
@@ -42,6 +43,10 @@ const DEFAULT_RUN_INTERVAL_MS = 60_000
 const LIVE_TIMER_PHASE_OFFSET_MS = Number(process.env.LONGBRIDGE_LIVE_TRADING_TIMER_OFFSET_MS || process.env.LIVE_TRADING_TIMER_OFFSET_MS || 30_000)
 const LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY = Math.max(1, Number(process.env.LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY || 1))
 const LONG_BRIDGE_START_SOURCE_TIMEOUT_MS = Math.max(5_000, Number(process.env.LONGBRIDGE_LIVE_START_SOURCE_TIMEOUT_MS || 20_000) || 20_000)
+const LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS = Math.max(
+  1_000,
+  Number(process.env.LONGBRIDGE_TRANSIENT_RETRY_DELAY_MS || 15_000) || 15_000,
+)
 const DEFAULT_DATA_WINDOW: LlmDataWindowRecommendation = {
   kline1mBars: 120,
   tickerPoints: 240,
@@ -94,7 +99,14 @@ class LongbridgeLiveTradingEngine {
       const universe = llmSimulationTickers()
       this.setRunning(account.selectedAccountId, universe, this.currentRunIntervalMs())
       this.bootstrapAfterStart(account, universe).catch((error) => {
-        this.setError(error instanceof Error ? error.message : '长桥实盘启动后台初始化失败。')
+        if (!this.handleEngineFailure(error, '长桥实盘启动后台初始化失败。')) return
+        if (!this.scanTimer) this.scheduleNextScan(LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS)
+        if (
+          !this.reviewTimer
+          && getTradeStrategyRuntimeConfig('live').selection.executionMode === 'candidate_pool'
+        ) {
+          this.scheduleNextReview(this.currentReviewIntervalMs())
+        }
       })
       return this.dashboard()
     } finally {
@@ -534,6 +546,27 @@ class LongbridgeLiveTradingEngine {
     this.engine = { ...this.engine, lastError: message, running: false, nextRunAt: '' }
   }
 
+  private handleEngineFailure(error: unknown, fallback: string): boolean {
+    const policy = longbridgeEngineFailurePolicy(error, fallback)
+    if (!policy.recoverable) {
+      this.setError(policy.message)
+      return false
+    }
+    this.engine = {
+      ...this.engine,
+      lastError: `数据库连接暂时超时，长桥引擎将在下一轮自动重试：${policy.message}`,
+    }
+    logger.warn(
+      {
+        event: 'longbridge.live.transient_error_retry_scheduled',
+        error: policy.message,
+        retryDelayMs: LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS,
+      },
+      '长桥引擎遇到可恢复错误，将继续调度',
+    )
+    return true
+  }
+
   private getEngine() {
     const pendingOrders = longbridgeOrderQueueService.activePendingOrders()
     const signals = longbridgePersistence.latestSignals()
@@ -559,12 +592,15 @@ class LongbridgeLiveTradingEngine {
     this.engine = { ...this.engine, nextRunAt, runIntervalMs: this.currentRunIntervalMs() }
     this.scanTimer = setTimeout(() => {
       this.scanTimer = undefined
+      let nextDelayMs = this.currentRunIntervalMs()
       this.runPoolOnceDryRun({ reviewAfterCandidate: false })
         .catch((error) => {
-          this.setError(error instanceof Error ? error.message : '长桥实盘评估引擎运行失败。')
+          if (this.handleEngineFailure(error, '长桥实盘评估引擎运行失败。')) {
+            nextDelayMs = LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS
+          }
         })
         .finally(() => {
-          if (this.engine.running) this.scheduleNextScan(this.currentRunIntervalMs())
+          if (this.engine.running) this.scheduleNextScan(nextDelayMs)
         })
     }, delayMs)
   }
@@ -589,16 +625,31 @@ class LongbridgeLiveTradingEngine {
           this.markRun(this.currentRunIntervalMs())
         })
         .catch((error) => {
-          this.setError(error instanceof Error ? error.message : '长桥组合裁决运行失败。')
+          this.handleEngineFailure(error, '长桥组合裁决运行失败。')
         })
         .finally(() => {
-          if (this.engine.running && getTradeStrategyRuntimeConfig('live').selection.executionMode === 'candidate_pool') this.scheduleNextReview(this.currentReviewIntervalMs())
+          if (this.engine.running && getTradeStrategyRuntimeConfig('live').selection.executionMode === 'candidate_pool') {
+            const delay = this.engine.lastError
+              ? LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS
+              : this.currentReviewIntervalMs()
+            this.scheduleNextReview(delay)
+          }
         })
     }, delayMs)
   }
 }
 
 export const longbridgeLiveTradingEngine = new LongbridgeLiveTradingEngine()
+
+export function longbridgeEngineFailurePolicy(
+  error: unknown,
+  fallback: string,
+): { message: string; recoverable: boolean } {
+  return {
+    message: error instanceof Error ? error.message : fallback,
+    recoverable: isRetryablePgConnectionError(error),
+  }
+}
 
 function signalFromDecision(
   decision: LlmTradingDecision,
@@ -643,6 +694,10 @@ function signalFromDecision(
     trendAlignment: decision.trendAlignment,
     tradeHorizon: decision.tradeHorizon,
     whyNotNoise: decision.whyNotNoise,
+    evidence: decision.evidence,
+    counterEvidence: decision.counterEvidence,
+    exitCondition: decision.exitCondition,
+    requestedFollowUp: decision.requestedFollowUp,
     source: marketData.source,
     rawModelOutput: decision.rawText,
     lifecycleStatus,

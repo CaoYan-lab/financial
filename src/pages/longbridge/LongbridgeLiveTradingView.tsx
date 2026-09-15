@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Eye, RefreshCw, ShieldAlert }
 import AssetPrivacyToggle from '@/components/common/AssetPrivacyToggle'
 import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
 import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
+import SignalDecisionDetails from '@/components/trading/SignalDecisionDetails'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
 import TradingPromptModePanel from '@/components/trading/TradingPromptModePanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
@@ -811,6 +812,7 @@ function LongbridgeSignalHistoryTable({
                 </p>
               ) : null}
               <p className="mt-2 leading-6 text-stone-600">{signal.reason}</p>
+              <SignalDecisionDetails signal={signal} />
             </div>
           )
         })}

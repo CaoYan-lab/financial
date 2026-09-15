@@ -732,6 +732,10 @@ function signalFromDecision(decision: LlmTradingDecision, updatedAt: string, run
     trendAlignment: decision.trendAlignment,
     tradeHorizon: decision.tradeHorizon,
     whyNotNoise: decision.whyNotNoise,
+    evidence: decision.evidence,
+    counterEvidence: decision.counterEvidence,
+    exitCondition: decision.exitCondition,
+    requestedFollowUp: decision.requestedFollowUp,
     source: 'futu-callback',
     rawModelOutput: decision.rawText,
   }

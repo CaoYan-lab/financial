@@ -8,6 +8,7 @@ import Badge from '@/components/common/Badge'
 import BrokerOrdersTable from '@/components/BrokerOrdersTable'
 import LiveEvaluationStatusBanner from '@/components/trading/LiveEvaluationStatusBanner'
 import LiveEvaluationStatusDialog from '@/components/trading/LiveEvaluationStatusDialog'
+import SignalDecisionDetails from '@/components/trading/SignalDecisionDetails'
 import TradeStrategyConfigPanel from '@/components/trading/TradeStrategyConfigPanel'
 import TradingPromptModePanel from '@/components/trading/TradingPromptModePanel'
 import ManagedOrdersPanel from '@/components/ManagedOrdersPanel'
@@ -1090,6 +1091,7 @@ function HistoryTable({
                 </p>
               ) : null}
               <p className="mt-2 text-stone-600">{signal.reason}</p>
+              <SignalDecisionDetails signal={signal} />
             </div>
           )
         })}

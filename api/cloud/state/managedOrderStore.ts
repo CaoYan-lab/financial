@@ -4,7 +4,7 @@ import type {
   ManagedOrder,
   ManagedOrderEvent,
 } from '../../../shared/managedOrderTypes.js'
-import { getPool, isPgEnabled, query, queryOne } from '../db/pgClient.js'
+import { connectPgClient, isPgEnabled, query, queryOne } from '../db/pgClient.js'
 
 type ManagedOrderRow = QueryResultRow & {
   payload: ManagedOrder
@@ -200,7 +200,7 @@ export async function beginManagedOrderCancel(input: {
   reason: string
 }): Promise<{ ok: boolean; order?: ManagedOrder; alreadyHandled?: boolean; error?: string }> {
   if (!shouldUseManagedOrderPostgres()) return beginMemoryCancel(input)
-  const client = await getPool().connect()
+  const client = await connectPgClient('begin_managed_order_cancel')
   try {
     await client.query('BEGIN')
     const row = (

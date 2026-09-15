@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { LiveAccountDashboardResponse, LlmTradingDecision, TrendContextSummary } from '../../shared/types.js'
+import type { LiveAccountDashboardResponse, LlmDataWindowRecommendation, LlmTradingDecision, TrendContextSummary } from '../../shared/types.js'
 import type { TradingPromptBroker } from '../../shared/tradingPromptTypes.js'
 import type { ManagedOrder } from '../../shared/managedOrderTypes.js'
 import type { ProductionPromptContext } from './tradingPromptV2.js'
@@ -8,7 +8,7 @@ import { parseMoney } from '../longbridge/longbridgeRiskService.js'
 import { financingOpeningStatus, verifiedCloseQuantity } from './brokerFinancingRisk.js'
 import { estimatePreTradeFee } from './liveFeeService.js'
 
-type Market = { ticker: string; updatedAt?: string; lastPrice?: number; bestAsk?: number; bestBid?: number; marketState?: string; lotSize?: number; bars?: unknown[]; asks?: unknown[]; bids?: unknown[]; ok?: boolean }
+type Market = { ticker: string; updatedAt?: string; lastPrice?: number; bestAsk?: number; bestBid?: number; marketState?: string; lotSize?: number; bars?: unknown[]; tickerPoints?: unknown[]; asks?: unknown[]; bids?: unknown[]; ok?: boolean }
 export type CandidateMarketEvidence = {
   ticker: string
   sourceAt: string | null
@@ -24,12 +24,51 @@ const normalizedTicker = (ticker: string) => ticker.toUpperCase().replace(/^US\.
 const fresh = (sourceAt?: string | null) => !!sourceAt && Number.isFinite(Date.parse(sourceAt)) && Date.parse(sourceAt) <= Date.now() + 5000 && Date.now() - Date.parse(sourceAt) <= 60000
 const currencyForTicker = (ticker: string) => /^\d+$/.test(normalizedTicker(ticker)) ? 'HKD' : 'USD'
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24)
-function marketSnapshot(market?: Market | null): Market | null {
+const DEFAULT_EXECUTION_WINDOW: LlmDataWindowRecommendation = {
+  kline1mBars: 120,
+  tickerPoints: 240,
+  orderBookDepth: 5,
+  pollIntervalSeconds: 60,
+  reason: '新版提示词默认执行窗口。',
+  source: 'fallback',
+}
+const count = (value: unknown) => Math.max(0, Math.floor(Number(value) || 0))
+const tail = <T>(values: T[] | undefined, size: number) => size > 0 ? values?.slice(-size) ?? [] : []
+function marketSnapshot(market?: Market | null, requestedWindow: LlmDataWindowRecommendation = DEFAULT_EXECUTION_WINDOW): (Market & {
+  dataWindow: {
+    requested: Pick<LlmDataWindowRecommendation, 'kline1mBars' | 'tickerPoints' | 'orderBookDepth'>
+    available: Pick<LlmDataWindowRecommendation, 'kline1mBars' | 'tickerPoints' | 'orderBookDepth'>
+    included: Pick<LlmDataWindowRecommendation, 'kline1mBars' | 'tickerPoints' | 'orderBookDepth'>
+  }
+}) | null {
   if (!market) return null
+  const requested = {
+    kline1mBars: count(requestedWindow.kline1mBars),
+    tickerPoints: count(requestedWindow.tickerPoints),
+    orderBookDepth: count(requestedWindow.orderBookDepth),
+  }
+  const available = {
+    kline1mBars: market.bars?.length ?? 0,
+    tickerPoints: market.tickerPoints?.length ?? 0,
+    orderBookDepth: Math.min(market.asks?.length ?? 0, market.bids?.length ?? 0),
+  }
+  const bars = tail(market.bars, requested.kline1mBars)
+  const tickerPoints = tail(market.tickerPoints, requested.tickerPoints)
+  const asks = market.asks?.slice(0, requested.orderBookDepth) ?? []
+  const bids = market.bids?.slice(0, requested.orderBookDepth) ?? []
   return {
     ticker: normalizedTicker(market.ticker), updatedAt: market.updatedAt, lastPrice: market.lastPrice,
     bestAsk: market.bestAsk, bestBid: market.bestBid, marketState: market.marketState,
-    lotSize: market.lotSize, bars: market.bars?.slice(-30), asks: market.asks?.slice(0, 5), bids: market.bids?.slice(0, 5),
+    lotSize: market.lotSize, bars, tickerPoints, asks, bids,
+    dataWindow: {
+      requested,
+      available,
+      included: {
+        kline1mBars: bars.length,
+        tickerPoints: tickerPoints.length,
+        orderBookDepth: Math.min(asks.length, bids.length),
+      },
+    },
   }
 }
 function validUntil(times: Array<string | null | undefined>): string | null {
@@ -87,11 +126,12 @@ function accountFacts(account: LiveAccountDashboardResponse) {
 
 export function buildSingleProductionContext(broker: TradingPromptBroker, input: {
   account: LiveAccountDashboardResponse; marketData: Market; trendContext?: TrendContextSummary
+  dataWindow?: LlmDataWindowRecommendation
   managedOpenOrders?: ManagedOrder[]; pendingOrders?: Array<{ ticker: string; [key: string]: unknown }>
   scope?: string; blockOpeningWhenCashNegative?: boolean
 }): ProductionPromptContext {
   const ticker = normalizedTicker(input.marketData.ticker)
-  const account = accountFacts(input.account), market = marketSnapshot(input.marketData)!
+  const account = accountFacts(input.account), market = marketSnapshot(input.marketData, input.dataWindow)!
   const currency = currencyForTicker(ticker)
   const direct = account.positions.filter(p => normalizedTicker(p.ticker) === ticker && ['STOCK', 'ETF'].includes(p.assetType))
   const known = input.account.ok && fresh(account.sourceAt) && direct.every(p => p.quantity !== null)
@@ -107,6 +147,15 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
   if (account.currency !== currency) dataGaps.push('账户币种与标的币种不一致')
   const ordersKnowledge = input.managedOpenOrders && input.pendingOrders ? 'known' : 'unknown'
   if (ordersKnowledge === 'unknown') dataGaps.push('未确认完整托管/待确认订单范围')
+  if (market.dataWindow.included.kline1mBars < market.dataWindow.requested.kline1mBars) {
+    dataGaps.push(`1分钟K线不足：实际${market.dataWindow.included.kline1mBars}/请求${market.dataWindow.requested.kline1mBars}`)
+  }
+  if (market.dataWindow.included.tickerPoints < market.dataWindow.requested.tickerPoints) {
+    dataGaps.push(`分时点不足：实际${market.dataWindow.included.tickerPoints}/请求${market.dataWindow.requested.tickerPoints}`)
+  }
+  if (market.dataWindow.included.orderBookDepth < market.dataWindow.requested.orderBookDepth) {
+    dataGaps.push(`盘口深度不足：实际${market.dataWindow.included.orderBookDepth}/请求${market.dataWindow.requested.orderBookDepth}`)
+  }
   const strategy = getTradeStrategyRuntimeConfig('live').activeStrategy
   const accountCashLimit = broker === 'longbridge'
     && input.blockOpeningWhenCashNegative !== false
@@ -151,10 +200,48 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
     },
     costs: { source: 'unavailable', reason: '数量尚未确定，不将固定每股成本当成真实费用；融资借券成本未知。' },
   }
+  const trend = facts.trendContext
+  const evidence = [
+    {
+      id: 'E1',
+      path: 'account',
+      summary: `账户快照${account.ok ? '有效' : '不可用'}；币种${account.currency ?? '未知'}；权益${formatEvidenceNumber(account.equity)}；现金${formatEvidenceNumber(account.cash)}；购买力${formatEvidenceNumber(account.buyingPower)}；源时间${account.sourceAt ?? '未知'}`,
+    },
+    {
+      id: 'E2',
+      path: 'risk',
+      summary: `开仓风险${facts.risk.openingRiskStatus}；可用亏损预算${formatEvidenceNumber(facts.risk.availableRiskBudget)}；单笔上限${formatEvidenceNumber(facts.risk.maxPerTradeRisk)}；组合上限${formatEvidenceNumber(facts.risk.maxPortfolioRisk)}`,
+    },
+    {
+      id: 'E3',
+      path: 'marketData',
+      ticker,
+      summary: `现价${formatEvidenceNumber(market.lastPrice)}；买一${formatEvidenceNumber(market.bestBid)}；卖一${formatEvidenceNumber(market.bestAsk)}；市场${market.marketState ?? '未知'}；实际输入${market.dataWindow.included.kline1mBars}根1分钟K线/${market.dataWindow.included.tickerPoints}个分时点/${market.dataWindow.included.orderBookDepth}档盘口；源时间${market.updatedAt ?? '未知'}`,
+    },
+    {
+      id: 'E4',
+      path: 'trendContext',
+      ticker,
+      summary: trend
+        ? `${trend.summary} 均线${formatEvidenceRecord(trend.movingAverages)}；支撑${formatEvidenceList(trend.supportLevels)}；阻力${formatEvidenceList(trend.resistanceLevels)}`
+        : '趋势上下文不可用',
+    },
+    {
+      id: 'E5',
+      path: 'orders',
+      summary: `订单范围${ordersKnowledge === 'known' ? '已确认' : '未知'}；同标的及待确认订单共${facts.orders.length}笔`,
+    },
+    {
+      id: 'E6',
+      path: 'position',
+      ticker,
+      summary: `直接正股/ETF持仓${known ? '已确认' : '未知'}；数量${formatEvidenceNumber(quantity)}；可平数量${formatEvidenceNumber(facts.position.availableToClose)}`,
+    },
+  ]
   return {
     broker, role: 'single', scope: input.scope ?? input.account.selectedAccountId ?? input.account.summary.accountId,
     facts, dataGaps, sourceValidUntil: validUntil([account.sourceAt, market.updatedAt]),
-    evidence: [{ id: 'E1', path: 'account' }, { id: 'E2', path: 'risk' }, { id: 'E3', path: 'marketData', ticker }, { id: 'E4', path: 'trendContext', ticker }, { id: 'E5', path: 'orders' }, { id: 'E6', path: 'position', ticker }],
+    evidence,
   }
 }
 
@@ -211,10 +298,11 @@ export function buildPortfolioProductionContext(broker: TradingPromptBroker, inp
     }
   })
   const account = accountFacts(input.account)
+  const risk = productionAccountRisk(broker, input.account, input.pendingOrders.length ? Number.POSITIVE_INFINITY : 0)
   return {
     broker, role: 'portfolio', scope: scope ?? input.account.selectedAccountId ?? input.account.summary.accountId,
     facts: {
-      candidatePool, account, risk: productionAccountRisk(broker, input.account, input.pendingOrders.length ? Number.POSITIVE_INFINITY : 0),
+      candidatePool, account, risk,
       orders: input.pendingOrders.map(o => ({ ticker: normalizedTicker(o.ticker), side: o.side, createdAt: o.createdAt })),
       constraints: input.constraints,
       rankingPolicy: ['netRewardRiskBps DESC', 'riskBudgetUsed ASC', 'absPriceDriftBps ASC', 'firstSeenAt ASC', 'ticker ASCII ASC', 'candidateId ASCII ASC'],
@@ -222,8 +310,19 @@ export function buildPortfolioProductionContext(broker: TradingPromptBroker, inp
     dataGaps: [...(input.pendingOrders.length ? ['存在未终态订单，风险释放前禁止新增开仓晋级'] : []), ...(financingOpeningStatus(broker, input.account.summary) === 'UNKNOWN' ? ['融资风险字段未知'] : []),
       ...candidatePool.filter(c => !c.marketEvidence?.valid).map(c => `${c.ticker}候选行情缺失或过期`)],
     sourceValidUntil: validUntil([account.sourceAt, ...candidatePool.map(c => c.marketEvidence?.sourceAt)]),
-    evidence: [{ id: 'E1', path: 'account' }, { id: 'E2', path: 'risk' }, { id: 'E3', path: 'orders' },
-      ...candidatePool.map((c, i) => ({ id: c.evidenceId, path: `candidatePool.${i}.marketEvidence`, ticker: c.ticker }))],
+    evidence: [
+      { id: 'E1', path: 'account', summary: `账户权益${formatEvidenceNumber(account.equity)}；现金${formatEvidenceNumber(account.cash)}；购买力${formatEvidenceNumber(account.buyingPower)}；源时间${account.sourceAt ?? '未知'}` },
+      { id: 'E2', path: 'risk', summary: `开仓风险${risk.openingRiskStatus}；可用亏损预算${formatEvidenceNumber(risk.availableRiskBudget)}；待确认订单${input.pendingOrders.length}笔` },
+      { id: 'E3', path: 'orders', summary: `待确认订单${input.pendingOrders.length}笔` },
+      ...candidatePool.map((c, i) => ({
+        id: c.evidenceId,
+        path: `candidatePool.${i}.marketEvidence`,
+        ticker: c.ticker,
+        summary: c.marketEvidence
+          ? `${c.ticker}行情${c.marketEvidence.valid ? '有效' : '无效'}；现价${formatEvidenceNumber(c.marketEvidence.market?.lastPrice)}；趋势${c.marketEvidence.trend?.trendDirection ?? '未知'}/${c.marketEvidence.trend?.trendStrength ?? '未知'}；风险占用${formatEvidenceNumber(c.riskBudgetUsed)}`
+          : `${c.ticker}候选行情缺失或与标的不匹配`,
+      })),
+    ],
   }
 }
 
@@ -274,6 +373,26 @@ export function buildManagedProductionContext(broker: TradingPromptBroker, order
     })) },
     dataGaps: ['原订单开平仓效果尚未持久化，不能仅从BUY/SELL推断', '组合风险预留未知'],
     sourceValidUntil: validUntil(orders.flatMap(c => [c.order.lastCheckedAt, c.accountSnapshot?.summary.source?.timestamp])),
-    evidence: orders.map((c, i) => ({ id: `O${i + 1}`, path: `orders.${i}`, ticker: c.order.ticker })),
+    evidence: orders.map((c, i) => ({
+      id: `O${i + 1}`,
+      path: `orders.${i}`,
+      ticker: c.order.ticker,
+      summary: `${c.order.ticker}订单${c.order.orderId}；状态${c.order.status}；剩余${c.order.remainingQuantity}；${c.order.canCancel ? '可撤' : '不可撤'}；归属${c.order.ownershipVerified ? '已确认' : '未确认'}；检查时间${c.order.lastCheckedAt ?? '未知'}`,
+    })),
   }
+}
+
+function formatEvidenceNumber(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(Math.round(value * 10_000) / 10_000) : '未知'
+}
+
+function formatEvidenceList(values: number[]): string {
+  return values.length ? values.map(formatEvidenceNumber).join('/') : '无'
+}
+
+function formatEvidenceRecord(values: Record<string, number | undefined>): string {
+  const entries = Object.entries(values)
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
+    .map(([key, value]) => `${key}=${formatEvidenceNumber(value)}`)
+  return entries.length ? entries.join('/') : '无'
 }

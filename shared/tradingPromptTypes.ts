@@ -1,6 +1,12 @@
 export type TradingPromptBroker = 'futu' | 'longbridge'
 export type TradingPromptRole = 'single' | 'portfolio' | 'managed'
 export type TradingPromptMode = 'legacy' | 'shadow' | 'live'
+export type TradingPromptEvidence = {
+  id: string
+  path: string
+  ticker?: string
+  summary: string
+}
 export type TradingPromptReleaseStatus = {
   revision: number
   selectedMode: TradingPromptMode
@@ -36,6 +42,12 @@ export type TradingPromptAudit = {
   policyValid: boolean
   errors: string[]
   dataGaps: string[]
+  evidenceCatalog?: TradingPromptEvidence[]
+  dataWindowUsed?: {
+    kline1mBars: number
+    tickerPoints: number
+    orderBookDepth: number
+  }
   output: Record<string, unknown> | null
   rawText: string
   artifactId?: string

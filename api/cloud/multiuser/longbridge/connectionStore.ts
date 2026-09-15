@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { getPool, query, queryOne } from '../../db/pgClient.js'
+import { connectPgClient, query, queryOne } from '../../db/pgClient.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
 import {
   credentialFingerprint,
@@ -96,7 +96,7 @@ export async function savePendingConnection(
   const encrypted = encryptCredentialBundle(bundle)
   const id = randomUUID()
   const expiresAt = tokenExpiresAt(bundle.accessToken)
-  const client = await getPool().connect()
+  const client = await connectPgClient('save_longbridge_connection')
   try {
     await client.query('BEGIN')
     const result = await client.query<ConnectionRow>(
@@ -129,7 +129,7 @@ export async function savePendingConnection(
 }
 
 export async function markConnectionVerified(userId: string, connectionId: string): Promise<void> {
-  const client = await getPool().connect()
+  const client = await connectPgClient('verify_longbridge_connection')
   try {
     await client.query('BEGIN')
     await client.query(

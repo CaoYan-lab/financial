@@ -8,7 +8,7 @@ import { buildRiskModelDescription, getActivePromptPack } from '../trade_strateg
 import { durationMs, logger } from '../utils/logger.js'
 import { fallbackLotSize, longbridgeOpeningLotSizeFailureReason } from './longbridgeLotSizeService.js'
 import type { TradingPromptAudit } from '../../shared/tradingPromptTypes.js'
-import { requestProductionDecision } from '../live/tradingPromptV2.js'
+import { productionDecisionDetails, requestProductionDecision } from '../live/tradingPromptV2.js'
 import { resolveTradingPromptMode } from '../live/tradingPromptReleaseService.js'
 import { buildSingleProductionContext } from '../live/tradingPromptContext.js'
 import {
@@ -80,7 +80,8 @@ function productionDecision(input: DecisionInput, audit: TradingPromptAudit): Ll
     trendAlignment: input.trendContext?.window.available ? 'WITH_TREND' : 'UNAVAILABLE',
     tradeHorizon: 'INTRADAY',
     whyNotNoise: String(output.reason),
-    dataWindowUsed: { ...input.dataWindow },
+    ...productionDecisionDetails(audit),
+    dataWindowUsed: audit.dataWindowUsed ?? { ...input.dataWindow },
     rawText: audit.rawText,
     promptAudit: audit,
   }

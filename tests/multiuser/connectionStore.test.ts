@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/cloud/db/pgClient.js', () => ({
   query: mocks.query,
   queryOne: mocks.queryOne,
-  getPool: () => ({ connect: mocks.connect }),
+  connectPgClient: mocks.connect,
 }))
 vi.mock('../../api/cloud/multiuser/longbridge/credentialVault.js', () => ({
   credentialFingerprint: mocks.fingerprint,

@@ -8,7 +8,7 @@ import type { ManagedOrder } from '../../shared/managedOrderTypes.js'
 import { getActivePromptPack } from '../trade_strategy/tradeStrategyConfigService.js'
 import { buildSingleProductionContext } from './tradingPromptContext.js'
 import type { TradingPromptAudit } from '../../shared/tradingPromptTypes.js'
-import { requestProductionDecision } from './tradingPromptV2.js'
+import { productionDecisionDetails, requestProductionDecision } from './tradingPromptV2.js'
 import { resolveTradingPromptMode } from './tradingPromptReleaseService.js'
 import {
   openingLotSizeFailureReason,
@@ -85,7 +85,8 @@ function productionDecision(input: DecisionInput, audit: TradingPromptAudit): Ll
     trendAlignment: input.trendContext?.window.available ? 'WITH_TREND' : 'UNAVAILABLE',
     tradeHorizon: 'INTRADAY',
     whyNotNoise: String(output.reason),
-    dataWindowUsed: { ...input.dataWindow },
+    ...productionDecisionDetails(audit),
+    dataWindowUsed: audit.dataWindowUsed ?? { ...input.dataWindow },
     rawText: audit.rawText,
     promptAudit: audit,
   }

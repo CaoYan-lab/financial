@@ -11,7 +11,7 @@
  * 因此不会出现 leader 死后无人接管的死锁。
  */
 import type { PoolClient } from 'pg'
-import { getPool } from '../db/pgClient.js'
+import { connectPgClient } from '../db/pgClient.js'
 import { logger } from '../../utils/logger.js'
 
 // 固定锁 key（任意大整数，'fin cloud worker leader' 派生常量）
@@ -35,7 +35,7 @@ export function workerDeploymentGeneration(): number {
 export async function reserveWorkerDeploymentGeneration(
   configuredGeneration = workerDeploymentGeneration(),
 ): Promise<number> {
-  const client = await getPool().connect()
+  const client = await connectPgClient('reserve_worker_generation')
   try {
     const result = await client.query<{ generation: string }>(
       `INSERT INTO app_config(key, value, updated_at)
@@ -77,7 +77,7 @@ export async function reserveWorkerDeploymentGeneration(
 export async function tryAcquireLeader(
   candidateGeneration = workerDeploymentGeneration(),
 ): Promise<PoolClient | null> {
-  const client = await getPool().connect()
+  const client = await connectPgClient('acquire_worker_leader')
   try {
     if (candidateGeneration > 0) {
       await announceDeploymentGeneration(client, candidateGeneration)

@@ -117,6 +117,35 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(JSON.parse(await readFile(join(dir, scope, file), 'utf8')).audit.rawText).toBe(JSON.stringify(hold()))
   })
 
+  it('新版单票提示词注入完整执行窗口并记录实际使用数量', async () => {
+    vi.stubEnv('LONGBRIDGE_PROMPT_MODE', 'live')
+    const input = single()
+    input.dataWindow = { kline1mBars: 120, tickerPoints: 240, orderBookDepth: 5 }
+    input.marketData.bars = Array.from({ length: 150 }, (_, index) => ({ time: String(index), close: 100 + index }))
+    input.marketData.tickerPoints = Array.from({ length: 300 }, (_, index) => ({ time: String(index), price: 100 + index }))
+    input.marketData.asks = Array.from({ length: 10 }, (_, index) => ({ price: String(181 + index), size: '10', depth: index + 1 }))
+    input.marketData.bids = Array.from({ length: 8 }, (_, index) => ({ price: String(179 - index), size: '10', depth: index + 1 }))
+
+    const result = await requestLongbridgeLiveTradingDecision(input)
+    const sent = JSON.parse(mocks.call.mock.calls[0][0][1].content)
+
+    expect(sent.marketData.bars).toHaveLength(120)
+    expect(sent.marketData.tickerPoints).toHaveLength(240)
+    expect(sent.marketData.asks).toHaveLength(5)
+    expect(sent.marketData.bids).toHaveLength(5)
+    expect(sent.marketData.dataWindow).toEqual({
+      requested: { kline1mBars: 120, tickerPoints: 240, orderBookDepth: 5 },
+      available: { kline1mBars: 150, tickerPoints: 300, orderBookDepth: 8 },
+      included: { kline1mBars: 120, tickerPoints: 240, orderBookDepth: 5 },
+    })
+    expect(result.dataWindowUsed).toEqual({ kline1mBars: 120, tickerPoints: 240, orderBookDepth: 5 })
+    expect(result.evidence?.[0]).toMatchObject({ id: 'E2', path: 'risk' })
+    expect(result.evidence?.[0].summary).toContain('开仓风险ALLOWED')
+    expect(result.counterEvidence).toEqual([])
+    expect(result.exitCondition).toBe('不适用')
+    expect(result.requestedFollowUp).toBe('REFRESH_DATA')
+  })
+
   it('旧待确认订单缺少失效价时按单笔风险预算预留而非占满组合预算', () => {
     const input = single()
     input.pendingOrders = [{

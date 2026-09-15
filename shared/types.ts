@@ -414,6 +414,11 @@ export type SimulationAccountDashboardResponse = {
 export type QuantStrategyName = 'LLM_AUTONOMOUS_STOCK_TRADER'
 
 export type QuantSignalSide = 'BUY' | 'SELL_SHORT' | 'SELL_TO_CLOSE' | 'HOLD'
+export type TradingDecisionEvidence = {
+  id: string
+  path: string
+  summary: string
+}
 
 export type SimulationUniverseItem = {
   ticker: string
@@ -562,6 +567,10 @@ export type QuantSignal = {
   trendAlignment?: string
   tradeHorizon?: string
   whyNotNoise?: string
+  evidence?: TradingDecisionEvidence[]
+  counterEvidence?: TradingDecisionEvidence[]
+  exitCondition?: string
+  requestedFollowUp?: 'NONE' | 'REFRESH_DATA' | 'REVIEW_OPEN_ORDERS' | 'REVIEW_PENDING_INTENT' | 'MANUAL_REVIEW'
   source: 'futu-callback' | 'longbridge-sdk-cache' | 'longbridge-cli'
   rawModelOutput?: string
   agentRunId?: string
@@ -584,6 +593,10 @@ export type LlmTradingDecision = {
   trendAlignment?: 'WITH_TREND' | 'AGAINST_TREND' | 'REVERSAL_ATTEMPT' | 'NO_TREND' | 'UNAVAILABLE'
   tradeHorizon?: 'SCALP' | 'INTRADAY' | 'SWING_1_TO_7_DAYS'
   whyNotNoise?: string
+  evidence?: TradingDecisionEvidence[]
+  counterEvidence?: TradingDecisionEvidence[]
+  exitCondition?: string
+  requestedFollowUp?: 'NONE' | 'REFRESH_DATA' | 'REVIEW_OPEN_ORDERS' | 'REVIEW_PENDING_INTENT' | 'MANUAL_REVIEW'
   dataWindowUsed: {
     kline1mBars: number
     tickerPoints: number
