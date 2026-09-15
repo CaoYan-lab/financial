@@ -15,7 +15,7 @@ const persistedSettings: BrokerExecutionSettings = {
 }
 
 describe('broker execution settings snapshot', () => {
-  it('长桥负现金开仓保护默认开启', () => {
+  it('长桥账户现金买入上限默认开启', () => {
     expect(defaultBrokerExecutionSettings('longbridge').blockOpeningWhenCashNegative).toBe(true)
   })
 

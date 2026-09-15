@@ -100,7 +100,8 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     if (broker === 'longbridge') {
       expect(sent.account.availableCash).toBe(5000)
       expect(sent.policy.cashOpeningPolicy).toMatchObject({
-        mode: 'AVAILABLE_CASH_ONLY',
+        mode: 'ACCOUNT_CASH_LIMIT',
+        accountCash: 5000,
         availableCash: 5000,
       })
     }
@@ -148,9 +149,10 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
     expect(validateProductionOutput(ctx, { ...hold(), orderQuantity: 0.5 }).contractErrors).toContain('decision_shape')
   })
 
-  it('长桥现金开仓保护在模型输出校验阶段拒绝超出可用现金的买入', () => {
+  it('长桥账户现金上限在模型输出校验阶段拒绝超额买入', () => {
     const input = single()
-    input.account.summary.availableFunds = '$100'
+    input.account.summary.cash = '$100'
+    input.account.summary.availableFunds = '$-500'
     const ctx = buildSingleProductionContext('longbridge', input)
     const output = {
       ...hold(),
@@ -162,7 +164,25 @@ describe('真实服务新版提示词接入（无券商IO）', () => {
       invalidationPrice: 170,
     }
 
-    expect(validateProductionOutput(ctx, output).policyErrors).toContain('available_cash_exceeded')
+    expect(validateProductionOutput(ctx, output).policyErrors).toContain('account_cash_exceeded')
+  })
+
+  it('长桥美元可用现金为负但折算账户现金充足时允许跨币种融资', () => {
+    const input = single()
+    input.account.summary.cash = '$5000'
+    input.account.summary.availableFunds = '$-500'
+    const ctx = buildSingleProductionContext('longbridge', input)
+    const output = {
+      ...hold(),
+      approved: true,
+      action: 'BUY',
+      orderQuantity: 1,
+      limitPrice: 180,
+      positionEffect: 'OPEN_LONG',
+      invalidationPrice: 170,
+    }
+
+    expect(validateProductionOutput(ctx, output).policyErrors).not.toContain('account_cash_exceeded')
   })
   it.each(['futu', 'longbridge'] as const)('%s即使模型批准开仓也返回HOLD，不生成执行授权', async broker => {
     const output = { ...hold(), approved: true, action: 'BUY', orderQuantity: 1, limitPrice: 180, positionEffect: 'OPEN_LONG', invalidationPrice: 179 }

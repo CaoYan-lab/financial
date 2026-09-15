@@ -96,9 +96,11 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
   const contextRules = promptPack.contextRules ?? {}
   const buyingPower = input.account.summary.buyingPowerInTradingCurrency ?? input.account.summary.buyingPower
   const buyingPowerNumeric = parseMoney(buyingPower)
+  const accountCash = input.account.summary.cashInTradingCurrency ?? input.account.summary.cash
+  const accountCashNumeric = parseMoney(accountCash)
   const availableFunds = input.account.summary.availableFundsInTradingCurrency ?? input.account.summary.availableFunds
   const availableFundsNumeric = parseMoney(availableFunds)
-  const cashOnlyBuy = input.blockOpeningWhenCashNegative !== false
+  const accountCashLimit = input.blockOpeningWhenCashNegative !== false
   const lotSize = input.marketData.lotSize ?? fallbackLotSize(input.marketData.symbol)
   const isHongKong = input.marketData.symbol.toUpperCase().endsWith('.HK')
   const tradingCurrency = input.account.summary.tradingCurrency ?? (isHongKong ? 'HKD' : 'USD')
@@ -132,15 +134,19 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
           displayCash: input.account.summary.cash,
           displayBuyingPower: input.account.summary.buyingPower,
           totalAssets: input.account.summary.totalAssetsInTradingCurrency ?? input.account.summary.totalAssets,
-          cash: input.account.summary.cashInTradingCurrency ?? input.account.summary.cash,
+          cash: accountCash,
           availableFunds,
           buyingPower,
+          accountCashNumeric,
           availableFundsNumeric,
           buyingPowerNumeric,
-          maxOpeningNotional: buyingPowerNumeric,
-          maxCashFundedBuyNotional:
-            cashOnlyBuy && availableFundsNumeric !== undefined
-              ? Math.max(0, availableFundsNumeric)
+          maxOpeningNotional:
+            accountCashLimit && accountCashNumeric !== undefined && buyingPowerNumeric !== undefined
+              ? Math.max(0, Math.min(accountCashNumeric, buyingPowerNumeric))
+              : buyingPowerNumeric,
+          maxAccountCashBuyNotional:
+            accountCashLimit && accountCashNumeric !== undefined
+              ? Math.max(0, accountCashNumeric)
               : null,
           financingRisk: {
             level: input.account.summary.financingRiskLevel ?? null,
@@ -155,18 +161,13 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
               ? '长桥账户已进入融资预警、危险或保证金不足状态；即使 buyingPower 大于 0 也禁止新增仓位，必须 HOLD 或仅减仓/平仓。'
               : '融资风险等级是购买力之前的开仓门禁；风险等级达到预警或危险时，即使 buyingPower 大于 0 也禁止新增仓位。',
           },
-          blockOpeningWhenCashNegative:
-            cashOnlyBuy,
+          limitOpeningToAccountCash: accountCashLimit,
           orderSizingConstraint:
             financingOpeningRestricted
               ? `长桥融资风险等级为${financingRiskLabel}，账户已禁止新增开仓；不得使用剩余购买力继续融资，必须 HOLD 或仅减仓/平仓。`
-              : cashOnlyBuy
-              && availableFundsNumeric !== undefined
-              && availableFundsNumeric < 0
-              ? `负现金开仓保护已开启，当前可用现金为 ${formatMoney(availableFundsNumeric, tradingCurrency)}；禁止 BUY 新增长仓和 SELL_SHORT 新增空仓，只允许 SELL_TO_CLOSE 或 BUY 回补现有空头。`
-              : cashOnlyBuy
-              && availableFundsNumeric !== undefined
-                ? `现金开仓保护已开启；开仓 BUY 的 orderQuantity * limitPrice + 预估费用不得超过同币种可用现金 ${formatMoney(availableFundsNumeric, tradingCurrency)}，不得使用最大购买力中的融资额度。`
+              : accountCashLimit
+              && accountCashNumeric !== undefined
+                ? `账户现金开仓上限已开启；允许跨币种融资，开仓 BUY 的 orderQuantity * limitPrice + 预估费用不得超过折算账户现金 ${formatMoney(accountCashNumeric, tradingCurrency)}。`
               : buyingPowerNumeric !== undefined
                 ? `开仓 BUY / SELL_SHORT 的 orderQuantity * limitPrice 不得超过最大购买力 ${formatMoney(buyingPowerNumeric, tradingCurrency)}；若最小交易单位也超过最大购买力，必须 HOLD。`
                 : '最大购买力不可解析；开仓 BUY / SELL_SHORT 必须 HOLD。',
@@ -177,8 +178,8 @@ export function buildLongbridgeLiveDecisionPrompt(input: DecisionInput): Array<{
               : '美股 orderQuantity 按正整数股计算，不套用港股整手约束。',
           },
           tradingCurrencyContext: {
-            rule: cashOnlyBuy
-              ? '交易币种必须跟随 targetInstrument.tradingCurrency。账户现金只用于资产对账；开仓买入必须以同币种 availableFunds 为现金上限，不得使用 buyingPower 中的融资额度。'
+            rule: accountCashLimit
+              ? '交易币种必须跟随 targetInstrument.tradingCurrency。cash 是长桥按交易币种折算的账户总现金，用作买入上限并允许跨币种融资；availableFunds 只表示当前币种资金及融资状态，不单独阻断。'
               : '交易币种必须跟随 targetInstrument.tradingCurrency。availableFunds 是同币种可用现金；buyingPower 是包含融资额度的最大购买力，当前允许按购买力判断能否开仓。',
             totalAssetsUsd: input.account.summary.totalAssetsInTradingCurrency ?? input.account.summary.totalAssets,
             cashUsd: input.account.summary.cashInTradingCurrency ?? input.account.summary.cash,

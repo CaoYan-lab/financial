@@ -108,7 +108,7 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
   const ordersKnowledge = input.managedOpenOrders && input.pendingOrders ? 'known' : 'unknown'
   if (ordersKnowledge === 'unknown') dataGaps.push('未确认完整托管/待确认订单范围')
   const strategy = getTradeStrategyRuntimeConfig('live').activeStrategy
-  const cashOnlyBuy = broker === 'longbridge'
+  const accountCashLimit = broker === 'longbridge'
     && input.blockOpeningWhenCashNegative !== false
   const riskControls = {
     ...strategy.riskControls,
@@ -140,10 +140,11 @@ export function buildSingleProductionContext(broker: TradingPromptBroker, input:
         singleNameExposure: '多头单票集中度仅动态评估，不存在固定5%硬上限。',
       },
       cashOpeningPolicy: {
-        mode: cashOnlyBuy ? 'AVAILABLE_CASH_ONLY' : 'BUYING_POWER_ALLOWED',
+        mode: accountCashLimit ? 'ACCOUNT_CASH_LIMIT' : 'BUYING_POWER_ALLOWED',
+        accountCash: account.cash,
         availableCash: account.availableCash,
-        rule: cashOnlyBuy
-          ? '开仓买入的订单金额与预估费用必须小于等于同币种可用现金，不得使用购买力中的融资额度。账户现金只用于资产对账。'
+        rule: accountCashLimit
+          ? '允许跨币种融资；开仓买入的订单金额与预估费用必须小于等于按交易币种折算的账户总现金。可用现金仅反映当前币种资金与融资状态，不单独阻断。'
           : '允许在券商融资风险门禁通过后按购买力开仓。',
       },
       trendFilters: strategy.trendFilters,

@@ -101,7 +101,7 @@ describe('Longbridge 租户实盘状态', () => {
     expect(dashboard.blockOpeningWhenCashNegative).toBe(true)
   })
 
-  it('Dashboard 返回当前用户关闭的负现金开仓保护设置', async () => {
+  it('Dashboard 返回当前用户关闭的账户现金买入上限设置', async () => {
     mocks.queryOne.mockResolvedValueOnce({
       desired: 'running',
       mode: 'live',

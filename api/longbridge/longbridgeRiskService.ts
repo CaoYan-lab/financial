@@ -24,12 +24,6 @@ export function longbridgeOpeningRiskRejectionReason(
   if (accountDataFailure) return accountDataFailure
   const financingRiskReason = longbridgeMarginRiskOpeningFailureReason(account, decision)
   if (financingRiskReason) return financingRiskReason
-  const negativeCashReason = longbridgeNegativeCashOpeningFailureReason(
-    account,
-    decision,
-    options.blockOpeningWhenCashNegative !== false,
-  )
-  if (negativeCashReason) return negativeCashReason
   const lotSizeFailure = longbridgeOpeningLotSizeFailureReason({
     symbol,
     action: decision.action,
@@ -54,19 +48,19 @@ export function longbridgeOpeningRiskRejectionReason(
     options.blockOpeningWhenCashNegative !== false
     && decision.action === 'BUY'
   ) {
-    const availableCash = parseMoney(
-      account.summary.availableFundsInTradingCurrency
-        ?? account.summary.availableFunds,
+    const accountCash = parseMoney(
+      account.summary.cashInTradingCurrency
+        ?? account.summary.cash,
     )
     const requiredCash = notional + estimatedFee
     if (
-      availableCash !== undefined
-      && (availableCash <= 0 || !Number.isFinite(requiredCash) || requiredCash > availableCash)
+      accountCash !== undefined
+      && (accountCash <= 0 || !Number.isFinite(requiredCash) || requiredCash > accountCash)
     ) {
       return [
-        `长桥现金开仓保护已拦截：${tradingCurrency} 可用现金 ${formatMoney(availableCash, tradingCurrency)}`,
+        `长桥账户现金开仓上限已拦截：折算账户现金 ${formatMoney(accountCash, tradingCurrency)}`,
         `订单金额与预估费用合计 ${formatMoney(requiredCash, tradingCurrency)}`,
-        '当前设置禁止使用融资购买股票。',
+        '允许跨币种融资，但买入不得超过账户总现金。',
       ].join('；')
     }
   }
@@ -81,7 +75,7 @@ export function longbridgeOpeningRiskRejectionReason(
 
 export function longbridgeOpeningAccountDataFailureReason(
   account: LiveAccountDashboardResponse,
-  requireAvailableCash = true,
+  requireAccountCash = true,
 ): string | undefined {
   const summary = account.summary
   const equity = parseMoney(
@@ -90,8 +84,8 @@ export function longbridgeOpeningAccountDataFailureReason(
   const buyingPower = parseMoney(
     summary.buyingPowerInTradingCurrency ?? summary.buyingPower,
   )
-  const availableCash = parseMoney(
-    summary.availableFundsInTradingCurrency ?? summary.availableFunds,
+  const accountCash = parseMoney(
+    summary.cashInTradingCurrency ?? summary.cash,
   )
   if (!account.ok) {
     return '长桥开仓风控被拦截：账户快照读取失败，无法确认融资风险和购买力。'
@@ -102,8 +96,8 @@ export function longbridgeOpeningAccountDataFailureReason(
   if (equity === undefined || equity <= 0 || buyingPower === undefined || buyingPower <= 0) {
     return '长桥开仓风控被拦截：账户权益或最大购买力不可用。'
   }
-  if (requireAvailableCash && availableCash === undefined) {
-    return '长桥开仓风控被拦截：可用现金不可用，无法执行负现金保护。'
+  if (requireAccountCash && accountCash === undefined) {
+    return '长桥开仓风控被拦截：折算账户现金不可用，无法执行账户现金开仓上限。'
   }
   return undefined
 }
@@ -185,21 +179,6 @@ export function longbridgeFinancingOpeningRestricted(
       && initialMargin > 0
       && totalAssets <= initialMargin
     )
-}
-
-export function longbridgeNegativeCashOpeningFailureReason(
-  account: LiveAccountDashboardResponse,
-  order: Pick<LlmTradingDecision, 'action' | 'ticker' | 'orderQuantity'>,
-  enabled = true,
-): string | undefined {
-  if (!enabled || !isOpeningTrade(account.positions, order)) return undefined
-  const availableCash = parseMoney(
-    account.summary.availableFundsInTradingCurrency
-      ?? account.summary.availableFunds,
-  )
-  if (availableCash === undefined || availableCash >= 0) return undefined
-  const currency = account.summary.tradingCurrency ?? 'USD'
-  return `长桥负现金开仓保护已拦截：${currency} 可用现金 ${formatMoney(availableCash, currency)}，当前只允许平仓，禁止新增多头、空头或融资杠杆。`
 }
 
 export function parseMoney(value: string | undefined): number | undefined {

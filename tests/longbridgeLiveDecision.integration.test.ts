@@ -44,9 +44,9 @@ describe('Longbridge live decision prompt context', () => {
     expect(payload.account.buyingPower).toBe('$12000.00')
     expect(payload.account.availableFundsNumeric).toBe(5000)
     expect(payload.account.buyingPowerNumeric).toBe(12000)
-    expect(payload.account.maxCashFundedBuyNotional).toBe(5000)
-    expect(payload.account.orderSizingConstraint).toContain('同币种可用现金 $5000.00')
-    expect(payload.account.orderSizingConstraint).toContain('不得使用最大购买力中的融资额度')
+    expect(payload.account.maxAccountCashBuyNotional).toBe(4000)
+    expect(payload.account.orderSizingConstraint).toContain('折算账户现金 $4000.00')
+    expect(payload.account.orderSizingConstraint).toContain('允许跨币种融资')
     expect(payload.account.positions[0].ticker).toBe('AAPL')
     expect(payload.currentPosition.ticker).toBe('AAPL')
     expect(payload.portfolioContext.targetExposure.exposureSide).toBe('LONG')
@@ -185,7 +185,7 @@ describe('Longbridge live decision prompt context', () => {
     expect(usPayload.account.tradingUnit.rule).toContain('不套用港股整手约束')
   })
 
-  it('负现金保护开启时提示模型只允许平仓', () => {
+  it('交易币种可用现金为负时提示模型按折算账户现金开仓', () => {
     const account = testAccount()
     account.summary.availableFunds = '$-100.00'
     account.summary.availableFundsInTradingCurrency = '$-100.00'
@@ -213,8 +213,9 @@ describe('Longbridge live decision prompt context', () => {
       blockOpeningWhenCashNegative: true,
     })[1].content)
 
-    expect(payload.account.blockOpeningWhenCashNegative).toBe(true)
-    expect(payload.account.orderSizingConstraint).toContain('只允许 SELL_TO_CLOSE')
+    expect(payload.account.limitOpeningToAccountCash).toBe(true)
+    expect(payload.account.orderSizingConstraint).toContain('允许跨币种融资')
+    expect(payload.account.orderSizingConstraint).toContain('折算账户现金 $4000.00')
   })
 
   it('拒绝港股非整手开仓数量，并保留美股按股数量', () => {

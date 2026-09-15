@@ -305,7 +305,7 @@ describe('多用户 Worker runtime', () => {
     expect(mocks.runChild).not.toHaveBeenCalled()
   })
 
-  it('负现金保护开启时拒绝新增仓位', async () => {
+  it('交易币种可用现金为负但账户现金充足时允许跨币种融资', async () => {
     mocks.query.mockResolvedValueOnce([{
       mode: 'live',
       live_trading_enabled: true,
@@ -317,13 +317,13 @@ describe('多用户 Worker runtime', () => {
         availableFundsInTradingCurrency: '$-100.00',
       }))
 
-    await expect(multiUserWorkerTestHarness.handleTenantJob(
+    await multiUserWorkerTestHarness.handleTenantJob(
       job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
-    )).rejects.toThrow('负现金开仓保护已拦截')
-    expect(mocks.runChild).not.toHaveBeenCalled()
+    )
+    expect(mocks.runChild).toHaveBeenCalledTimes(1)
   })
 
-  it('同币种可用现金为正但不足时拒绝进入租户券商提交', async () => {
+  it('同币种可用现金不足但账户现金充足时允许进入租户券商提交', async () => {
     mocks.query.mockResolvedValueOnce([{
       mode: 'live',
       live_trading_enabled: true,
@@ -337,9 +337,31 @@ describe('多用户 Worker runtime', () => {
       buyingPowerInTradingCurrency: '$5,000.00',
     }))
 
+    await multiUserWorkerTestHarness.handleTenantJob(
+      job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
+    )
+    expect(mocks.runChild).toHaveBeenCalledTimes(1)
+  })
+
+  it('订单超过折算账户现金时拒绝进入租户券商提交', async () => {
+    mocks.query.mockResolvedValueOnce([{
+      mode: 'live',
+      live_trading_enabled: true,
+      shadow_verified_at: new Date(),
+      settings: { blockOpeningWhenCashNegative: true },
+    }])
+    mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+      cash: '$100.00',
+      cashInTradingCurrency: '$100.00',
+      availableFunds: '$-100.00',
+      availableFundsInTradingCurrency: '$-100.00',
+      buyingPower: '$5,000.00',
+      buyingPowerInTradingCurrency: '$5,000.00',
+    }))
+
     await expect(multiUserWorkerTestHarness.handleTenantJob(
       job('multiuser.longbridge.submit_order', { pendingOrderId: 'pending-1' }),
-    )).rejects.toThrow('现金开仓保护已拦截')
+    )).rejects.toThrow('账户现金开仓上限已拦截')
     expect(mocks.runChild).not.toHaveBeenCalled()
   })
 
@@ -391,6 +413,8 @@ describe('多用户 Worker runtime', () => {
   it('多租户最终提交使用方向性价格归一化后的载荷', async () => {
     mocks.loadMarketStates.mockResolvedValueOnce(new Map([['MU.US', 'RTH']]))
     mocks.loadTradingAccount.mockResolvedValueOnce(tradingAccount({
+      cash: '$3,000.00',
+      cashInTradingCurrency: '$3,000.00',
       availableFunds: '$3,000.00',
       availableFundsInTradingCurrency: '$3,000.00',
     }))

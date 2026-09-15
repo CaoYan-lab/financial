@@ -174,8 +174,10 @@ describe('Longbridge order gate', () => {
       currency: 'HKD',
       tradingCurrency: 'HKD',
       totalAssets: 'HK$10,126.39',
+      cash: 'HK$10,126.39',
       buyingPower: 'HK$10,126.39',
       totalAssetsInTradingCurrency: 'HK$10,126.39',
+      cashInTradingCurrency: 'HK$10,126.39',
       availableFunds: 'HK$10,126.39',
       availableFundsInTradingCurrency: 'HK$10,126.39',
       buyingPowerInTradingCurrency: 'HK$10,126.39',
@@ -203,8 +205,10 @@ describe('Longbridge order gate', () => {
     expect(reason).toBeUndefined()
   })
 
-  it('负现金保护开启时拒绝新增多头和新增空头', () => {
+  it('交易币种可用现金为负但折算账户现金充足时允许新增仓位', () => {
     const account = lowBuyingPowerAccount()
+    account.summary.cash = '$1,000.00'
+    account.summary.cashInTradingCurrency = '$1,000.00'
     account.summary.availableFunds = '$-100.00'
     account.summary.availableFundsInTradingCurrency = '$-100.00'
     account.summary.buyingPower = '$2,000.00'
@@ -230,7 +234,7 @@ describe('Longbridge order gate', () => {
       'AAPL.US',
       1,
       { blockOpeningWhenCashNegative: true },
-    )).toContain('负现金开仓保护已拦截')
+    )).toBeUndefined()
     expect(longbridgeOpeningRiskRejectionReason(
       account,
       { ...openingDecision, action: 'SELL_SHORT' },
@@ -239,15 +243,17 @@ describe('Longbridge order gate', () => {
       'AAPL.US',
       1,
       { blockOpeningWhenCashNegative: true },
-    )).toContain('负现金开仓保护已拦截')
+    )).toBeUndefined()
   })
 
-  it('可用现金为正但不足时在下单前拒绝融资买入', () => {
+  it('订单金额与费用超过折算账户现金时在下单前拒绝买入', () => {
     const account = lowBuyingPowerAccount()
     account.summary.totalAssets = '$10,000.00'
     account.summary.totalAssetsInTradingCurrency = '$10,000.00'
-    account.summary.availableFunds = '$100.00'
-    account.summary.availableFundsInTradingCurrency = '$100.00'
+    account.summary.cash = '$100.00'
+    account.summary.cashInTradingCurrency = '$100.00'
+    account.summary.availableFunds = '$-100.00'
+    account.summary.availableFundsInTradingCurrency = '$-100.00'
     account.summary.buyingPower = '$2,000.00'
     account.summary.buyingPowerInTradingCurrency = '$2,000.00'
 
@@ -272,8 +278,8 @@ describe('Longbridge order gate', () => {
       { blockOpeningWhenCashNegative: true },
     )
 
-    expect(reason).toContain('现金开仓保护已拦截')
-    expect(reason).toContain('禁止使用融资购买股票')
+    expect(reason).toContain('账户现金开仓上限已拦截')
+    expect(reason).toContain('允许跨币种融资')
   })
 
   it('融资风险达到预警时即使购买力为正也拒绝新增开仓', () => {
@@ -473,7 +479,7 @@ describe('Longbridge order gate', () => {
     expect(reason).toBeUndefined()
   })
 
-  it('负现金保护开启时允许回补空头但拒绝买超为空头转多', () => {
+  it('账户现金上限开启时允许回补空头但拒绝买超为空头转多', () => {
     const account = lowBuyingPowerAccount()
     account.summary.availableFunds = '$-100.00'
     account.summary.availableFundsInTradingCurrency = '$-100.00'
@@ -526,7 +532,7 @@ describe('Longbridge order gate', () => {
     )).toContain('禁止超量买入反向开多')
   })
 
-  it('负现金保护关闭时保留原有购买力规则', () => {
+  it('账户现金上限关闭时保留原有购买力规则', () => {
     const account = lowBuyingPowerAccount()
     account.summary.availableFunds = '$-100.00'
     account.summary.availableFundsInTradingCurrency = '$-100.00'
@@ -556,7 +562,7 @@ describe('Longbridge order gate', () => {
     expect(reason).toBeUndefined()
   })
 
-  it('负现金保护开启时提示模型只允许平仓', () => {
+  it('可用现金为负时提示模型按折算账户现金开仓', () => {
     const account = lowBuyingPowerAccount()
     account.summary.availableFunds = '$-100.00'
     account.summary.availableFundsInTradingCurrency = '$-100.00'
@@ -590,8 +596,9 @@ describe('Longbridge order gate', () => {
     })
     const payload = JSON.parse(prompt[1].content)
 
-    expect(payload.account.blockOpeningWhenCashNegative).toBe(true)
-    expect(payload.account.orderSizingConstraint).toContain('只允许 SELL_TO_CLOSE')
+    expect(payload.account.limitOpeningToAccountCash).toBe(true)
+    expect(payload.account.orderSizingConstraint).toContain('允许跨币种融资')
+    expect(payload.account.orderSizingConstraint).toContain('折算账户现金 $2.30')
   })
 
   it('直推和组合策略使用各自的信号生命周期状态', () => {

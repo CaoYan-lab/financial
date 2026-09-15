@@ -95,7 +95,7 @@ export default function LongbridgeLiveTradingView() {
   const liveEnabled = Boolean(dashboard?.sourceStatus.tradingAvailable || longbridgeLive.data?.liveTradingEnabled)
   const autoSubmitEnabled = Boolean(longbridgeLive.data?.autoSubmitEnabled)
   const autoCancelEnabled = Boolean(longbridgeLive.data?.autoCancelEnabled)
-  const blockOpeningWhenCashNegative =
+  const limitOpeningToAccountCash =
     longbridgeLive.data?.blockOpeningWhenCashNegative !== false
   const executionMode = liveConfig?.tradeStrategyConfig.selection.executionMode ?? 'legacy_direct'
   const runtimeConfig = liveConfig?.llmRuntimeConfig
@@ -166,8 +166,8 @@ export default function LongbridgeLiveTradingView() {
               <Badge tone="cyan">长桥实盘</Badge>
               <Badge tone={liveEnabled ? 'emerald' : 'amber'}>{liveEnabled ? '提交门禁已开启' : '长桥提交门禁关闭'}</Badge>
               <Badge tone={autoSubmitEnabled ? 'red' : 'cyan'}>{autoSubmitEnabled ? '自动下单已开启' : '人工确认模式'}</Badge>
-              <Badge tone={blockOpeningWhenCashNegative ? 'emerald' : 'amber'}>
-                {blockOpeningWhenCashNegative ? '现金开仓保护已开启' : '融资开仓已允许'}
+              <Badge tone={limitOpeningToAccountCash ? 'emerald' : 'amber'}>
+                {limitOpeningToAccountCash ? '账户现金上限已开启' : '按购买力开仓'}
               </Badge>
               <Badge tone={executionMode === 'candidate_pool' ? 'violet' : 'cyan'}>
                 {executionMode === 'candidate_pool' ? '组合策略已开启' : '大模型直推'}
@@ -216,23 +216,23 @@ export default function LongbridgeLiveTradingView() {
             </div>
             <div className="flex flex-wrap items-center justify-end gap-4">
               <label className="flex items-center gap-3 text-sm font-semibold text-stone-700">
-                <span>负现金禁止开仓</span>
+                <span>账户现金买入上限</span>
                 <button
                   type="button"
                   role="switch"
-                  aria-checked={blockOpeningWhenCashNegative}
-                  aria-label="负现金禁止开仓"
+                  aria-checked={limitOpeningToAccountCash}
+                  aria-label="账户现金买入上限"
                   className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    blockOpeningWhenCashNegative ? 'bg-emerald-500' : 'bg-stone-300'
+                    limitOpeningToAccountCash ? 'bg-emerald-500' : 'bg-stone-300'
                   }`}
                   disabled={longbridgeLive.savingSettings}
-                  onClick={() => void longbridgeLive.updateNegativeCashOpeningGuard(
-                    !blockOpeningWhenCashNegative,
+                  onClick={() => void longbridgeLive.updateAccountCashOpeningLimit(
+                    !limitOpeningToAccountCash,
                   )}
                 >
                   <span
                     className={`h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                      blockOpeningWhenCashNegative ? 'translate-x-6' : 'translate-x-1'
+                      limitOpeningToAccountCash ? 'translate-x-6' : 'translate-x-1'
                     }`}
                   />
                 </button>
@@ -249,8 +249,8 @@ export default function LongbridgeLiveTradingView() {
           <div className="mt-4 grid gap-3 text-sm text-stone-600 md:grid-cols-4">
             <Guard ok={liveEnabled}>长桥实盘提交门禁 {liveEnabled ? '已开启' : '未开启'}</Guard>
             <Guard ok={!autoSubmitEnabled}>当前模式：{autoSubmitEnabled ? '自动提交真实订单' : '人工确认后提交'}</Guard>
-            <Guard ok={blockOpeningWhenCashNegative}>
-              {blockOpeningWhenCashNegative ? '买入不得超过同币种可用现金' : '允许使用融资购买力开仓'}
+            <Guard ok={limitOpeningToAccountCash}>
+              {limitOpeningToAccountCash ? '允许跨币种融资，买入不得超过折算账户现金' : '允许按最大购买力开仓'}
             </Guard>
             <Guard ok={authReady}>长桥账户授权 {authReady ? '已登录' : '不可用'}</Guard>
           </div>

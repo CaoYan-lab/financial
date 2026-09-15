@@ -105,10 +105,28 @@ describe('Longbridge 最终提交风控', () => {
     expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 
-  it('待确认期间同币种可用现金不足时拒绝融资买入', async () => {
+  it('同币种可用现金不足但账户现金充足时允许跨币种融资买入', async () => {
     mocks.loadAccount.mockResolvedValueOnce(tradingAccount({
       availableFunds: '$500.00',
       availableFundsInTradingCurrency: '$500.00',
+      buyingPower: '$20,000.00',
+      buyingPowerInTradingCurrency: '$20,000.00',
+    }))
+    const order = pendingOrder()
+    longbridgeOrderQueueService.createPendingOrder(order)
+
+    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id)
+
+    expect(result.ok).toBe(true)
+    expect(mocks.submitOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('待确认期间订单超过折算账户现金时拒绝提交', async () => {
+    mocks.loadAccount.mockResolvedValueOnce(tradingAccount({
+      cash: '$500.00',
+      cashInTradingCurrency: '$500.00',
+      availableFunds: '$-100.00',
+      availableFundsInTradingCurrency: '$-100.00',
       buyingPower: '$20,000.00',
       buyingPowerInTradingCurrency: '$20,000.00',
     }))
@@ -121,8 +139,8 @@ describe('Longbridge 最终提交风控', () => {
       ok: false,
       blockedByGate: true,
     })
-    expect(result.error).toContain('现金开仓保护已拦截')
-    expect(result.error).toContain('禁止使用融资购买股票')
+    expect(result.error).toContain('账户现金开仓上限已拦截')
+    expect(result.error).toContain('允许跨币种融资')
     expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 

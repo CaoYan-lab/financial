@@ -580,21 +580,22 @@ export function useLongbridgeLiveTrading() {
     }
   }, [])
 
-  const updateNegativeCashOpeningGuard = useCallback(async (
-    blockOpeningWhenCashNegative: boolean,
+  const updateAccountCashOpeningLimit = useCallback(async (
+    enabled: boolean,
   ) => {
     setSavingSettings(true)
     try {
       const response = await fetch('/api/longbridge/live-trading/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ blockOpeningWhenCashNegative }),
+        // Keep the persisted field for backward compatibility with existing deployments.
+        body: JSON.stringify({ blockOpeningWhenCashNegative: enabled }),
       })
       const payload = await response.json().catch(() => undefined)
       if (!response.ok) {
         throw new Error(
           payload?.error
-            ?? `长桥负现金开仓保护更新失败，状态码 ${response.status}。`,
+            ?? `长桥账户现金买入上限更新失败，状态码 ${response.status}。`,
         )
       }
       setData((current) => current
@@ -614,7 +615,7 @@ export function useLongbridgeLiveTrading() {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : '长桥负现金开仓保护更新失败。',
+          : '长桥账户现金买入上限更新失败。',
       )
       return undefined
     } finally {
@@ -735,7 +736,7 @@ export function useLongbridgeLiveTrading() {
     rejectOrder,
     batchExpirePendingOrders,
     updateAutoSubmit,
-    updateNegativeCashOpeningGuard,
+    updateAccountCashOpeningLimit,
     updateAutoCancel,
     cancelManagedOrder,
   }
