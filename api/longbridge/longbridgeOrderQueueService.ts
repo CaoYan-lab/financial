@@ -26,6 +26,7 @@ import { longbridgeRealtimeStore } from './longbridgeRealtimeStore.js'
 
 class LongbridgeOrderQueueService {
   private confirmationInProgress = false
+  private automaticConfirmationTail: Promise<void> = Promise.resolve()
   createPendingOrder(order: LivePendingOrder) {
     longbridgePersistence.appendPendingOrder(order)
     return order
@@ -110,6 +111,18 @@ class LongbridgeOrderQueueService {
       await release?.()
       this.confirmationInProgress = false
     }
+  }
+
+  confirmPendingOrderAutomatically(
+    id: string,
+    input: { confirmationId?: string } = {},
+  ): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
+    const result = this.automaticConfirmationTail.then(() => this.confirmPendingOrder(id, {
+      ...input,
+      confirmedBy: 'system',
+    }))
+    this.automaticConfirmationTail = result.then(() => undefined, () => undefined)
+    return result
   }
 
   private async confirmPendingOrderLocked(id: string, input: { confirmedBy?: LiveOrderConfirmation['confirmedBy']; confirmationId?: string }): Promise<{ ok: boolean; order?: LivePendingOrder; result?: LiveOrderResult; error?: string; blockedByGate: boolean }> {
@@ -263,6 +276,7 @@ class LongbridgeOrderQueueService {
   }
 
   resetForTests() {
+    this.automaticConfirmationTail = Promise.resolve()
     longbridgePersistence.clearForTests()
   }
 }

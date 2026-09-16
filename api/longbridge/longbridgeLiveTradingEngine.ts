@@ -510,8 +510,7 @@ class LongbridgeLiveTradingEngine {
     const settings = getLongbridgeLiveSettings()
     if (!settings.autoSubmitEnabled) return order
     if (!settings.liveTradingEnabled) return order
-    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id, {
-      confirmedBy: 'system',
+    const result = await longbridgeOrderQueueService.confirmPendingOrderAutomatically(order.id, {
       confirmationId: `longbridge-auto-${Date.now()}`,
     })
     const logContext = {

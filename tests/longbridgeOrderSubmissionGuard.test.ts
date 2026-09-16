@@ -215,6 +215,26 @@ describe('Longbridge 最终提交风控', () => {
     expect(mocks.submitOrder).toHaveBeenCalledTimes(1)
   })
 
+  it('同批系统自动提交按队列逐个执行而不被进程锁误拦截', async () => {
+    const first = pendingOrder()
+    const second = {
+      ...pendingOrder(),
+      id: 'pending-mu-2',
+      intent: { ...pendingOrder().intent, signalId: 'signal-mu-2' },
+      signal: { ...pendingOrder().signal, id: 'signal-mu-2' },
+    }
+    longbridgeOrderQueueService.createPendingOrder(first)
+    longbridgeOrderQueueService.createPendingOrder(second)
+
+    const results = await Promise.all([
+      longbridgeOrderQueueService.confirmPendingOrderAutomatically(first.id),
+      longbridgeOrderQueueService.confirmPendingOrderAutomatically(second.id),
+    ])
+
+    expect(results.every(result => result.ok)).toBe(true)
+    expect(mocks.submitOrder).toHaveBeenCalledTimes(2)
+  })
+
   it('账户刷新期间被拒绝的订单不会提交', async () => {
     longbridgeOrderQueueService.createPendingOrder(pendingOrder())
     mocks.loadAccount.mockImplementationOnce(async () => {
