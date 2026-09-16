@@ -150,6 +150,7 @@ class LongbridgeLiveTradingEngine {
       const llmConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
       const concurrency = longbridgeLiveEvaluationConcurrencyCap(llmConcurrency)
       const llmPacingBatch = { batchStartedAt: performance.now(), totalRequests: activeUniverse.length }
+      const managedOpenOrders = await listManagedOrders('longbridge', true)
       logger.info(
         {
           event: 'longbridge.live.llm_batch.started',
@@ -163,15 +164,37 @@ class LongbridgeLiveTradingEngine {
         },
         'Longbridge live LLM batch started',
       )
-      await mapLimit(activeUniverse, concurrency, async (ticker, requestIndex) => this.runOnceDryRun(ticker, {
-        reviewAfterCandidate: options.reviewAfterCandidate ?? false,
-        ensureRealtime: false,
-        llmPacingBatch,
-        requestIndex,
-        marketState: marketStates.get(normalizeLongbridgeSymbol(ticker)),
-      }))
+      await mapLimit(activeUniverse, concurrency, async (ticker, requestIndex) => {
+        // #region debug-point B-C:ticker-evaluation
+        if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,C', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:worker', msg: '[DEBUG] Longbridge ticker evaluation started', data: { ticker, requestIndex, concurrency, activeUniverseCount: activeUniverse.length }, ts: Date.now() }) }).catch(() => {})
+        // #endregion
+        try {
+          const result = await this.runOnceDryRun(ticker, {
+            reviewAfterCandidate: options.reviewAfterCandidate ?? false,
+            ensureRealtime: false,
+            llmPacingBatch,
+            requestIndex,
+            marketState: marketStates.get(normalizeLongbridgeSymbol(ticker)),
+            managedOpenOrders,
+          })
+          // #region debug-point B:ticker-completed
+          if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:worker', msg: '[DEBUG] Longbridge ticker evaluation completed', data: { ticker, requestIndex, ok: result.ok }, ts: Date.now() }) }).catch(() => {})
+          // #endregion
+          return result
+        } catch (error) {
+          // #region debug-point B-C:ticker-failed
+          if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,C', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:worker', msg: '[DEBUG] Longbridge ticker evaluation rejected', data: { ticker, requestIndex, errorName: error instanceof Error ? error.name : typeof error, errorMessage: error instanceof Error ? error.message : String(error), errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code?: string }).code : '' }, ts: Date.now() }) }).catch(() => {})
+          // #endregion
+          throw error
+        }
+      })
       this.markRun(this.currentRunIntervalMs())
       return this.dashboard()
+    } catch (error) {
+      // #region debug-point B-D:batch-failed
+      if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,D', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:catch', msg: '[DEBUG] Longbridge evaluation batch rejected', data: { errorName: error instanceof Error ? error.name : typeof error, errorMessage: error instanceof Error ? error.message : String(error), errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code?: string }).code : '', engineRunning: this.engine.running }, ts: Date.now() }) }).catch(() => {})
+      // #endregion
+      throw error
     } finally {
       // #region debug-point B-C:batch-timing
       void fetch(process.env.DEBUG_SERVER_URL || 'http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'signal-generation-stall', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,C', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:end', msg: '[DEBUG] Longbridge batch completed', data: { durationMs: Date.now() - debugBatchStartedAt }, ts: Date.now() }) }).catch(() => {})
@@ -180,10 +203,10 @@ class LongbridgeLiveTradingEngine {
     }
   }
 
-  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number; marketState?: string } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
+  async runOnceDryRun(symbol = 'AAPL.US', options: { reviewAfterCandidate?: boolean; ensureRealtime?: boolean; llmPacingBatch?: LlmRequestPacingBatch; requestIndex?: number; marketState?: string; managedOpenOrders?: Awaited<ReturnType<typeof listManagedOrders>> } = { reviewAfterCandidate: true, ensureRealtime: true }): Promise<LongbridgeLiveRunOnceResponse> {
     const warnings: string[] = []
     const accountCurrency = longbridgeTradingCurrency(symbol)
-    const managedOpenOrders = await listManagedOrders('longbridge', true)
+    const managedOpenOrders = options.managedOpenOrders ?? await listManagedOrders('longbridge', true)
     const marketState = options.marketState
       ?? (await this.loadMarketStates([symbol])).get(normalizeLongbridgeSymbol(symbol))
       ?? 'UNAVAILABLE'
@@ -569,6 +592,9 @@ class LongbridgeLiveTradingEngine {
 
   private handleEngineFailure(error: unknown, fallback: string): boolean {
     const policy = longbridgeEngineFailurePolicy(error, fallback)
+    // #region debug-point A-D:engine-failure-policy
+    if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'A,D', location: 'longbridgeLiveTradingEngine.handleEngineFailure', msg: '[DEBUG] Longbridge engine failure policy evaluated', data: { errorMessage: policy.message, recoverable: policy.recoverable, engineRunningBeforePolicy: this.engine.running }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
     if (!policy.recoverable) {
       this.setError(policy.message)
       return false

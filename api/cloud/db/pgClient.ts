@@ -101,7 +101,10 @@ export function isRetryablePgConnectionError(error: unknown): boolean {
     const code = typeof record.code === 'string'
       ? record.code.toUpperCase()
       : ''
-    if (message.includes('connection terminated due to connection timeout')) {
+    if (
+      message.includes('connection terminated due to connection timeout')
+      || message.includes('timeout exceeded when trying to connect')
+    ) {
       return true
     }
     if (code === 'ETIMEDOUT' && /\bconnect(?:ion)?\b/.test(message)) {
@@ -129,6 +132,9 @@ export async function withPgConnectionRetry<T>(
     try {
       return await operation()
     } catch (error) {
+      // #region debug-point A-C:pg-retry-classification
+      if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'A,C', location: 'pgClient.withPgConnectionRetry:catch', msg: '[DEBUG] PostgreSQL operation failed before retry decision', data: { operation: options.operation ?? 'database_operation', attempt, maxAttempts, retryable: isRetryablePgConnectionError(error), errorName: error instanceof Error ? error.name : typeof error, errorMessage: error instanceof Error ? error.message : String(error), errorCode: typeof (error as ErrorWithCause)?.code === 'string' ? (error as ErrorWithCause).code : '', pool: pool ? { totalCount: pool.totalCount, idleCount: pool.idleCount, waitingCount: pool.waitingCount } : null }, ts: Date.now() }) }).catch(() => {})
+      // #endregion
       if (
         attempt >= maxAttempts
         || !isRetryablePgConnectionError(error)

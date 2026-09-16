@@ -420,6 +420,9 @@ export async function handleJob(jobType: string, payload: Record<string, unknown
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    // #region debug-point D:cloud-job-failed
+    if (process.env.DEBUG_SERVER_URL) void fetch(process.env.DEBUG_SERVER_URL, { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'longbridge-connect-timeout', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'D', location: 'jobHandlers.handleCloudJob:catch', msg: '[DEBUG] Cloud engine job rejected', data: { platform, action, errorName: error instanceof Error ? error.name : typeof error, errorMessage: message, errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code?: string }).code : '' }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
     logger.error({ event: 'cloud.worker.job.failed', platform, action, error: message }, '任务执行失败')
     return { ok: false, error: message }
   }

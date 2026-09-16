@@ -30,6 +30,16 @@ describe('Longbridge engine failure policy', () => {
     })
   })
 
+  it('keeps scheduling after a PostgreSQL pool checkout timeout', () => {
+    expect(longbridgeEngineFailurePolicy(
+      new Error('timeout exceeded when trying to connect'),
+      '长桥实盘评估引擎运行失败。',
+    )).toEqual({
+      message: 'timeout exceeded when trying to connect',
+      recoverable: true,
+    })
+  })
+
   it('stops the engine for non-transient failures', () => {
     expect(longbridgeEngineFailurePolicy(
       new Error('invalid account credentials'),

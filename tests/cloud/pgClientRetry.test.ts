@@ -19,6 +19,19 @@ describe('PostgreSQL connection retry', () => {
     expect(operation).toHaveBeenCalledTimes(3)
   })
 
+  it('retries a pg-pool checkout timeout while the pool is full', async () => {
+    const operation = vi.fn()
+      .mockRejectedValueOnce(new Error('timeout exceeded when trying to connect'))
+      .mockResolvedValue('ok')
+
+    await expect(withPgConnectionRetry(operation, {
+      maxAttempts: 3,
+      initialDelayMs: 0,
+      operation: 'test',
+    })).resolves.toBe('ok')
+    expect(operation).toHaveBeenCalledTimes(2)
+  })
+
   it('recognizes a wrapped connect ETIMEDOUT error', () => {
     const cause = Object.assign(new Error('connect ETIMEDOUT 10.0.0.1:5432'), {
       code: 'ETIMEDOUT',
