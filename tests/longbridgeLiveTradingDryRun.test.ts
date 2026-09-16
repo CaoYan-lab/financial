@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   longbridgeEngineFailurePolicy,
+  longbridgeLiveEvaluationConcurrencyCap,
   longbridgeLiveTradingEngine,
+  longbridgeNextScanDelayMs,
   longbridgeSignalLifecycle,
 } from '../api/longbridge/longbridgeLiveTradingEngine'
 import {
@@ -36,6 +38,21 @@ describe('Longbridge engine failure policy', () => {
       message: 'invalid account credentials',
       recoverable: false,
     })
+  })
+})
+
+describe('Longbridge scan scheduling', () => {
+  it('未配置专用上限时遵循运行时模型并发', () => {
+    expect(longbridgeLiveEvaluationConcurrencyCap(21, undefined)).toBe(21)
+  })
+
+  it('显式专用上限仍可限制模型并发', () => {
+    expect(longbridgeLiveEvaluationConcurrencyCap(21, '6')).toBe(6)
+  })
+
+  it('下一轮延迟扣除当前批次耗时', () => {
+    expect(longbridgeNextScanDelayMs(60_000, 35_000)).toBe(25_000)
+    expect(longbridgeNextScanDelayMs(60_000, 75_000)).toBe(0)
   })
 })
 

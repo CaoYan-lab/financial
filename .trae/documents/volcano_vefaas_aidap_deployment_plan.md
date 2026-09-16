@@ -696,7 +696,7 @@ node -e "const lb=require('longbridge'); console.log(Boolean(lb.Config && lb.Quo
 | `LONGBRIDGE_AUTH_MODE` | `legacy_api_key` | 明确禁止云端误用 CLI OAuth |
 | `LONGBRIDGE_LIVE_TRADING_ENABLED` | `false` | dry-run 验收完成前关闭 |
 | `LONGBRIDGE_AUTO_SUBMIT_ENABLED` | `false` | 默认永久关闭，人工确认 |
-| `LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY` | `1` | 首期串行评估 |
+| `LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY` | 未设置 | 可选的 Longbridge 评估硬上限；未设置时遵循页面保存的模型并发，订单提交仍走串行风控 |
 | `LONGBRIDGE_REALTIME_BACKFILL_CONCURRENCY` | `2` | 历史补拉并发 |
 | `LONGBRIDGE_REALTIME_REQUIRED_KLINE_COUNT` | `120` | 1 分钟 K 线窗口 |
 | `LONGBRIDGE_REALTIME_CACHE_STALE_MS` | `90000` | 缓存过期阈值 |

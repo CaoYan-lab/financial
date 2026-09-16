@@ -41,7 +41,6 @@ import {
 const STRATEGY: QuantStrategyName = 'LLM_AUTONOMOUS_STOCK_TRADER'
 const DEFAULT_RUN_INTERVAL_MS = 60_000
 const LIVE_TIMER_PHASE_OFFSET_MS = Number(process.env.LONGBRIDGE_LIVE_TRADING_TIMER_OFFSET_MS || process.env.LIVE_TRADING_TIMER_OFFSET_MS || 30_000)
-const LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY = Math.max(1, Number(process.env.LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY || 1))
 const LONG_BRIDGE_START_SOURCE_TIMEOUT_MS = Math.max(5_000, Number(process.env.LONGBRIDGE_LIVE_START_SOURCE_TIMEOUT_MS || 20_000) || 20_000)
 const LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS = Math.max(
   1_000,
@@ -131,6 +130,9 @@ class LongbridgeLiveTradingEngine {
   async runPoolOnceDryRun(options: { reviewAfterCandidate?: boolean } = {}): Promise<LongbridgeLiveTradingDashboardResponse> {
     if (this.runInFlight) return this.dashboard()
     this.runInFlight = true
+    // #region debug-point B-C:batch-timing
+    const debugBatchStartedAt = Date.now(); void fetch(process.env.DEBUG_SERVER_URL || 'http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'signal-generation-stall', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,C', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:start', msg: '[DEBUG] Longbridge batch started', data: { configuredConcurrency: getActiveDecisionConcurrency(), evaluationConcurrencyCap: longbridgeLiveEvaluationConcurrencyCap(getActiveDecisionConcurrency()) }, ts: debugBatchStartedAt }) }).catch(() => {})
+    // #endregion
     try {
       const universe = this.engine.universe.length ? this.engine.universe : llmSimulationTickers()
       await ensureLongbridgeRealtimeSubscriptions(universe, { waitForSeed: true, requiredKlineCount: DEFAULT_DATA_WINDOW.kline1mBars })
@@ -146,7 +148,7 @@ class LongbridgeLiveTradingEngine {
       }
       const activeUniverse = universe.filter((ticker) => !skippedByGate.has(ticker.toUpperCase()))
       const llmConcurrency = getActiveDecisionConcurrency(activeUniverse.length)
-      const concurrency = Math.min(llmConcurrency, LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY)
+      const concurrency = longbridgeLiveEvaluationConcurrencyCap(llmConcurrency)
       const llmPacingBatch = { batchStartedAt: performance.now(), totalRequests: activeUniverse.length }
       logger.info(
         {
@@ -156,7 +158,7 @@ class LongbridgeLiveTradingEngine {
           marketSessionSkippedCount: marketSessionSkipped.length,
           concurrency,
           llmConcurrency,
-          marketDataConcurrencyCap: LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY,
+          marketDataConcurrencyCap: concurrency,
           llmRequestPacing: llmRequestPacingPlan(activeUniverse.length),
         },
         'Longbridge live LLM batch started',
@@ -171,6 +173,9 @@ class LongbridgeLiveTradingEngine {
       this.markRun(this.currentRunIntervalMs())
       return this.dashboard()
     } finally {
+      // #region debug-point B-C:batch-timing
+      void fetch(process.env.DEBUG_SERVER_URL || 'http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: process.env.DEBUG_SESSION_ID || 'signal-generation-stall', runId: process.env.DEBUG_RUN_ID || 'pre-fix', hypothesisId: 'B,C', location: 'longbridgeLiveTradingEngine.runPoolOnceDryRun:end', msg: '[DEBUG] Longbridge batch completed', data: { durationMs: Date.now() - debugBatchStartedAt }, ts: Date.now() }) }).catch(() => {})
+      // #endregion
       this.runInFlight = false
     }
   }
@@ -609,15 +614,23 @@ class LongbridgeLiveTradingEngine {
     this.engine = { ...this.engine, nextRunAt, runIntervalMs: this.currentRunIntervalMs() }
     this.scanTimer = setTimeout(() => {
       this.scanTimer = undefined
+      const batchStartedAt = Date.now()
       let nextDelayMs = this.currentRunIntervalMs()
+      let delayFromBatchStart = true
       this.runPoolOnceDryRun({ reviewAfterCandidate: false })
         .catch((error) => {
           if (this.handleEngineFailure(error, '长桥实盘评估引擎运行失败。')) {
             nextDelayMs = LONG_BRIDGE_TRANSIENT_RETRY_DELAY_MS
+            delayFromBatchStart = false
           }
         })
         .finally(() => {
-          if (this.engine.running) this.scheduleNextScan(nextDelayMs)
+          if (this.engine.running) {
+            const delayMs = delayFromBatchStart
+              ? longbridgeNextScanDelayMs(nextDelayMs, Date.now() - batchStartedAt)
+              : nextDelayMs
+            this.scheduleNextScan(delayMs)
+          }
         })
     }, delayMs)
   }
@@ -666,6 +679,21 @@ export function longbridgeEngineFailurePolicy(
     message: error instanceof Error ? error.message : fallback,
     recoverable: isRetryablePgConnectionError(error),
   }
+}
+
+export function longbridgeLiveEvaluationConcurrencyCap(
+  configuredConcurrency: number,
+  rawCap = process.env.LONGBRIDGE_LIVE_EVALUATION_CONCURRENCY,
+): number {
+  const normalizedConcurrency = Math.max(1, Math.floor(configuredConcurrency) || 1)
+  if (!rawCap) return normalizedConcurrency
+  const cap = Number(rawCap)
+  if (!Number.isFinite(cap) || cap < 1) return normalizedConcurrency
+  return Math.min(normalizedConcurrency, Math.floor(cap))
+}
+
+export function longbridgeNextScanDelayMs(intervalMs: number, batchDurationMs: number): number {
+  return Math.max(0, intervalMs - Math.max(0, batchDurationMs))
 }
 
 function signalFromDecision(
