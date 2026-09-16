@@ -187,16 +187,20 @@ async function collectAccountSnapshot(
     : []
   const quoteBySymbol = new Map(quotes.map((item) => [item.symbol, item]))
   const normalizedPositions = positions.map((position) => {
-    const current = decimalNumber(quoteBySymbol.get(position.symbol)?.lastDone)
-    const previousClose = decimalNumber(quoteBySymbol.get(position.symbol)?.prevClose)
+    const current = optionalDecimalNumber(quoteBySymbol.get(position.symbol)?.lastDone)
+    const previousClose = optionalDecimalNumber(quoteBySymbol.get(position.symbol)?.prevClose)
     const quantity = numeric(position.quantity)
     const averageCost = numeric(position.averageCost)
     return {
       ...position,
-      currentPrice: finiteText(current),
-      marketValue: finiteText(current * quantity),
-      todayPnL: finiteText((current - previousClose) * quantity),
-      unrealizedPnL: finiteText((current - averageCost) * quantity),
+      currentPrice: current === undefined ? 'unavailable' : finiteText(current),
+      marketValue: current === undefined ? 'unavailable' : finiteText(current * quantity),
+      todayPnL: current === undefined || previousClose === undefined
+        ? 'unavailable'
+        : finiteText((current - previousClose) * quantity),
+      unrealizedPnL: current === undefined
+        ? 'unavailable'
+        : finiteText((current - averageCost) * quantity),
     }
   })
   const cashInfo = balance?.cashInfos.find((item) => item.currency === currency)
@@ -305,8 +309,9 @@ function decimalText(value: unknown): string {
   return text && text !== 'NaN' ? text : 'unavailable'
 }
 
-function decimalNumber(value: unknown): number {
-  return numeric(decimalText(value))
+function optionalDecimalNumber(value: unknown): number | undefined {
+  const parsed = Number(decimalText(value))
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function absoluteDecimal(value: unknown): number | null {

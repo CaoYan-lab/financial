@@ -25,6 +25,7 @@ import {
   parseLongbridgeRiskLevel,
 } from './longbridgeRiskService.js'
 import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
+import { sumLongbridgePositionTodayPnl } from './longbridgePositionPnl.js'
 
 const LONGBRIDGE_SKILLS = [
   'longbridge',
@@ -99,7 +100,7 @@ export async function loadLongbridgeWorkbenchDashboard(): Promise<LongbridgeWork
   return {
     ok: sourceStatus.ok,
     sourceStatus,
-    accountMetrics: sourceStatus.accountDataAvailable ? await loadAccountMetrics(warnings) : unavailableAccountMetrics(),
+    accountMetrics: sourceStatus.accountDataAvailable ? await loadAccountMetrics(warnings, positions) : unavailableAccountMetrics(),
     positions,
     riskCards: riskCards(positions, sourceStatus),
     dataPanels: dataPanels(sourceStatus),
@@ -173,7 +174,12 @@ export async function loadLongbridgeLiveAccountDashboard(
       cashInTradingCurrency: formatCurrency(totalCash, currency),
       availableFundsInTradingCurrency: formatCurrency(availableCash, currency),
       buyingPowerInTradingCurrency: formatCurrency(buyPower, currency),
-      dailyPnL: formatCurrency(assets.today_pnl, currency),
+      dailyPnL: formatCurrency(
+        assetValue(assets, 'total_today_pl')
+          ?? assetValue(assets, 'today_pnl')
+          ?? sumLongbridgePositionTodayPnl(positions, currency),
+        currency,
+      ),
       totalPnL: formatCurrency(assets.total_pnl, currency),
       source: {
         source: longbridgeSdkCredentialsConfigured()
@@ -227,18 +233,28 @@ export function updateLongbridgeTradeStrategyConfig(input: UpdateTradeStrategyCo
   return loadLongbridgeLiveTradingConfig()
 }
 
-async function loadAccountMetrics(warnings: string[]): Promise<LongbridgeMetric[]> {
+async function loadAccountMetrics(
+  warnings: string[],
+  positions: LongbridgePosition[],
+): Promise<LongbridgeMetric[]> {
   const parsed = await loadAssetRecord(warnings)
-  return buildLongbridgeAccountMetrics(parsed)
+  return buildLongbridgeAccountMetrics(parsed, positions)
 }
 
-export function buildLongbridgeAccountMetrics(parsed: Record<string, unknown>): LongbridgeMetric[] {
+export function buildLongbridgeAccountMetrics(
+  parsed: Record<string, unknown>,
+  positions?: LongbridgePosition[],
+): LongbridgeMetric[] {
   const availableCash = assetValue(parsed, 'available_cash') ?? firstCashInfoValue(parsed, 'available_cash')
+  const todayPnl = assetValue(parsed, 'total_today_pl')
+    ?? assetValue(parsed, 'today_pnl')
+    ?? (positions ? sumLongbridgePositionTodayPnl(positions, 'USD') : undefined)
   return [
     metric('美金总览', formatUsd(assetValue(parsed, 'net_assets')), '账户净资产，USD'),
     metric('账户现金', formatUsd(assetValue(parsed, 'total_cash')), '现金余额；与持仓市值共同构成净资产，USD'),
     metric('现金可用', formatUsd(availableCash), '扣除融资与冻结占用后的可用现金，USD'),
     metric('最大购买力', formatUsd(assetValue(parsed, 'buy_power')), '最大购买力，USD'),
+    metric('今日盈亏', formatUsd(todayPnl), '美元持仓按现价与昨收价汇总，未含费用'),
     metric('风险等级', formatUnknown(parsed.risk_level), '账户风险等级'),
   ]
 }
@@ -357,6 +373,7 @@ function unavailableAccountMetrics(): LongbridgeMetric[] {
     metric('账户现金', '等待授权', '需要账户资产接口'),
     metric('现金可用', '等待授权', '需要 Quote permission'),
     metric('最大购买力', '等待授权', '需要账户资产接口'),
+    metric('今日盈亏', '等待授权', '需要持仓与实时行情权限'),
     metric('风险等级', '等待授权', '需要 Longbridge assets'),
   ]
 }

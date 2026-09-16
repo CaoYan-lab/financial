@@ -3,6 +3,12 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { LongbridgeMetric, LongbridgePosition } from '../../shared/longbridgeTypes'
 import { useLongbridgeWorkbench } from '@/hooks/useLongbridgeWorkbench'
+import {
+  formatLongbridgeAccountPnl,
+  formatLongbridgePnl,
+  formatLongbridgePrice,
+  type LongbridgePnlTone,
+} from '@/utils/longbridgePositionDisplay'
 import LongbridgeWorkbenchNav from './longbridge/LongbridgeWorkbenchNav'
 
 export default function LongbridgeWorkbenchPlaceholder() {
@@ -131,13 +137,20 @@ function Panel({
 function MetricGrid({ metrics }: { metrics: LongbridgeMetric[] }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      {metrics.map((metric) => (
-        <article key={`${metric.label}:${metric.helper}`} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
-          <p className="text-xs font-bold text-slate-500">{metric.label}</p>
-          <p className="mt-2 break-words text-2xl font-black tracking-[-0.04em] text-slate-950">{metric.value}</p>
-          <p className="mt-2 break-words text-xs leading-5 text-slate-500">{metric.helper}</p>
-        </article>
-      ))}
+      {metrics.map((metric) => {
+        const pnl = metric.label === '今日盈亏'
+          ? formatLongbridgeAccountPnl(metric.value)
+          : undefined
+        return (
+          <article key={`${metric.label}:${metric.helper}`} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+            <p className="text-xs font-bold text-slate-500">{metric.label}</p>
+            <p className={`mt-2 break-words text-2xl font-black tracking-[-0.04em] ${pnl ? pnlToneClass[pnl.tone] : 'text-slate-950'}`}>
+              {pnl?.label ?? metric.value}
+            </p>
+            <p className="mt-2 break-words text-xs leading-5 text-slate-500">{metric.helper}</p>
+          </article>
+        )
+      })}
     </div>
   )
 }
@@ -156,32 +169,54 @@ function PositionsTable({ positions, loading, accountReady }: { positions: Longb
   if (!positions.length) return <EmptyState title="暂无持仓" description="长桥持仓接口已授权并返回成功，当前账户没有股票持仓。" />
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-100">
-      <table className="w-full text-left text-sm">
+    <div className="overflow-x-auto rounded-2xl border border-slate-100">
+      <table className="w-full min-w-[40rem] table-fixed text-left text-sm">
         <thead className="bg-slate-50 text-xs font-black uppercase tracking-wide text-slate-500">
           <tr>
-            <th className="px-4 py-3">标的</th>
-            <th className="px-4 py-3">数量</th>
-            <th className="px-4 py-3">市值</th>
-            <th className="px-4 py-3">盈亏</th>
+            <th className="w-[30%] px-4 py-3">标的</th>
+            <th className="w-[12%] px-4 py-3 text-right">数量</th>
+            <th className="w-[19%] px-4 py-3 text-right">市值</th>
+            <th className="w-[23%] px-4 py-3 text-right">成本 / 现价</th>
+            <th className="w-[16%] px-4 py-3 text-right">盈亏</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 bg-white/70">
-          {positions.map((position) => (
-            <tr key={`${position.symbol}:${position.name}`}>
-              <td className="px-4 py-3">
-                <p className="font-black text-slate-950">{position.symbol}</p>
-                <p className="text-xs text-slate-500">{position.name}</p>
-              </td>
-              <td className="px-4 py-3 font-semibold text-slate-700">{position.quantity}</td>
-              <td className="px-4 py-3 font-semibold text-slate-700">{position.marketValue}</td>
-              <td className="px-4 py-3 font-semibold text-slate-700">{position.unrealizedPnL}</td>
-            </tr>
-          ))}
+          {positions.map((position) => {
+            const pnl = formatLongbridgePnl(position.unrealizedPnL)
+            return (
+              <tr key={`${position.symbol}:${position.name}`}>
+                <td className="px-4 py-3">
+                  <p className="font-black text-slate-950">{position.symbol}</p>
+                  <p className="truncate text-xs text-slate-500" title={position.name}>{position.name}</p>
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums text-slate-700">{position.quantity}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums text-slate-700">{position.marketValue}</td>
+                <td className="px-4 py-3 text-right text-xs tabular-nums">
+                  <p className="whitespace-nowrap text-slate-500">
+                    <span className="mr-2">成本</span>
+                    <span className="font-semibold text-slate-800">{formatLongbridgePrice(position.averageCost, position.currency)}</span>
+                  </p>
+                  <p className="mt-1 whitespace-nowrap text-slate-500">
+                    <span className="mr-2">现价</span>
+                    <span className="font-semibold text-slate-800">{formatLongbridgePrice(position.currentPrice, position.currency)}</span>
+                  </p>
+                </td>
+                <td className={`whitespace-nowrap px-4 py-3 text-right font-bold tabular-nums ${pnlToneClass[pnl.tone]}`}>
+                  {pnl.label}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
   )
+}
+
+const pnlToneClass: Record<LongbridgePnlTone, string> = {
+  profit: 'text-red-700',
+  loss: 'text-emerald-700',
+  neutral: 'text-slate-600',
 }
 
 function EmptyState({ title, description }: { title: string; description: string }) {

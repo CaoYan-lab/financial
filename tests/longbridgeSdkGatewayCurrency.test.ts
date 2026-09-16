@@ -137,4 +137,30 @@ describe('Longbridge SDK 账户资产币种', () => {
       availableToClose: 1,
     })
   })
+
+  it('行情缺少昨收价时不伪造持仓今日盈亏', async () => {
+    mocks.stockPositions.mockResolvedValue({
+      channels: [{
+        positions: [{
+          symbol: 'AAPL.US',
+          symbolName: 'Apple',
+          quantity: '2',
+          availableQuantity: '2',
+          costPrice: '90.00',
+          currency: 'USD',
+        }],
+      }],
+    })
+    mocks.quote.mockResolvedValue([{
+      symbol: 'AAPL.US',
+      lastDone: '105.00',
+    }])
+
+    const snapshot = await loadLongbridgeSdkAccountSnapshot({ force: true })
+
+    expect(snapshot.positions[0]).toMatchObject({
+      currentPrice: '105.00',
+      todayPnL: 'unavailable',
+    })
+  })
 })

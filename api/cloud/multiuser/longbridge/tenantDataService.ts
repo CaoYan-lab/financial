@@ -12,6 +12,7 @@ import { getLlmRuntimeConfig } from '../../../simulation/llmRuntimeConfigService
 import { llmSimulationTickers } from '../../../simulation/simulationUniverse.js'
 import { buildLiveEvaluationStatus } from '../../../trading/liveEvaluationStatusService.js'
 import { buildLongbridgeOrderChildEnvironment } from '../../../longbridge/longbridgeOrderProxy.js'
+import { sumLongbridgePositionTodayPnl } from '../../../longbridge/longbridgePositionPnl.js'
 import { query, queryOne } from '../../db/pgClient.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
 import { credentialsForConnection } from './connectionStore.js'
@@ -32,6 +33,12 @@ function text(value: unknown): string {
 function number(value: unknown): number {
   const parsed = Number(text(value))
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || String(value).trim() === '') return undefined
+  const parsed = Number(String(value))
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function usd(value: unknown): string {
@@ -74,10 +81,14 @@ export async function loadTenantWorkbench(
     : []
   const quoteBySymbol = new Map(quotes.map((item) => [item.symbol, item]))
   const positions = rawPositions.map((position) => {
-    const currentPrice = number(quoteBySymbol.get(position.symbol)?.lastDone)
+    const quote = quoteBySymbol.get(position.symbol)
+    const quotedCurrentPrice = optionalNumber(quote?.lastDone)
+    const currentPrice = quotedCurrentPrice ?? 0
+    const previousClose = optionalNumber(quote?.prevClose)
     const quantity = number(position.quantity)
     const averageCost = number(position.costPrice)
     const marketValue = currentPrice * quantity
+    const positionCurrency = position.currency === 'HKD' ? 'HKD' : 'USD'
     return {
       symbol: position.symbol,
       name: position.symbolName,
@@ -86,11 +97,14 @@ export async function loadTenantWorkbench(
       marketValue: usd(marketValue),
       averageCost: usd(averageCost),
       currentPrice: usd(currentPrice),
-      todayPnL: '暂无',
+      todayPnL: quotedCurrentPrice === undefined || previousClose === undefined
+        ? '不可用'
+        : currencyMoney((currentPrice - previousClose) * quantity, positionCurrency),
       unrealizedPnL: usd((currentPrice - averageCost) * quantity),
       currency: position.currency,
     }
   })
+  const todayPnl = sumLongbridgePositionTodayPnl(positions, currency)
   const now = new Date().toISOString()
   const sourceStatus: LongbridgeSourceStatusResponse = {
     ok: true,
@@ -121,6 +135,11 @@ export async function loadTenantWorkbench(
       { label: '账户现金', value: currencyMoney(balance?.totalCash, currency), helper: `现金余额；与持仓市值共同构成净资产，${balance?.currency ?? currency}` },
       { label: '现金可用', value: currencyMoney(cashInfo?.availableCash, currency), helper: `扣除融资与冻结占用后的可用现金，${balance?.currency ?? currency}` },
       { label: '最大购买力', value: currencyMoney(balance?.buyPower, currency), helper: balance?.currency ?? currency },
+      {
+        label: '今日盈亏',
+        value: todayPnl === undefined ? '不可用' : currencyMoney(todayPnl, currency),
+        helper: `${currency} 持仓按现价与昨收价汇总，未含费用`,
+      },
       { label: '风险等级', value: String(balance?.riskLevel ?? '未知'), helper: '当前绑定账户' },
     ],
     positions,

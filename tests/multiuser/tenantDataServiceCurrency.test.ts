@@ -42,6 +42,7 @@ describe('Longbridge 租户账户资产币种', () => {
       marginCall: '0.00',
     }])
     mocks.stockPositions.mockResolvedValue({ channels: [] })
+    mocks.quote.mockResolvedValue([])
   })
 
   it('显式请求美元资产并按美元展示', async () => {
@@ -89,6 +90,42 @@ describe('Longbridge 租户账户资产币种', () => {
       label: '最大购买力',
       value: 'HK$10,126.39',
       helper: 'HKD',
+    })
+  })
+
+  it('按现价和昨收价汇总当前币种持仓今日盈亏', async () => {
+    mocks.stockPositions.mockResolvedValueOnce({
+      channels: [{
+        positions: [{
+          symbol: 'AAPL.US',
+          symbolName: 'Apple',
+          quantity: '2',
+          availableQuantity: '2',
+          costPrice: '90',
+          currency: 'USD',
+        }],
+      }],
+    })
+    mocks.quote.mockResolvedValueOnce([{
+      symbol: 'AAPL.US',
+      lastDone: '105',
+      prevClose: '100',
+    }])
+    const connection: BrokerConnection = {
+      id: 'binding-a',
+      userId: 'user-a',
+      platform: 'longbridge',
+      credentialSource: 'encrypted_bundle',
+      status: 'verified',
+    }
+
+    const dashboard = await loadTenantWorkbench(connection)
+
+    expect(dashboard.positions[0].todayPnL).toBe('$10.00')
+    expect(dashboard.accountMetrics).toContainEqual({
+      label: '今日盈亏',
+      value: '$10.00',
+      helper: 'USD 持仓按现价与昨收价汇总，未含费用',
     })
   })
 })
