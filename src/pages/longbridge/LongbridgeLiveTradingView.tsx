@@ -343,7 +343,7 @@ export default function LongbridgeLiveTradingView() {
         <TradingPromptModePanel broker="longbridge" />
         <TradeStrategyConfigPanel
           title="实盘策略与提示词版本"
-          subtitle="沿用 trade_strategy 中同一份实盘策略和提示词 YAML；保存后从下一轮长桥评估生效，不绕过门禁或人工确认。"
+          subtitle="沿用 trade_strategy 中同一份实盘策略和提示词 YAML；保存后从下一轮长桥评估生效，不绕过提交门禁或运行时下单设置。"
           config={liveConfig?.tradeStrategyConfig}
           saving={savingConfig}
           dark
@@ -383,6 +383,7 @@ export default function LongbridgeLiveTradingView() {
           <div className="min-w-0 space-y-6">
             <LongbridgePendingOrdersPanel
               page={longbridgeLive.history['pending-orders']}
+              autoSubmitEnabled={autoSubmitEnabled}
               statusFilter={longbridgeLive.pendingOrderStatusFilter}
               tickerFilter={longbridgeLive.pendingOrderTickerFilter}
               tickerFilterItems={pendingTickerFilterItems}
@@ -619,8 +620,8 @@ function LongbridgeCandidatePoolConfigPanel({
           <h2 className="mt-2 text-2xl font-semibold">{enabled ? '候选池与 DeepSeek 组合裁决' : '组合策略已关闭 · 大模型直推'}</h2>
           <p className="mt-2 text-sm leading-6 text-stone-600">
             {enabled
-              ? '复刻 Futu 候选池组合裁决：非观望信号先进入候选池，再由组合裁决决定是否推进到待确认队列。'
-              : '大模型直推模式：非观望信号不写入候选池，直接进入后端硬风控和人工确认链路。'}
+              ? '复刻 Futu 候选池组合裁决：非观望信号先进入候选池，再由组合裁决决定是否推进到统一订单队列。'
+              : '大模型直推模式：非观望信号不写入候选池，直接进入后端硬风控和统一订单队列。'}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -639,12 +640,12 @@ function LongbridgeCandidatePoolConfigPanel({
         <>
           <div className={`mt-5 rounded-2xl border p-4 text-sm leading-6 ${enabled ? 'border-indigo-200 bg-indigo-50 text-indigo-900' : 'border-sky-200 bg-sky-50 text-sky-900'}`}>
             {enabled
-              ? '当前处于组合策略开启状态：历史策略信号仍完整记录所有单标的判断；非观望信号先进入候选池；候选池经组合裁决和硬风控后，才进入待确认订单队列。'
+              ? '当前处于组合策略开启状态：历史策略信号仍完整记录所有单标的判断；非观望信号先进入候选池；候选池经组合裁决和硬风控后，才进入统一订单队列。'
               : '当前处于大模型直推状态：后续非观望信号不写入候选池，不调用组合裁决提示词，直接进入后端硬风控。'}
           </div>
 
           <div className="mt-5 grid gap-3 xl:grid-cols-4">
-            <ConfigTile label="当前链路" value={enabled ? '候选池组合裁决' : '大模型直推'} note={enabled ? '标的扫描 -> 候选池 -> 组合裁决 -> 硬风控 -> 人工确认' : '标的扫描 -> 硬风控 -> 人工确认'} />
+            <ConfigTile label="当前链路" value={enabled ? '候选池组合裁决' : '大模型直推'} note={enabled ? '标的扫描 -> 候选池 -> 组合裁决 -> 硬风控 -> 订单队列' : '标的扫描 -> 硬风控 -> 订单队列'} />
             <button className="rounded-2xl border border-sky-100 bg-sky-50/70 p-4 text-left transition hover:border-sky-300 hover:bg-sky-100" onClick={() => setPromptOpen((value) => !value)}>
               <p className="text-xs font-semibold text-stone-500">组合裁决提示词</p>
               <p className="mt-2 text-2xl font-semibold text-stone-950">{snapshot?.promptLabel ?? '实盘候选池组合裁决提示词 v1'}</p>
@@ -825,6 +826,7 @@ function LongbridgeSignalHistoryTable({
 
 function LongbridgePendingOrdersPanel({
   page,
+  autoSubmitEnabled,
   statusFilter,
   tickerFilter,
   tickerFilterItems,
@@ -840,6 +842,7 @@ function LongbridgePendingOrdersPanel({
   onBatchExpire,
 }: {
   page?: SimulationHistoryPage<LivePendingOrder>
+  autoSubmitEnabled: boolean
   statusFilter: LivePendingOrderStatusFilter
   tickerFilter: string
   tickerFilterItems: Array<{ value: string; label: string }>
@@ -866,7 +869,9 @@ function LongbridgePendingOrdersPanel({
           <p className="mt-2 text-sm text-stone-600">长桥订单独立存储；提交后可进入组合详情页查看系统决策、券商状态、成交、费用和监管过程。</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Badge tone="cyan">人工确认</Badge>
+          <Badge tone={autoSubmitEnabled ? 'red' : 'cyan'}>
+            {autoSubmitEnabled ? '自动提交队列' : '人工确认队列'}
+          </Badge>
           <button
             className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={Boolean(expiringPendingOrders) || !canBatchExpire}

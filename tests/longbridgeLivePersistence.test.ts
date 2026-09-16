@@ -58,6 +58,19 @@ describe('Longbridge live SQLite persistence', { timeout: 30_000 }, () => {
     expect(sqlCount('longbridge_live_pending_orders')).toBe(1)
   })
 
+  it('历史信号展示关联订单的自动提交风控原因', () => {
+    const order = testPendingOrder()
+    order.status = 'BLOCKED_BY_RISK'
+    order.riskWarnings = ['自动提交已被风控拦截：可平量未知或平仓数量超限。']
+    longbridgePersistence.appendSignal(order.signal as LiveSignalHistoryItem)
+    longbridgePersistence.appendPendingOrder(order)
+
+    const page = longbridgePersistence.paginateSignalLifecycle(1, 20)
+
+    expect(page.items[0].lifecycleStatus).toBe('BLOCKED_BY_RISK')
+    expect(page.items[0].lifecycleReason).toBe(order.riskWarnings[0])
+  })
+
   it('候选池记录写入 Longbridge candidate pool 分表并按候选聚合读取', () => {
     const candidate = testCandidate()
     longbridgePersistence.appendCandidate(candidate)

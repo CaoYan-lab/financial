@@ -100,7 +100,10 @@ class LongbridgeOrderQueueService {
     let release: (() => Promise<void>) | undefined
     try {
       release = await acquireOrderSubmissionLock('longbridge:default')
-      return await this.confirmPendingOrderLocked(id, input)
+      const result = await this.confirmPendingOrderLocked(id, input)
+      return input.confirmedBy === 'system'
+        ? this.persistAutomaticGateFailure(result)
+        : result
     } catch (error) {
       return { ok: false, order: this.findPendingOrder(id), error: error instanceof Error ? error.message : '跨进程提交锁不可用。', blockedByGate: true }
     } finally {
@@ -230,6 +233,33 @@ class LongbridgeOrderQueueService {
       error: result.error,
       blockedByGate: false,
     }
+  }
+
+  private persistAutomaticGateFailure(
+    result: {
+      ok: boolean
+      order?: LivePendingOrder
+      result?: LiveOrderResult
+      error?: string
+      blockedByGate: boolean
+    },
+  ) {
+    const order = result.order
+    if (result.ok || !result.blockedByGate || !order || order.status !== 'PENDING_CONFIRMATION') {
+      return result
+    }
+    const reason = result.error || '自动提交未通过长桥实盘门禁。'
+    const blocked = {
+      ...order,
+      status: 'BLOCKED_BY_RISK' as const,
+      updatedAt: new Date().toISOString(),
+      riskWarnings: [
+        `自动提交已被风控拦截：${reason}`,
+        ...order.riskWarnings,
+      ],
+    }
+    longbridgePersistence.replacePendingOrder(blocked)
+    return { ...result, order: blocked }
   }
 
   resetForTests() {

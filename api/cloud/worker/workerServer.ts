@@ -244,8 +244,8 @@ async function campaignLeadership(): Promise<void> {
           engines: previousStatus?.engines ?? {},
           managedOrders: managedOrderSupervisor.snapshot(),
         })
-        await reconcileDesiredState().catch(() => undefined)
         await managedOrderSupervisor.start()
+        await reconcileDesiredState().catch(() => undefined)
         startMultiUserWorkerRuntime(WORKER_ID)
         startJobLoop()
         startHeartbeatLoop()

@@ -342,6 +342,10 @@ def enrich_signal_lifecycle(signal, order_status_by_signal, skipped_exact, skipp
         submitted = order.get("submittedOrder") if isinstance(order.get("submittedOrder"), dict) else {}
         if submitted.get("error"):
             enriched["lifecycleReason"] = submitted.get("error")
+        elif order.get("status") == "BLOCKED_BY_RISK":
+            warnings = order.get("riskWarnings") if isinstance(order.get("riskWarnings"), list) else []
+            if warnings:
+                enriched["lifecycleReason"] = warnings[0]
         return enriched
 
     persisted_status = signal.get("lifecycleStatus")

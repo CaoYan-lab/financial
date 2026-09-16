@@ -505,11 +505,28 @@ class LongbridgeLiveTradingEngine {
     const settings = getLongbridgeLiveSettings()
     if (!settings.autoSubmitEnabled) return order
     if (!settings.liveTradingEnabled) return order
-    await longbridgeOrderQueueService.confirmPendingOrder(order.id, {
+    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id, {
       confirmedBy: 'system',
       confirmationId: `longbridge-auto-${Date.now()}`,
     })
-    return order
+    const logContext = {
+      event: result.ok
+        ? 'longbridge.live.pending_order.auto_submit_succeeded'
+        : 'longbridge.live.pending_order.auto_submit_failed',
+      pendingOrderId: order.id,
+      ticker: order.intent.ticker,
+      side: order.intent.side,
+      quantity: order.intent.quantity,
+      status: result.order?.status,
+      error: result.error,
+      blockedByGate: result.blockedByGate,
+    }
+    if (result.ok) {
+      logger.info(logContext, 'Longbridge pending order auto submit succeeded')
+    } else {
+      logger.warn(logContext, 'Longbridge pending order auto submit failed')
+    }
+    return result.order ?? order
   }
 
   private setRunning(accountId: string, universe: string[], runIntervalMs: number) {
@@ -664,6 +681,8 @@ function signalFromDecision(
     executionMode,
     decision.action,
     riskRejectionReason,
+    getLongbridgeLiveSettings().autoSubmitEnabled
+      && getLongbridgeLiveSettings().liveTradingEnabled,
   )
   return {
     id: `longbridge-signal-${marketData.ticker}-${Date.now()}`,
@@ -709,6 +728,7 @@ export function longbridgeSignalLifecycle(
   executionMode: TradeExecutionMode,
   action: LlmTradingDecision['action'],
   riskRejectionReason?: string,
+  automaticSubmissionEnabled = false,
 ): Pick<LiveSignalHistoryItem, 'lifecycleStatus' | 'lifecycleReason'> {
   if (riskRejectionReason) {
     return {
@@ -730,7 +750,9 @@ export function longbridgeSignalLifecycle(
   }
   return {
     lifecycleStatus: 'PENDING_CONFIRMATION',
-    lifecycleReason: '已生成待确认订单，等待人工确认。',
+    lifecycleReason: automaticSubmissionEnabled
+      ? '已生成订单，系统将自动执行提交前风控并尝试提交。'
+      : '已生成待确认订单，等待人工确认。',
   }
 }
 

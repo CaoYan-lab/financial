@@ -177,7 +177,7 @@ async function collectAccountSnapshot(
       symbol: position.symbol,
       name: position.symbolName,
       quantity: decimalText(position.quantity),
-      availableToClose: position.availableQuantity == null ? null : Number(position.availableQuantity.toString()),
+      availableToClose: absoluteDecimal(position.availableQuantity),
       averageCost: decimalText(position.costPrice),
       currency: position.currency,
     })),
@@ -307,6 +307,12 @@ function decimalText(value: unknown): string {
 
 function decimalNumber(value: unknown): number {
   return numeric(decimalText(value))
+}
+
+function absoluteDecimal(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = Number(decimalText(value))
+  return Number.isFinite(parsed) ? Math.abs(parsed) : null
 }
 
 function numeric(value: unknown): number {

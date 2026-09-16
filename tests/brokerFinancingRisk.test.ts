@@ -29,8 +29,13 @@ describe('券商融资与最终提交保护', () => {
     expect(financingOpeningStatus('futu', { ...summary(), financingCurrency: 'HKD' })).toBe('UNKNOWN')
     expect(financingOpeningStatus('futu', { ...summary(), financingEquity: '$49' })).toBe('BLOCKED')
   })
-  it.each([null, undefined, -1, 3, Infinity, NaN, '2'])('可平量无效 %s', raw => {
+  it.each([null, undefined, 3, Infinity, NaN, '2'])('可平量无效 %s', raw => {
     expect(verifiedCloseQuantity(raw, -2)).toBeNull()
+  })
+  it('兼容长桥空头持仓返回的带符号可平量', () => {
+    expect(verifiedCloseQuantity(-1, -1)).toBe(1)
+    expect(verifiedCloseQuantity(-2, -1)).toBeNull()
+    expect(verifiedCloseQuantity(-1, 1)).toBeNull()
   })
   it('零可平量保留，必要减仓不受融资预警影响', () => {
     expect(verifiedCloseQuantity(0, 2)).toBe(0)
@@ -56,6 +61,16 @@ describe('券商融资与最终提交保护', () => {
     const a = account()
     a.positions = [{ ticker: 'AAPL', assetType: 'STOCK', quantity: '-2', currency: 'USD', availableToClose: 2 }]
     expect(finalAccountOrderFailure('longbridge', a, { ...intent(), quantity: 3 }, 'USD')).toContain('反向开仓')
+  })
+  it('长桥空头的带符号可平量允许等量自动回补', () => {
+    const a = account()
+    a.positions = [{ ticker: 'GOOG', assetType: 'STOCK', quantity: '-1', currency: 'USD', availableToClose: -1 }]
+    expect(finalAccountOrderFailure(
+      'longbridge',
+      a,
+      { ...intent(), ticker: 'GOOG', quantity: 1 },
+      'USD',
+    )).toBeUndefined()
   })
   it('新版实盘审计和提交前行情必须同时有效', () => {
     const order = {

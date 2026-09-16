@@ -91,6 +91,52 @@ describe('Longbridge 最终提交风控', () => {
     expect(mocks.submitOrder).not.toHaveBeenCalled()
   })
 
+  it('系统自动提交被门禁拦截时持久化明确状态和原因', async () => {
+    mocks.loadAccount.mockResolvedValueOnce({
+      ...tradingAccount(),
+      ok: false,
+    })
+    const order = pendingOrder()
+    longbridgeOrderQueueService.createPendingOrder(order)
+
+    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id, {
+      confirmedBy: 'system',
+      confirmationId: 'longbridge-auto-test',
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      blockedByGate: true,
+      order: { status: 'BLOCKED_BY_RISK' },
+    })
+    expect(result.order?.riskWarnings[0]).toContain('账户快照读取失败')
+    expect(longbridgeOrderQueueService.findPendingOrder(order.id)?.status).toBe('BLOCKED_BY_RISK')
+    expect(mocks.submitOrder).not.toHaveBeenCalled()
+  })
+
+  it('空头持仓的带符号可平量允许等量系统自动回补', async () => {
+    const account = tradingAccount()
+    account.positions = [{
+      ticker: 'MU',
+      assetType: 'STOCK',
+      quantity: '-1',
+      availableToClose: -1,
+      currency: 'USD',
+    }]
+    mocks.loadAccount.mockResolvedValueOnce(account)
+    const order = pendingOrder()
+    longbridgeOrderQueueService.createPendingOrder(order)
+
+    const result = await longbridgeOrderQueueService.confirmPendingOrder(order.id, {
+      confirmedBy: 'system',
+      confirmationId: 'longbridge-auto-cover-test',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.order?.status).toBe('SUBMITTED')
+    expect(mocks.submitOrder).toHaveBeenCalledTimes(1)
+  })
+
   it('待确认期间购买力下降时重新执行完整风控并拒绝提交', async () => {
     mocks.loadAccount.mockResolvedValueOnce(tradingAccount({
       buyingPower: '$500.00',

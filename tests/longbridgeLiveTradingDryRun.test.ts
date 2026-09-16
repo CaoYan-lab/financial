@@ -625,6 +625,8 @@ describe('Longbridge order gate', () => {
     expect(payload.account.limitOpeningToAccountCash).toBe(true)
     expect(payload.account.orderSizingConstraint).toContain('允许跨币种融资')
     expect(payload.account.orderSizingConstraint).toContain('折算账户现金 $2.30')
+    expect(payload.platformRuntime.orderPolicy).toContain('运行时自动下单设置')
+    expect(payload.requiredJson.reason).not.toContain('不会自动提交')
   })
 
   it('直推和组合策略使用各自的信号生命周期状态', () => {
@@ -637,6 +639,10 @@ describe('Longbridge order gate', () => {
     expect(longbridgeSignalLifecycle('legacy_direct', 'BUY', '测试风控拦截')).toEqual({
       lifecycleStatus: 'BLOCKED_BY_RISK',
       lifecycleReason: '测试风控拦截',
+    })
+    expect(longbridgeSignalLifecycle('legacy_direct', 'BUY', undefined, true)).toEqual({
+      lifecycleStatus: 'PENDING_CONFIRMATION',
+      lifecycleReason: '已生成订单，系统将自动执行提交前风控并尝试提交。',
     })
   })
 })

@@ -109,4 +109,32 @@ describe('Longbridge SDK 账户资产币种', () => {
     expect(cachedHkd).toBe(hkd)
     expect(mocks.accountBalance).toHaveBeenCalledTimes(2)
   })
+
+  it('空头持仓的负可用数量归一化为正的可平股数', async () => {
+    mocks.stockPositions.mockResolvedValue({
+      channels: [{
+        positions: [{
+          symbol: 'GOOG.US',
+          symbolName: 'Alphabet',
+          quantity: '-1',
+          availableQuantity: '-1',
+          costPrice: '342.00',
+          currency: 'USD',
+        }],
+      }],
+    })
+    mocks.quote.mockResolvedValue([{
+      symbol: 'GOOG.US',
+      lastDone: '341.43',
+      prevClose: '340.00',
+    }])
+
+    const snapshot = await loadLongbridgeSdkAccountSnapshot({ force: true })
+
+    expect(snapshot.positions[0]).toMatchObject({
+      symbol: 'GOOG.US',
+      quantity: '-1',
+      availableToClose: 1,
+    })
+  })
 })

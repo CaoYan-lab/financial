@@ -28,8 +28,14 @@ export function financingOpeningStatus(broker: TradingPromptBroker, summary: Acc
 }
 
 export function verifiedCloseQuantity(raw: unknown, quantity: number | null): number | null {
-  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 &&
-    quantity !== null && Number.isFinite(quantity) && raw <= Math.abs(quantity) ? raw : null
+  if (
+    typeof raw !== 'number'
+    || !Number.isFinite(raw)
+    || quantity === null
+    || !Number.isFinite(quantity)
+  ) return null
+  const available = quantity < 0 ? Math.abs(raw) : raw
+  return available >= 0 && available <= Math.abs(quantity) ? available : null
 }
 
 export function finalAccountOrderFailure(

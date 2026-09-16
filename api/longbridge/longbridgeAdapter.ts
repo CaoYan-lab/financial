@@ -24,6 +24,7 @@ import {
   longbridgeFinancingRiskLabel,
   parseLongbridgeRiskLevel,
 } from './longbridgeRiskService.js'
+import { getLongbridgeLiveSettings } from './longbridgeLiveSettings.js'
 
 const LONGBRIDGE_SKILLS = [
   'longbridge',
@@ -113,6 +114,7 @@ export async function loadLongbridgeLiveAccountDashboard(
   currency: LongbridgeAccountCurrency = 'USD',
   options: { force?: boolean } = {},
 ): Promise<LiveAccountDashboardResponse> {
+  const liveSettings = getLongbridgeLiveSettings()
   const sourceStatus = await loadLongbridgeSourceStatus()
   const warnings = [...sourceStatus.missingCapabilities]
   const assets = sourceStatus.accountDataAvailable
@@ -192,8 +194,12 @@ export async function loadLongbridgeLiveAccountDashboard(
     trading: {
       environment: 'REAL',
       liveTradingEnabled: sourceStatus.tradingAvailable,
-      requiresConfirmation: true,
-      warning: sourceStatus.tradingAvailable ? '长桥真实提交门禁已开启，仍需要人工确认。' : '长桥真实提交门禁关闭，本轮只允许 dry-run。',
+      requiresConfirmation: !liveSettings.autoSubmitEnabled,
+      warning: sourceStatus.tradingAvailable
+        ? liveSettings.autoSubmitEnabled
+          ? '长桥真实提交门禁和自动下单已开启，订单仍须通过提交前硬风控。'
+          : '长桥真实提交门禁已开启，当前需要人工确认。'
+        : '长桥真实提交门禁关闭，本轮只允许 dry-run。',
     },
     missingCapabilities: sourceStatus.missingCapabilities,
     warnings,
@@ -295,11 +301,19 @@ async function loadPositions(
 }
 
 function normalizePosition(item: Record<string, unknown>): LongbridgePosition {
+  const availableToCloseValue = item.available_quantity
+  const rawAvailableToClose =
+    (typeof availableToCloseValue === 'number' || typeof availableToCloseValue === 'string')
+    && String(availableToCloseValue).trim()
+      ? Number(availableToCloseValue)
+      : Number.NaN
   return {
     symbol: formatUnknown(item.symbol ?? item.stock_code ?? item.code),
     name: formatUnknown(item.name ?? item.stock_name),
     quantity: formatUnknown(item.quantity ?? item.qty),
-    availableToClose: typeof item.available_quantity === 'number' ? item.available_quantity : null,
+    availableToClose: Number.isFinite(rawAvailableToClose)
+      ? Math.abs(rawAvailableToClose)
+      : null,
     marketValue: formatUnknown(item.market_value),
     averageCost: formatUnknown(item.average_cost ?? item.cost_price),
     currentPrice: formatUnknown(item.current_price ?? item.last_price),
