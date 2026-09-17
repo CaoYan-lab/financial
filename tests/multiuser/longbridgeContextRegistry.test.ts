@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   fromApikey: vi.fn((appKey: string) => ({ appKey })),
   quoteNew: vi.fn((config: unknown) => ({ kind: 'quote', config })),
   tradeNew: vi.fn((config: unknown) => ({ kind: 'trade', config })),
+  httpNew: vi.fn((appKey: string) => ({ kind: 'http', appKey })),
   credentialsForConnection: vi.fn((connection: BrokerConnection) => ({
     appKey: `key-${connection.id}`,
     appSecret: `secret-${connection.id}`,
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('longbridge', () => ({
   Config: { fromApikey: mocks.fromApikey },
+  HttpClient: { fromApikey: mocks.httpNew },
   QuoteContext: { new: mocks.quoteNew },
   TradeContext: { new: mocks.tradeNew },
 }))

@@ -207,12 +207,14 @@ Longbridge CLI 文档已确认：CLI 不提供 WebSocket subscription push，实
 
 Longbridge 可以提供今日盈亏数据：
 
-- Longbridge CLI `portfolio --format json` 原生返回账户级 `total_today_pl`，该命令会结合持仓、实时行情和汇率统一折算为美元。
-- Longbridge Node SDK 的 `TradeContext.accountBalance()` 不直接返回今日盈亏；项目 SDK 路径使用 `stockPositions()` 的持仓数量及 `QuoteContext.quote()` 的 `lastDone`、`prevClose` 计算逐持仓今日盈亏：
+- Longbridge Node SDK 的签名 `HttpClient` 请求 `/v1/portfolio/profit-analysis-summary`，使用响应 `sum_profit` 作为账户级期间盈亏。
+- 不直接使用 `PortfolioContext.profitAnalysis()`：该方法会并发请求 summary 和 sublist，在当前账户限流下可能触发 `429003`，且工作台并不需要 sublist。
+- `TradeContext.accountBalance()` 不直接返回今日盈亏。
+- CLI `portfolio.total_today_pl` 以及按当前持仓计算的 `(lastDone - prevClose) × 当前数量` 都只是当前持仓日内涨跌代理值，不是账户级今日盈亏。
 
 ```text
 单笔持仓今日盈亏 =（现价 - 昨收价）× 持仓数量
-账户今日盈亏 = 当前展示币种下全部持仓今日盈亏之和
+账户今日盈亏 = GET profit-analysis-summary(当日, 当日).sum_profit
 ```
 
 账户资产栏新增“今日盈亏”卡片，排列在“最大购买力”之后、“风险等级”之前：
@@ -220,10 +222,26 @@ Longbridge 可以提供今日盈亏数据：
 - 正数显示红色并带前导 `+`，例如 `+$21.20`。
 - 负数显示绿色并保留负号，例如 `-$14.19`。
 - 零值显示为中性灰色，例如 `$0.00`。
-- 任一同币种持仓缺少现价、昨收价、数量或今日盈亏时，账户汇总显示“不可用”，禁止用部分持仓合计冒充完整值。
-- 空仓且持仓查询成功时显示 `$0.00`。
-- 不同币种不得直接相加；工作台默认汇总 USD 持仓，租户工作台按当前请求币种汇总。
-- 卡片辅助文案明确为“持仓按现价与昨收价汇总，未含费用”，不得误称为包含已实现盈亏、手续费、利息、现金流水或汇率折算差额的券商结算净盈亏。
+- 账户盈亏必须包含当日已实现盈亏和费用；不能因卖出后仓位消失而漏算。
+- `summary.currency` 必须与当前展示币种一致，否则显示“不可用”。
+- Profit Analysis 请求失败、超时、日期不匹配或 `sumProfit` 缺失时显示“不可用”。
+- 严禁回退到当前持仓涨跌合计；该合计会遗漏已卖出仓位、费用、利息和盘中持仓数量变化，可能与净资产变化方向相反。
+- 逐持仓 `todayPnL` 仍按现价与昨收价计算，仅用于持仓级分析，不作为账户卡片数据源。
+- 卡片辅助文案明确为“长桥账户级当日盈亏，包含已实现盈亏与费用”。
+
+#### 1.1.1 Longbridge 账户总盈亏
+
+账户资产栏在“今日盈亏”之后增加“账户总盈亏”：
+
+- 数据源为签名 `HttpClient` 请求 `profit-analysis-summary('2026-09-01', 当前日期)` 返回的 `sum_profit`。
+- 必须显式传入起止日期，禁止使用服务端未声明范围的无参数默认值。
+- 统计起始日固定为 `2026-09-01`，用于展示该日期起至今的账户累计盈亏。
+- 返回起始日、结束日和币种必须与请求一致，否则显示“不可用”。
+- 数值包含查询期间内的已实现盈亏、未实现盈亏和费用；不得用当前持仓未实现盈亏之和替代。
+- 查询结果缓存 15 分钟；接口失败或超时时显示“不可用”。
+- 正数显示红色并带前导 `+`，负数显示绿色并保留 `-`，零值使用中性灰色。
+- 卡片辅助文案为“2026-09-01 至今的长桥账户级累计盈亏”。
+- 中国大陆部署默认使用 `https://openapi.longbridge.cn` 作为 HTTP API 接入点；仍允许通过 `LONGBRIDGE_HTTP_URL` 显式覆盖。默认 `.com` 接入点在当前大陆出口会于 TLS 握手阶段被重置。
 
 #### 1.2 Longbridge 持仓明细表展示规范
 
@@ -683,7 +701,7 @@ type LongbridgeSourceStatusResponse = {
 4. 不渲染 `SimulationTradingPanel`。
 5. 新增 Longbridge 数据源状态面板。
 6. 新增 Longbridge 实盘量化入口面板。
-7. 在账户资产栏增加“今日盈亏”，并按 1.1 节应用数据口径、失败关闭和红绿规则。
+7. 在账户资产栏增加“今日盈亏”和“账户总盈亏”，并按 1.1 节应用数据口径、失败关闭和红绿规则。
 8. 将持仓表调整为“标的、数量、市值、成本 / 现价、盈亏”五列，并按 1.2 节应用价格对照、符号和红绿规则。
 
 ### Phase 4：Longbridge 实盘量化引擎
@@ -721,9 +739,11 @@ type LongbridgeSourceStatusResponse = {
   - `longbridge quote AAPL.US` 可返回真实行情。
   - `/api/longbridge/realtime/AAPL.US` 返回标准化行情。
   - `/api/longbridge/account/dashboard` 返回真实账户/持仓。
-  - 账户资产栏展示“今日盈亏”，数值等于当前币种全部持仓 `todayPnL` 之和。
+  - 账户资产栏展示“今日盈亏”，数值来自签名 HTTP 请求 `profit-analysis-summary(当日, 当日).sum_profit`。
   - 正数今日盈亏显示红色并带前导 `+`，负数显示绿色并保留 `-`。
-  - 任一同币种持仓的今日盈亏不可用时，账户汇总显示“不可用”，不得展示部分合计。
+  - 账户级 Profit Analysis 不可用时显示“不可用”，不得以当前持仓 `todayPnL` 合计替代。
+  - 账户资产栏展示“账户总盈亏”，查询范围固定为 `2026-09-01` 至当前日期。
+  - “账户总盈亏”接口不可用或返回日期、币种不一致时显示“不可用”，不得以当前持仓未实现盈亏合计替代。
   - 持仓表同时展示成本和现价；两者均来自 Longbridge 持仓适配结果，不用市值或盈亏反推。
   - 正盈亏显示为红色且带前导 `+`，例如 `+21.20`。
   - 负盈亏显示为绿色且保留负号，例如 `-14.19`。

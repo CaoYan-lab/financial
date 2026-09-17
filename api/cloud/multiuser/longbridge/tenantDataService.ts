@@ -11,8 +11,11 @@ import type { SimulationHistoryPage } from '../../../../shared/types.js'
 import { getLlmRuntimeConfig } from '../../../simulation/llmRuntimeConfigService.js'
 import { llmSimulationTickers } from '../../../simulation/simulationUniverse.js'
 import { buildLiveEvaluationStatus } from '../../../trading/liveEvaluationStatusService.js'
+import {
+  loadLongbridgeAccountTodayPnl,
+  loadLongbridgeAccountTotalPnl,
+} from '../../../longbridge/longbridgeAccountTodayPnl.js'
 import { buildLongbridgeOrderChildEnvironment } from '../../../longbridge/longbridgeOrderProxy.js'
-import { sumLongbridgePositionTodayPnl } from '../../../longbridge/longbridgePositionPnl.js'
 import { query, queryOne } from '../../db/pgClient.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
 import { credentialsForConnection } from './connectionStore.js'
@@ -69,9 +72,18 @@ export async function loadTenantWorkbench(
   connection: BrokerConnection,
   currency: 'USD' | 'HKD' = 'USD',
 ): Promise<LongbridgeWorkbenchDashboardResponse> {
-  const { quote, trade } = contextsForConnection(connection)
-  const balances = await trade.accountBalance(currency)
-  const positionResponse = await trade.stockPositions()
+  const { quote, trade, pnl } = contextsForConnection(connection)
+  const [
+    balances,
+    positionResponse,
+    accountTodayPnl,
+    accountTotalPnl,
+  ] = await Promise.all([
+    trade.accountBalance(currency),
+    trade.stockPositions(),
+    loadLongbridgeAccountTodayPnl(pnl, currency),
+    loadLongbridgeAccountTotalPnl(pnl, currency),
+  ])
   const balance = balances.find((item) => item.currency === currency)
   if (!balance) throw new Error('当前交易币种账户数据缺失，禁止使用其他币种代替。')
   const cashInfo = balance?.cashInfos?.find((item) => item.currency === currency)
@@ -104,8 +116,15 @@ export async function loadTenantWorkbench(
       currency: position.currency,
     }
   })
-  const todayPnl = sumLongbridgePositionTodayPnl(positions, currency)
   const now = new Date().toISOString()
+  const warnings = [
+    ...(accountTodayPnl.error
+      ? ['Longbridge 账户级今日盈亏暂不可用，未使用当前持仓涨跌替代。']
+      : []),
+    ...(accountTotalPnl.error
+      ? ['Longbridge 账户总盈亏暂不可用，未使用当前持仓总盈亏替代。']
+      : []),
+  ]
   const sourceStatus: LongbridgeSourceStatusResponse = {
     ok: true,
     runtimeProvider: 'sdk',
@@ -137,8 +156,17 @@ export async function loadTenantWorkbench(
       { label: '最大购买力', value: currencyMoney(balance?.buyPower, currency), helper: balance?.currency ?? currency },
       {
         label: '今日盈亏',
-        value: todayPnl === undefined ? '不可用' : currencyMoney(todayPnl, currency),
-        helper: `${currency} 持仓按现价与昨收价汇总，未含费用`,
+        value: accountTodayPnl.value === undefined
+          ? '不可用'
+          : currencyMoney(accountTodayPnl.value, currency),
+        helper: '长桥账户级当日盈亏，包含已实现盈亏与费用',
+      },
+      {
+        label: '账户总盈亏',
+        value: accountTotalPnl.value === undefined
+          ? '不可用'
+          : currencyMoney(accountTotalPnl.value, currency),
+        helper: `${accountTotalPnl.startDate} 至今的长桥账户级累计盈亏`,
       },
       { label: '风险等级', value: String(balance?.riskLevel ?? '未知'), helper: '当前绑定账户' },
     ],
@@ -161,7 +189,7 @@ export async function loadTenantWorkbench(
     tradingPanels: [
       { label: '实盘模式', value: '影子模式', helper: '逐户验收后方可开启' },
     ],
-    warnings: [],
+    warnings,
     updatedAt: now,
   }
 }

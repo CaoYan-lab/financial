@@ -1,15 +1,23 @@
-import { Config, QuoteContext, TradeContext } from 'longbridge'
+import {
+  Config,
+  HttpClient,
+  QuoteContext,
+  TradeContext,
+} from 'longbridge'
 import { createLongbridgeSdkScheduler } from '../../../longbridge/longbridgeSdkRateLimiter.js'
+import { longbridgeHttpUrl } from '../../../longbridge/longbridgeSdkGateway.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
 import { credentialsForConnection } from './connectionStore.js'
 
 type QuoteContextInstance = InstanceType<typeof QuoteContext>
 type TradeContextInstance = InstanceType<typeof TradeContext>
+type HttpClientInstance = InstanceType<typeof HttpClient>
 
 export type TenantLongbridgeContexts = {
   config: Config
   quote: QuoteContextInstance
   trade: TradeContextInstance
+  pnl: HttpClientInstance
   createdAt: number
   lastUsedAt: number
 }
@@ -23,13 +31,23 @@ function createContexts(bundle: LongbridgeCredentialBundle): TenantLongbridgeCon
     bundle.appKey,
     bundle.appSecret,
     bundle.accessToken,
-    { enablePrintQuotePackages: false },
+    {
+      enablePrintQuotePackages: false,
+      httpUrl: longbridgeHttpUrl(),
+    },
   )
   const scheduler = createLongbridgeSdkScheduler()
+  const portfolioScheduler = createLongbridgeSdkScheduler()
   return {
     config,
     quote: scheduler.wrap(QuoteContext.new(config)),
     trade: scheduler.wrap(TradeContext.new(config)),
+    pnl: portfolioScheduler.wrap(HttpClient.fromApikey(
+      bundle.appKey,
+      bundle.appSecret,
+      bundle.accessToken,
+      longbridgeHttpUrl(),
+    )),
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   }

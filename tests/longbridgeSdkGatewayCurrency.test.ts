@@ -4,24 +4,29 @@ const mocks = vi.hoisted(() => {
   const accountBalance = vi.fn()
   const stockPositions = vi.fn()
   const todayOrders = vi.fn()
+  const request = vi.fn()
   const quote = vi.fn()
   return {
     accountBalance,
     stockPositions,
     todayOrders,
+    request,
     quote,
     tradeNew: vi.fn(() => ({ accountBalance, stockPositions, todayOrders })),
     quoteNew: vi.fn(() => ({ quote })),
+    httpNew: vi.fn(() => ({ request })),
   }
 })
 
 vi.mock('longbridge', () => ({
   Config: { fromApikey: vi.fn(() => ({})) },
+  HttpClient: { fromApikey: mocks.httpNew },
   QuoteContext: { new: mocks.quoteNew },
   TradeContext: { new: mocks.tradeNew },
 }))
 
 import {
+  longbridgeHttpUrl,
   loadLongbridgeSdkAccountSnapshot,
   resetLongbridgeSdkGatewayForTests,
 } from '../api/longbridge/longbridgeSdkGateway.js'
@@ -31,6 +36,7 @@ describe('Longbridge SDK 账户资产币种', () => {
     appKey: process.env.LONGBRIDGE_APP_KEY,
     appSecret: process.env.LONGBRIDGE_APP_SECRET,
     accessToken: process.env.LONGBRIDGE_ACCESS_TOKEN,
+    httpUrl: process.env.LONGBRIDGE_HTTP_URL,
   }
 
   beforeEach(() => {
@@ -39,6 +45,7 @@ describe('Longbridge SDK 账户资产币种', () => {
     process.env.LONGBRIDGE_APP_KEY = 'test-key'
     process.env.LONGBRIDGE_APP_SECRET = 'test-secret'
     process.env.LONGBRIDGE_ACCESS_TOKEN = 'test-token'
+    delete process.env.LONGBRIDGE_HTTP_URL
     mocks.accountBalance.mockResolvedValue([{
       currency: 'USD',
       netAssets: '1291.52',
@@ -60,6 +67,14 @@ describe('Longbridge SDK 账户资产币种', () => {
     }])
     mocks.stockPositions.mockResolvedValue({ channels: [] })
     mocks.todayOrders.mockResolvedValue([])
+    mocks.request.mockImplementation(async (_method: string, path: string) => ({
+      currency: 'USD',
+      sum_profit: '-42.18',
+      updated_at: '2026-09-16T16:00:00Z',
+      ...(path.includes('start=1788220800')
+        ? { start_date: '2026-09-01' }
+        : {}),
+    }))
   })
 
   afterEach(() => {
@@ -69,6 +84,14 @@ describe('Longbridge SDK 账户资产币种', () => {
     else process.env.LONGBRIDGE_APP_SECRET = originalEnv.appSecret
     if (originalEnv.accessToken === undefined) delete process.env.LONGBRIDGE_ACCESS_TOKEN
     else process.env.LONGBRIDGE_ACCESS_TOKEN = originalEnv.accessToken
+    if (originalEnv.httpUrl === undefined) delete process.env.LONGBRIDGE_HTTP_URL
+    else process.env.LONGBRIDGE_HTTP_URL = originalEnv.httpUrl
+  })
+
+  it('中国大陆部署默认使用可连通的 Longbridge HTTP 接入点', () => {
+    expect(longbridgeHttpUrl()).toBe('https://openapi.longbridge.cn')
+    process.env.LONGBRIDGE_HTTP_URL = 'https://custom.example.com'
+    expect(longbridgeHttpUrl()).toBe('https://custom.example.com')
   })
 
   it('显式按美元口径读取账户资产', async () => {
@@ -87,6 +110,11 @@ describe('Longbridge SDK 账户资产币种', () => {
       margin_call: '0.00',
       max_finance_amount: '28819.52',
       remaining_finance_amount: '5925.11',
+      account_today_pnl: -42.18,
+      account_today_pnl_currency: 'USD',
+      account_total_pnl: -42.18,
+      account_total_pnl_currency: 'USD',
+      account_total_pnl_start_date: '2026-09-01',
     })
   })
 

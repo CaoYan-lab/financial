@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   accountBalance: vi.fn(),
   stockPositions: vi.fn(),
   quote: vi.fn(),
+  request: vi.fn(),
 }))
 
 vi.mock('../../api/cloud/multiuser/longbridge/contextRegistry.js', () => ({
@@ -14,6 +15,7 @@ vi.mock('../../api/cloud/multiuser/longbridge/contextRegistry.js', () => ({
       stockPositions: mocks.stockPositions,
     },
     quote: { quote: mocks.quote },
+    pnl: { request: mocks.request },
   })),
 }))
 
@@ -43,6 +45,14 @@ describe('Longbridge 租户账户资产币种', () => {
     }])
     mocks.stockPositions.mockResolvedValue({ channels: [] })
     mocks.quote.mockResolvedValue([])
+    mocks.request.mockImplementation(async (_method: string, path: string) => ({
+      currency: 'USD',
+      sum_profit: '-42.18',
+      updated_at: '2026-09-16T16:00:00Z',
+      ...(path.includes('start=1788220800')
+        ? { start_date: '2026-09-01' }
+        : {}),
+    }))
   })
 
   it('显式请求美元资产并按美元展示', async () => {
@@ -93,7 +103,7 @@ describe('Longbridge 租户账户资产币种', () => {
     })
   })
 
-  it('按现价和昨收价汇总当前币种持仓今日盈亏', async () => {
+  it('账户今日盈亏使用 Longbridge 账户级期间盈亏，不汇总当前持仓涨跌', async () => {
     mocks.stockPositions.mockResolvedValueOnce({
       channels: [{
         positions: [{
@@ -124,8 +134,52 @@ describe('Longbridge 租户账户资产币种', () => {
     expect(dashboard.positions[0].todayPnL).toBe('$10.00')
     expect(dashboard.accountMetrics).toContainEqual({
       label: '今日盈亏',
-      value: '$10.00',
-      helper: 'USD 持仓按现价与昨收价汇总，未含费用',
+      value: '$-42.18',
+      helper: '长桥账户级当日盈亏，包含已实现盈亏与费用',
     })
+    expect(dashboard.accountMetrics).toContainEqual({
+      label: '账户总盈亏',
+      value: '$-42.18',
+      helper: '2026-09-01 至今的长桥账户级累计盈亏',
+    })
+  })
+
+  it('账户级盈亏失败时显示不可用，不以持仓涨跌冒充', async () => {
+    mocks.request.mockRejectedValueOnce(new Error('upstream unavailable'))
+    mocks.stockPositions.mockResolvedValueOnce({
+      channels: [{
+        positions: [{
+          symbol: 'AAPL.US',
+          symbolName: 'Apple',
+          quantity: '2',
+          availableQuantity: '2',
+          costPrice: '90',
+          currency: 'USD',
+        }],
+      }],
+    })
+    mocks.quote.mockResolvedValueOnce([{
+      symbol: 'AAPL.US',
+      lastDone: '105',
+      prevClose: '100',
+    }])
+
+    const dashboard = await loadTenantWorkbench({
+      id: 'binding-a',
+      userId: 'user-a',
+      platform: 'longbridge',
+      credentialSource: 'encrypted_bundle',
+      status: 'verified',
+    })
+
+    expect(dashboard.positions[0].todayPnL).toBe('$10.00')
+    expect(dashboard.accountMetrics).toContainEqual({
+      label: '今日盈亏',
+      value: '不可用',
+      helper: '长桥账户级当日盈亏，包含已实现盈亏与费用',
+    })
+    expect(dashboard.warnings).toContain(
+      'Longbridge 账户级今日盈亏暂不可用，未使用当前持仓涨跌替代。',
+    )
   })
 })

@@ -138,7 +138,7 @@ function MetricGrid({ metrics }: { metrics: LongbridgeMetric[] }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {metrics.map((metric) => {
-        const pnl = metric.label === '今日盈亏'
+        const pnl = metric.label === '今日盈亏' || metric.label === '账户总盈亏'
           ? formatLongbridgeAccountPnl(metric.value)
           : undefined
         return (

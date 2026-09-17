@@ -1,4 +1,13 @@
-import { Config, QuoteContext, TradeContext } from 'longbridge'
+import {
+  Config,
+  HttpClient,
+  QuoteContext,
+  TradeContext,
+} from 'longbridge'
+import {
+  loadLongbridgeAccountTodayPnl,
+  loadLongbridgeAccountTotalPnl,
+} from './longbridgeAccountTodayPnl.js'
 import { createLongbridgeSdkScheduler } from './longbridgeSdkRateLimiter.js'
 
 const SDK_ENV_KEYS = [
@@ -17,7 +26,9 @@ const AUTH_CACHE_TTL_MS = Math.max(
 
 type QuoteContextInstance = InstanceType<typeof QuoteContext>
 type TradeContextInstance = InstanceType<typeof TradeContext>
+type HttpClientInstance = InstanceType<typeof HttpClient>
 export type LongbridgeAccountCurrency = 'USD' | 'HKD'
+const DEFAULT_LONGBRIDGE_HTTP_URL = 'https://openapi.longbridge.cn'
 
 export type LongbridgeSdkPosition = {
   availableToClose?: number | null
@@ -57,7 +68,9 @@ export type LongbridgeSdkProbe = {
 let config: Config | undefined
 let quoteContext: QuoteContextInstance | undefined
 let tradeContext: TradeContextInstance | undefined
+let pnlHttpClient: HttpClientInstance | undefined
 const sdkScheduler = createLongbridgeSdkScheduler()
+const portfolioScheduler = createLongbridgeSdkScheduler()
 const accountCache = new Map<LongbridgeAccountCurrency, {
   expiresAt: number
   value: LongbridgeSdkAccountSnapshot
@@ -103,6 +116,7 @@ export function getLongbridgeSdkContexts(): {
   config: Config
   quote: QuoteContextInstance
   trade: TradeContextInstance
+  pnl: HttpClientInstance
 } {
   const missing = SDK_ENV_KEYS.filter((key) => !process.env[key]?.trim())
   if (missing.length) {
@@ -113,12 +127,31 @@ export function getLongbridgeSdkContexts(): {
       process.env.LONGBRIDGE_APP_KEY ?? '',
       process.env.LONGBRIDGE_APP_SECRET ?? '',
       process.env.LONGBRIDGE_ACCESS_TOKEN ?? '',
-      { enablePrintQuotePackages: false },
+      {
+        enablePrintQuotePackages: false,
+        httpUrl: longbridgeHttpUrl(),
+      },
     )
   }
   quoteContext ??= sdkScheduler.wrap(QuoteContext.new(config))
   tradeContext ??= sdkScheduler.wrap(TradeContext.new(config))
-  return { config, quote: quoteContext, trade: tradeContext }
+  pnlHttpClient ??= portfolioScheduler.wrap(HttpClient.fromApikey(
+    process.env.LONGBRIDGE_APP_KEY ?? '',
+    process.env.LONGBRIDGE_APP_SECRET ?? '',
+    process.env.LONGBRIDGE_ACCESS_TOKEN ?? '',
+    longbridgeHttpUrl(),
+  ))
+  return {
+    config,
+    quote: quoteContext,
+    trade: tradeContext,
+    pnl: pnlHttpClient,
+  }
+}
+
+export function longbridgeHttpUrl(): string {
+  return process.env.LONGBRIDGE_HTTP_URL?.trim()
+    || DEFAULT_LONGBRIDGE_HTTP_URL
 }
 
 export async function loadLongbridgeSdkAccountSnapshot(
@@ -165,11 +198,19 @@ export async function probeLongbridgeSdk(
 async function collectAccountSnapshot(
   currency: LongbridgeAccountCurrency,
 ): Promise<LongbridgeSdkAccountSnapshot> {
-  const { quote, trade } = getLongbridgeSdkContexts()
-  const [balances, positionsResponse, orders] = await Promise.all([
+  const { quote, trade, pnl } = getLongbridgeSdkContexts()
+  const [
+    balances,
+    positionsResponse,
+    orders,
+    accountTodayPnl,
+    accountTotalPnl,
+  ] = await Promise.all([
     trade.accountBalance(currency),
     trade.stockPositions(),
     trade.todayOrders(),
+    loadLongbridgeAccountTodayPnl(pnl, currency),
+    loadLongbridgeAccountTotalPnl(pnl, currency),
   ])
   const balance = balances.find((item) => item.currency === currency)
   const positions = positionsResponse.channels.flatMap((channel) =>
@@ -218,6 +259,17 @@ async function collectAccountSnapshot(
           margin_call: decimalText(balance.marginCall),
           max_finance_amount: decimalText(balance.maxFinanceAmount),
           remaining_finance_amount: decimalText(balance.remainingFinanceAmount),
+          account_today_pnl: accountTodayPnl.value,
+          account_today_pnl_currency: accountTodayPnl.currency,
+          account_today_pnl_date: accountTodayPnl.endDate,
+          account_today_pnl_updated_at: accountTodayPnl.updatedAt,
+          account_today_pnl_error: accountTodayPnl.error,
+          account_total_pnl: accountTotalPnl.value,
+          account_total_pnl_currency: accountTotalPnl.currency,
+          account_total_pnl_start_date: accountTotalPnl.startDate,
+          account_total_pnl_end_date: accountTotalPnl.endDate,
+          account_total_pnl_updated_at: accountTotalPnl.updatedAt,
+          account_total_pnl_error: accountTotalPnl.error,
           currency: balance.currency,
           cash_infos: balance.cashInfos.map((item) => ({
             available_cash: decimalText(item.availableCash),
@@ -295,6 +347,7 @@ export function resetLongbridgeSdkGatewayForTests(): void {
   config = undefined
   quoteContext = undefined
   tradeContext = undefined
+  pnlHttpClient = undefined
   accountCache.clear()
   accountInFlight.clear()
   probeCache = undefined
