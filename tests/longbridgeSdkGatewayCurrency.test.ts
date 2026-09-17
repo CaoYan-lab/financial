@@ -31,6 +31,10 @@ import {
   resetLongbridgeSdkGatewayForTests,
 } from '../api/longbridge/longbridgeSdkGateway.js'
 
+function sdkDecimal(value: string) {
+  return { toString: () => value }
+}
+
 describe('Longbridge SDK 账户资产币种', () => {
   const originalEnv = {
     appKey: process.env.LONGBRIDGE_APP_KEY,
@@ -193,43 +197,38 @@ describe('Longbridge SDK 账户资产币种', () => {
   })
 
   it('盘前持仓使用 SDK 扩展时段现价计算市值和浮盈亏', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-09-17T10:30:00Z'))
-    try {
-      mocks.stockPositions.mockResolvedValue({
-        channels: [{
-          positions: [{
-            symbol: 'TQQQ.US',
-            symbolName: 'ProShares UltraPro QQQ',
-            quantity: '13',
-            availableQuantity: '13',
-            costPrice: '70.16',
-            currency: 'USD',
-          }],
+    mocks.stockPositions.mockResolvedValue({
+      channels: [{
+        positions: [{
+          symbol: 'TQQQ.US',
+          symbolName: 'ProShares UltraPro QQQ',
+          quantity: '13',
+          availableQuantity: '13',
+          costPrice: '70.16',
+          currency: 'USD',
         }],
-      })
-      mocks.quote.mockResolvedValue([{
-        symbol: 'TQQQ.US',
-        lastDone: '67.93',
-        prevClose: '67.93',
-        preMarketQuote: {
-          lastDone: '70.15',
-          timestamp: new Date('2026-09-17T10:30:00Z'),
-        },
-      }])
+      }],
+    })
+    mocks.quote.mockResolvedValue([{
+      symbol: 'TQQQ.US',
+      lastDone: sdkDecimal('67.93'),
+      prevClose: sdkDecimal('67.93'),
+      preMarketQuote: {
+        lastDone: sdkDecimal('70.15'),
+        timestamp: new Date('2026-09-17T10:30:00Z'),
+      },
+    }])
 
-      const snapshotPromise = loadLongbridgeSdkAccountSnapshot({ force: true })
-      await vi.runAllTimersAsync()
-      const snapshot = await snapshotPromise
+    const snapshot = await loadLongbridgeSdkAccountSnapshot({
+      force: true,
+      now: new Date('2026-09-17T10:30:00Z'),
+    })
 
-      expect(snapshot.positions[0]).toMatchObject({
-        currentPrice: '70.15',
-        marketValue: '911.95',
-        todayPnL: '28.86',
-        unrealizedPnL: '-0.13',
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(snapshot.positions[0]).toMatchObject({
+      currentPrice: '70.15',
+      marketValue: '911.95',
+      todayPnL: '28.86',
+      unrealizedPnL: '-0.13',
+    })
   })
 })

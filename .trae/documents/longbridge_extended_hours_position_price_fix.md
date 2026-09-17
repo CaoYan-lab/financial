@@ -29,6 +29,7 @@ TQQQ 复现场景：
 - 盘后优先 `postMarketQuote`。
 - 夜盘优先 `overnightQuote`。
 - 同时保留对 CLI 返回的蛇形字段和旧字段格式的兼容。
+- 兼容 Node SDK 的 `Decimal` 返回值和原型 getter；禁止仅用字符串夹具验证 SDK 行为。
 
 以下两条账户链路均复用该选择器：
 
@@ -37,6 +38,17 @@ TQQQ 复现场景：
 
 选出的时段现价用于持仓市值、今日盈亏和未实现盈亏计算，并进入后续模型账户上下文。
 
+## 生产回归与补救
+
+首次修复的测试把 SDK 价格伪造为字符串，但真实 Node SDK 的 `lastDone`、`prevClose` 和扩展时段 `lastDone` 均为 `Decimal` 对象。统一解析器当时只接受字符串和数字，导致生产环境所有持仓价格被错误标记为不可用。
+
+补救措施：
+
+- `numberValue` 通过 SDK 对象的 `toString()` 解析 `Decimal`。
+- 回归测试改用原型 getter 和类 `Decimal` 对象，贴近真实 `SecurityQuote`。
+- 同一个报价对象分别验证盘前、常规盘、盘后和夜盘，确保价格随纽约市场时段动态切换。
+- 全局账户与租户账户测试都使用类 `Decimal` 报价，确保传入模型的 `Position.currentPrice`、市值和盈亏不再降级为不可用。
+
 ## 验收
 
 - 盘前 TQQQ 持仓现价为 `70.15`，不再使用 `67.93`。
@@ -44,3 +56,4 @@ TQQQ 复现场景：
 - 成本 `70.16` 时未实现盈亏为 `-0.13`。
 - 昨收 `67.93` 时持仓今日盈亏为 `28.86`。
 - 盘中仍使用常规盘 `lastDone`。
+- 盘后使用 `postMarketQuote.lastDone`，夜盘使用 `overnightQuote.lastDone`。

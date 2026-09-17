@@ -8,6 +8,10 @@ import {
   seedQuoteFromLatestBar,
 } from '../api/longbridge/longbridgeRealtimeSubscriptionService'
 
+function sdkDecimal(value: string) {
+  return { toString: () => value }
+}
+
 describe('Longbridge realtime SDK cache', () => {
   beforeEach(() => {
     longbridgeRealtimeSubscriptionService.resetForTests()
@@ -225,17 +229,20 @@ describe('Longbridge realtime SDK cache', () => {
     expect(latestQuotePrice(quote, 'AMD.US', new Date('2026-06-24T14:00:00Z'))).toBe(519.85)
   })
 
-  it('美股盘前识别 Node SDK 的 preMarketQuote 字段', () => {
-    const quote = {
-      symbol: 'TQQQ.US',
-      lastDone: '67.93',
-      preMarketQuote: {
-        lastDone: '70.15',
-        timestamp: new Date('2026-09-17T10:30:00Z'),
-      },
+  it('按纽约交易时段动态读取 SDK Decimal 报价', () => {
+    class SdkQuote {
+      get symbol() { return 'TQQQ.US' }
+      get lastDone() { return sdkDecimal('71.25') }
+      get preMarketQuote() { return { lastDone: sdkDecimal('70.15') } }
+      get postMarketQuote() { return { lastDone: sdkDecimal('72.10') } }
+      get overnightQuote() { return { lastDone: sdkDecimal('69.80') } }
     }
+    const quote = new SdkQuote() as unknown as Record<string, unknown>
 
     expect(latestQuotePrice(quote, 'TQQQ.US', new Date('2026-09-17T10:30:00Z'))).toBe(70.15)
+    expect(latestQuotePrice(quote, 'TQQQ.US', new Date('2026-09-17T14:00:00Z'))).toBe(71.25)
+    expect(latestQuotePrice(quote, 'TQQQ.US', new Date('2026-09-17T21:00:00Z'))).toBe(72.10)
+    expect(latestQuotePrice(quote, 'TQQQ.US', new Date('2026-09-18T01:00:00Z'))).toBe(69.80)
   })
 
   it('SDK cache 盘前 quote 为旧收盘价时用最新成交点作为 LLM 最新价', async () => {

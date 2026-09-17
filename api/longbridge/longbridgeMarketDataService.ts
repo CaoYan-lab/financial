@@ -380,8 +380,11 @@ function firstNumber(record: Record<string, unknown>, keys: string[]): number | 
 
 function numberValue(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
-  if (typeof value === 'string') {
-    const parsed = Number(value.replace(/[$,%\s,]/g, ''))
+  if (typeof value === 'string' || (value !== null && typeof value === 'object' && 'toString' in value)) {
+    const text = typeof value === 'string'
+      ? value
+      : String((value as { toString: () => string }).toString())
+    const parsed = Number(text.replace(/[$,%\s,]/g, ''))
     return Number.isFinite(parsed) ? parsed : undefined
   }
   return undefined

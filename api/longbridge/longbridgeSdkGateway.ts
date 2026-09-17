@@ -156,7 +156,11 @@ export function longbridgeHttpUrl(): string {
 }
 
 export async function loadLongbridgeSdkAccountSnapshot(
-  options: { force?: boolean; currency?: LongbridgeAccountCurrency } = {},
+  options: {
+    force?: boolean
+    currency?: LongbridgeAccountCurrency
+    now?: Date
+  } = {},
 ): Promise<LongbridgeSdkAccountSnapshot> {
   const currency = options.currency ?? 'USD'
   const cached = accountCache.get(currency)
@@ -166,7 +170,7 @@ export async function loadLongbridgeSdkAccountSnapshot(
   const inFlight = accountInFlight.get(currency)
   if (inFlight) return inFlight
 
-  const request = collectAccountSnapshot(currency).then((value) => {
+  const request = collectAccountSnapshot(currency, options.now ?? new Date()).then((value) => {
     accountCache.set(currency, {
       expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS,
       value,
@@ -198,6 +202,7 @@ export async function probeLongbridgeSdk(
 
 async function collectAccountSnapshot(
   currency: LongbridgeAccountCurrency,
+  now: Date,
 ): Promise<LongbridgeSdkAccountSnapshot> {
   const { quote, trade, pnl } = getLongbridgeSdkContexts()
   const [
@@ -231,7 +236,11 @@ async function collectAccountSnapshot(
   const normalizedPositions = positions.map((position) => {
     const quote = quoteBySymbol.get(position.symbol)
     const current = quote
-      ? latestQuotePrice(quote as unknown as Record<string, unknown>, position.symbol)
+      ? latestQuotePrice(
+          quote as unknown as Record<string, unknown>,
+          position.symbol,
+          now,
+        )
       : undefined
     const previousClose = optionalDecimalNumber(quote?.prevClose)
     const quantity = numeric(position.quantity)

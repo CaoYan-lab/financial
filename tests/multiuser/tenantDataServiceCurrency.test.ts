@@ -30,6 +30,10 @@ vi.mock('../../api/cloud/db/pgClient.js', () => ({
 
 import { loadTenantWorkbench } from '../../api/cloud/multiuser/longbridge/tenantDataService.js'
 
+function sdkDecimal(value: string) {
+  return { toString: () => value }
+}
+
 describe('Longbridge 租户账户资产币种', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -201,10 +205,10 @@ describe('Longbridge 租户账户资产币种', () => {
       })
       mocks.quote.mockResolvedValueOnce([{
         symbol: 'TQQQ.US',
-        lastDone: '67.93',
-        prevClose: '67.93',
+        lastDone: sdkDecimal('67.93'),
+        prevClose: sdkDecimal('67.93'),
         preMarketQuote: {
-          lastDone: '70.15',
+          lastDone: sdkDecimal('70.15'),
           timestamp: new Date('2026-09-17T10:30:00Z'),
         },
       }])
