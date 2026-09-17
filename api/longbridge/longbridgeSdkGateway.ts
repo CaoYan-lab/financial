@@ -8,6 +8,7 @@ import {
   loadLongbridgeAccountTodayPnl,
   loadLongbridgeAccountTotalPnl,
 } from './longbridgeAccountTodayPnl.js'
+import { latestQuotePrice } from './longbridgeMarketDataService.js'
 import { createLongbridgeSdkScheduler } from './longbridgeSdkRateLimiter.js'
 
 const SDK_ENV_KEYS = [
@@ -228,8 +229,11 @@ async function collectAccountSnapshot(
     : []
   const quoteBySymbol = new Map(quotes.map((item) => [item.symbol, item]))
   const normalizedPositions = positions.map((position) => {
-    const current = optionalDecimalNumber(quoteBySymbol.get(position.symbol)?.lastDone)
-    const previousClose = optionalDecimalNumber(quoteBySymbol.get(position.symbol)?.prevClose)
+    const quote = quoteBySymbol.get(position.symbol)
+    const current = quote
+      ? latestQuotePrice(quote as unknown as Record<string, unknown>, position.symbol)
+      : undefined
+    const previousClose = optionalDecimalNumber(quote?.prevClose)
     const quantity = numeric(position.quantity)
     const averageCost = numeric(position.averageCost)
     return {

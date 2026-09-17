@@ -334,11 +334,11 @@ export function latestQuotePrice(record: Record<string, unknown>, symbol: string
   if (upperSymbol.endsWith('.US')) {
     const session = currentUsExtendedSession(now)
     const sessionRecord = session === 'pre'
-      ? nestedRecord(record, ['pre_market', 'preMarket'])
+      ? nestedRecord(record, ['pre_market', 'preMarket', 'preMarketQuote'])
       : session === 'post'
-        ? nestedRecord(record, ['post_market', 'postMarket'])
+        ? nestedRecord(record, ['post_market', 'postMarket', 'postMarketQuote'])
         : session === 'overnight'
-          ? nestedRecord(record, ['overnight'])
+          ? nestedRecord(record, ['overnight', 'overnightQuote'])
           : undefined
     const sessionPrice = sessionRecord ? firstNumber(sessionRecord, ['last_done', 'lastDone', 'last', 'price', 'current_price', 'currentPrice']) : undefined
     if (sessionPrice !== undefined) return sessionPrice

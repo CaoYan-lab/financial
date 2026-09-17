@@ -182,4 +182,49 @@ describe('Longbridge 租户账户资产币种', () => {
       'Longbridge 账户级今日盈亏暂不可用，未使用当前持仓涨跌替代。',
     )
   })
+
+  it('租户盘前持仓使用 SDK 扩展时段现价', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-17T10:30:00Z'))
+    try {
+      mocks.stockPositions.mockResolvedValueOnce({
+        channels: [{
+          positions: [{
+            symbol: 'TQQQ.US',
+            symbolName: 'ProShares UltraPro QQQ',
+            quantity: '13',
+            availableQuantity: '13',
+            costPrice: '70.16',
+            currency: 'USD',
+          }],
+        }],
+      })
+      mocks.quote.mockResolvedValueOnce([{
+        symbol: 'TQQQ.US',
+        lastDone: '67.93',
+        prevClose: '67.93',
+        preMarketQuote: {
+          lastDone: '70.15',
+          timestamp: new Date('2026-09-17T10:30:00Z'),
+        },
+      }])
+
+      const dashboard = await loadTenantWorkbench({
+        id: 'binding-a',
+        userId: 'user-a',
+        platform: 'longbridge',
+        credentialSource: 'encrypted_bundle',
+        status: 'verified',
+      })
+
+      expect(dashboard.positions[0]).toMatchObject({
+        currentPrice: '$70.15',
+        marketValue: '$911.95',
+        todayPnL: '$28.86',
+        unrealizedPnL: '$-0.13',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

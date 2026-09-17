@@ -15,6 +15,7 @@ import {
   loadLongbridgeAccountTodayPnl,
   loadLongbridgeAccountTotalPnl,
 } from '../../../longbridge/longbridgeAccountTodayPnl.js'
+import { latestQuotePrice } from '../../../longbridge/longbridgeMarketDataService.js'
 import { buildLongbridgeOrderChildEnvironment } from '../../../longbridge/longbridgeOrderProxy.js'
 import { query, queryOne } from '../../db/pgClient.js'
 import type { BrokerConnection, LongbridgeCredentialBundle } from '../types.js'
@@ -94,7 +95,9 @@ export async function loadTenantWorkbench(
   const quoteBySymbol = new Map(quotes.map((item) => [item.symbol, item]))
   const positions = rawPositions.map((position) => {
     const quote = quoteBySymbol.get(position.symbol)
-    const quotedCurrentPrice = optionalNumber(quote?.lastDone)
+    const quotedCurrentPrice = quote
+      ? latestQuotePrice(quote as unknown as Record<string, unknown>, position.symbol)
+      : undefined
     const currentPrice = quotedCurrentPrice ?? 0
     const previousClose = optionalNumber(quote?.prevClose)
     const quantity = number(position.quantity)

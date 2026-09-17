@@ -225,6 +225,19 @@ describe('Longbridge realtime SDK cache', () => {
     expect(latestQuotePrice(quote, 'AMD.US', new Date('2026-06-24T14:00:00Z'))).toBe(519.85)
   })
 
+  it('美股盘前识别 Node SDK 的 preMarketQuote 字段', () => {
+    const quote = {
+      symbol: 'TQQQ.US',
+      lastDone: '67.93',
+      preMarketQuote: {
+        lastDone: '70.15',
+        timestamp: new Date('2026-09-17T10:30:00Z'),
+      },
+    }
+
+    expect(latestQuotePrice(quote, 'TQQQ.US', new Date('2026-09-17T10:30:00Z'))).toBe(70.15)
+  })
+
   it('SDK cache 盘前 quote 为旧收盘价时用最新成交点作为 LLM 最新价', async () => {
     longbridgeRealtimeStore.markSubscribed(['AMD.US'])
     longbridgeRealtimeStore.upsertQuote({
