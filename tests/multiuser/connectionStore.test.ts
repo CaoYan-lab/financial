@@ -32,6 +32,7 @@ import {
   getOwnedConnection,
   markConnectionInvalid,
   markConnectionVerified,
+  refreshLegacyOwnerCredentialsFromVerifiedConnection,
   savePendingConnection,
 } from '../../api/cloud/multiuser/longbridge/connectionStore.js'
 
@@ -116,6 +117,26 @@ describe('Longbridge 连接存储', () => {
     await markConnectionInvalid('binding-1')
     expect(mocks.query.mock.calls[0][1]).toEqual(['user-1'])
     expect(mocks.query.mock.calls[1][1]).toEqual(['binding-1'])
+  })
+
+  it('Worker 启动时使用 owner 最近验证的加密凭据刷新旧链路', async () => {
+    const original = {
+      key: process.env.LONGBRIDGE_APP_KEY,
+      secret: process.env.LONGBRIDGE_APP_SECRET,
+      token: process.env.LONGBRIDGE_ACCESS_TOKEN,
+    }
+    await expect(refreshLegacyOwnerCredentialsFromVerifiedConnection()).resolves.toBe(true)
+    expect(process.env.LONGBRIDGE_APP_KEY).toBe('key')
+    expect(process.env.LONGBRIDGE_APP_SECRET).toBe('secret')
+    expect(process.env.LONGBRIDGE_ACCESS_TOKEN).toBe('token')
+    mocks.queryOne.mockResolvedValueOnce(null)
+    await expect(refreshLegacyOwnerCredentialsFromVerifiedConnection()).resolves.toBe(false)
+    if (original.key === undefined) delete process.env.LONGBRIDGE_APP_KEY
+    else process.env.LONGBRIDGE_APP_KEY = original.key
+    if (original.secret === undefined) delete process.env.LONGBRIDGE_APP_SECRET
+    else process.env.LONGBRIDGE_APP_SECRET = original.secret
+    if (original.token === undefined) delete process.env.LONGBRIDGE_ACCESS_TOKEN
+    else process.env.LONGBRIDGE_ACCESS_TOKEN = original.token
   })
 
   it('按来源读取 legacy 或加密凭据并拒绝缺失配置', () => {

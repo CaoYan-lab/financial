@@ -26,6 +26,7 @@ import {
 } from '../state/leaderLock.js'
 import { managedOrderSupervisor } from '../../live/managedOrderSupervisor.js'
 import { startMultiUserWorkerRuntime, stopMultiUserWorkerRuntime } from '../multiuser/worker/multiUserWorkerRuntime.js'
+import { refreshLegacyOwnerCredentialsFromVerifiedConnection } from '../multiuser/longbridge/connectionStore.js'
 import { longbridgeOrderProxyConfigured } from '../../longbridge/longbridgeOrderProxy.js'
 import { realtimeSubscriptionService } from '../../realtime/realtimeSubscriptionService.js'
 import { aShareRealtimeSubscriptionService } from '../../ashare/aShareRealtimeSubscriptionService.js'
@@ -284,6 +285,24 @@ function startLeaderKeepalive(client: PoolClient): void {
 async function bootstrap(): Promise<void> {
   if (!process.env.DATABASE_URL) {
     logger.error({ event: 'cloud.worker.no_database_url' }, 'DATABASE_URL 未配置，worker 无法运行')
+    process.exit(1)
+  }
+  try {
+    const refreshed = await refreshLegacyOwnerCredentialsFromVerifiedConnection()
+    if (refreshed) {
+      logger.info(
+        { event: 'cloud.worker.longbridge_owner_credentials.refreshed' },
+        '已使用 owner 最近验证的 Longbridge 凭据',
+      )
+    }
+  } catch (error) {
+    logger.error(
+      {
+        event: 'cloud.worker.longbridge_owner_credentials.refresh_failed',
+        error: error instanceof Error ? error.message : String(error),
+      },
+      '读取 owner 已验证 Longbridge 凭据失败，停止 Worker 以避免使用过期凭据',
+    )
     process.exit(1)
   }
   const server = createWorkerServer()

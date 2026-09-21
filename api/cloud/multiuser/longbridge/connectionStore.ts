@@ -178,6 +178,31 @@ export async function markConnectionInvalid(connectionId: string): Promise<void>
   )
 }
 
+export async function refreshLegacyOwnerCredentialsFromVerifiedConnection(): Promise<boolean> {
+  const row = await queryOne<ConnectionRow>(
+    `SELECT
+       bc.id, bc.user_id, bc.platform, bc.credential_source,
+       bc.credential_ciphertext, bc.credential_iv, bc.credential_auth_tag,
+       bc.key_version, bc.account_fingerprint, bc.status,
+       bc.token_expires_at, bc.last_verified_at
+     FROM multiuser.broker_connections bc
+     INNER JOIN multiuser.user_profiles up ON up.user_id = bc.user_id
+     WHERE up.role = 'owner'
+       AND bc.platform = 'longbridge'
+       AND bc.credential_source = 'encrypted_bundle'
+       AND bc.status = 'verified'
+     ORDER BY bc.updated_at DESC
+     LIMIT 1`,
+  )
+  if (!row) return false
+
+  const credentials = credentialsForConnection(normalize(row))
+  process.env.LONGBRIDGE_APP_KEY = credentials.appKey
+  process.env.LONGBRIDGE_APP_SECRET = credentials.appSecret
+  process.env.LONGBRIDGE_ACCESS_TOKEN = credentials.accessToken
+  return true
+}
+
 export function credentialsForConnection(connection: BrokerConnection): LongbridgeCredentialBundle {
   if (connection.credentialSource === 'legacy_env') {
     const appKey = process.env.LONGBRIDGE_APP_KEY?.trim() ?? ''
