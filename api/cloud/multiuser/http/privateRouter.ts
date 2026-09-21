@@ -542,11 +542,24 @@ function registerTenantLongbridgeRoutes(router: Router): void {
     next: NextFunction,
     handler: (connection: BrokerConnection) => Promise<void>,
   ) => {
-    if (req.multiUser?.role === 'owner') {
-      next()
-      return
-    }
     try {
+      if (req.multiUser?.role === 'owner') {
+        const connection = await getActiveConnection(req.multiUser.userId)
+        if (!connection || connection.credentialSource === 'legacy_env') {
+          next()
+          return
+        }
+        if (connection.status !== 'verified') {
+          res.status(409).json({
+            success: false,
+            code: 'LONGBRIDGE_CONNECTION_INVALID',
+            error: '当前 Longbridge 绑定无效，请重新验证',
+          })
+          return
+        }
+        await handler(connection)
+        return
+      }
       const connection = await memberConnection(req, res)
       if (connection) await handler(connection)
     } catch (error) {
@@ -871,10 +884,21 @@ function registerTenantLongbridgeRoutes(router: Router): void {
   router.put('/longbridge/live-trading/prompt-mode', (req: MultiUserRequest, res, next) =>
     memberOnly(req, res, next, async connection => { await handlePromptMode(req, res, 'longbridge', `${req.multiUser!.userId}:${connection.id}`) }))
 
-  router.use('/longbridge', (req: MultiUserRequest, res: Response, next: NextFunction) => {
+  router.use('/longbridge', async (req: MultiUserRequest, res: Response, next: NextFunction) => {
     if (req.multiUser?.role === 'owner') {
-      next()
-      return
+      try {
+        const connection = await getActiveConnection(req.multiUser.userId)
+        if (!connection || connection.credentialSource === 'legacy_env') {
+          next()
+          return
+        }
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return
+      }
     }
     res.status(404).json({
       success: false,

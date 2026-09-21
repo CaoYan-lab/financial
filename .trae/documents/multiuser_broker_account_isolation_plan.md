@@ -557,7 +557,9 @@ owner 兼容：
 
 * owner 的 `legacy_env` 绑定继续委托现有 Longbridge 单例和现有历史。
 
-* 多用户路由仅在 owner 请求时允许回落到旧 Longbridge 路由。
+* 多用户路由仅在 owner 的活动绑定仍为 `legacy_env` 时允许回落到旧 Longbridge 路由。
+
+* owner 在“账号与安全”完成凭据刷新后，活动绑定切换为 `encrypted_bundle`；账户、行情、订单和策略接口必须立即使用该绑定，禁止继续读取旧 Worker 环境变量凭据。
 
 * member 请求禁止任何形式回落，异常时返回 503/403。
 

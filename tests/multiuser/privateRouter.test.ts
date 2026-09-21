@@ -120,6 +120,12 @@ const connection: BrokerConnection = {
   status: 'verified',
   accountFingerprint: 'fingerprint',
 }
+const ownerLegacyConnection: BrokerConnection = {
+  ...connection,
+  id: 'legacy-longbridge-owner',
+  userId: owner.userId,
+  credentialSource: 'legacy_env',
+}
 const pendingOrder = {
   id: 'pending-1',
   status: 'PENDING_CONFIRMATION',
@@ -155,7 +161,8 @@ describe('多用户 privateRouter', () => {
     mocks.verifyPassword.mockImplementation((value: string) => value === 'current')
     mocks.listProfiles.mockResolvedValue([owner, member])
     mocks.createMember.mockResolvedValue(member)
-    mocks.getActiveConnection.mockResolvedValue(connection)
+    mocks.getActiveConnection.mockImplementation(async (userId: string) =>
+      userId === owner.userId ? ownerLegacyConnection : connection)
     mocks.getConnectionForVerification.mockResolvedValue(connection)
     mocks.savePendingConnection.mockResolvedValue({ ...connection, status: 'pending' })
     mocks.verifyCredentials.mockResolvedValue({ accountFingerprint: 'fingerprint' })
@@ -501,6 +508,18 @@ describe('多用户 privateRouter', () => {
     expect((await request('/longbridge/workbench/dashboard', {}, 'owner')).status).toBe(299)
     expect((await request('/longbridge/not-available')).status).toBe(404)
     expect((await request('/longbridge/not-available', {}, 'owner')).status).toBe(299)
+  })
+
+  it('owner 刷新为加密绑定后使用租户 Longbridge 链路', async () => {
+    const ownerEncryptedConnection: BrokerConnection = {
+      ...connection,
+      userId: owner.userId,
+    }
+    mocks.getActiveConnection.mockResolvedValue(ownerEncryptedConnection)
+
+    expect((await request('/longbridge/workbench/dashboard', {}, 'owner')).status).toBe(200)
+    expect(mocks.loadWorkbench).toHaveBeenCalledWith(ownerEncryptedConnection)
+    expect((await request('/longbridge/not-available', {}, 'owner')).status).toBe(404)
   })
 
   it('覆盖订单参数映射、任务不存在和不允许实盘设置', async () => {
