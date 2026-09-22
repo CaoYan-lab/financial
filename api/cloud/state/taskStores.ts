@@ -27,6 +27,29 @@ export async function enqueueJob(
   return String(row?.id ?? '')
 }
 
+export async function enqueueLatestJob(
+  jobType: string,
+  payload: Record<string, unknown> = {},
+): Promise<string> {
+  const requestedBy = typeof payload.requestedBy === 'string' ? payload.requestedBy : null
+  const row = await queryOne<{ id: string }>(
+    `WITH superseded AS (
+       UPDATE cloud_jobs
+          SET status = 'failed',
+              last_error = '已由较新的同类请求替代。',
+              updated_at = now()
+        WHERE status = 'queued'
+          AND job_type = $1
+          AND COALESCE(payload->>'requestedBy', '') = COALESCE($3::text, '')
+     )
+     INSERT INTO cloud_jobs (job_type, payload)
+     VALUES ($1, $2::jsonb)
+     RETURNING id`,
+    [jobType, JSON.stringify(payload), requestedBy],
+  )
+  return String(row?.id ?? '')
+}
+
 export async function getJob(id: string): Promise<JobRow | null> {
   return queryOne<JobRow>(
     `SELECT id, job_type, payload, status, claimed_by, attempts, last_error, result, created_at, updated_at
@@ -42,11 +65,37 @@ export type ClaimedJob = {
   payload: Record<string, unknown>
 }
 
+export type CloudJobLane = 'all' | 'interactive' | 'background'
+
+const INTERACTIVE_JOB_TYPES = [
+  'futu_live.cancel_order',
+  'futu_live.order_detail',
+  'futu_live.confirm',
+  'futu_live.reject',
+  'futu_live.batch_expire',
+  'futu_live.settings',
+  'futu_live.orders',
+  'futu_live.start',
+  'futu_live.stop',
+  'longbridge_live.cancel_order',
+  'longbridge_live.order_detail',
+  'longbridge_live.confirm',
+  'longbridge_live.reject',
+  'longbridge_live.batch_expire',
+  'longbridge_live.settings',
+  'longbridge_live.orders',
+  'longbridge_live.start',
+  'longbridge_live.stop',
+]
+
 /**
  * 认领一个待执行任务（行级锁，多 worker 安全）。
  * 返回 null 表示无任务。
  */
-export async function claimNextJob(workerId: string): Promise<ClaimedJob | null> {
+export async function claimNextJob(
+  workerId: string,
+  lane: CloudJobLane = 'all',
+): Promise<ClaimedJob | null> {
   const row = await queryOne<{
     id: string
     job_type: string
@@ -56,16 +105,37 @@ export async function claimNextJob(workerId: string): Promise<ClaimedJob | null>
        SET status = 'running', claimed_by = $1, attempts = attempts + 1, updated_at = now()
      WHERE id = (
        SELECT id FROM cloud_jobs
-       WHERE status = 'queued' AND run_after <= now()
+       WHERE status = 'queued'
+         AND run_after <= now()
+         AND (
+           $2::text = 'all'
+           OR ($2::text = 'interactive' AND job_type = ANY($3::text[]))
+           OR ($2::text = 'background' AND NOT (job_type = ANY($3::text[])))
+         )
        ORDER BY id
        FOR UPDATE SKIP LOCKED
        LIMIT 1
      )
      RETURNING id, job_type, payload`,
-    [workerId],
+    [workerId, lane, INTERACTIVE_JOB_TYPES],
   )
   if (!row) return null
   return { id: String(row.id), jobType: row.job_type, payload: row.payload ?? {} }
+}
+
+export async function failOrphanedRunningJobs(workerId: string): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `UPDATE cloud_jobs
+       SET status = 'failed',
+           claimed_by = NULL,
+           last_error = 'Worker 已换代，原执行任务已终止，请重新发起。',
+           updated_at = now()
+     WHERE status = 'running'
+       AND claimed_by IS DISTINCT FROM $1
+     RETURNING id`,
+    [workerId],
+  )
+  return rows.length
 }
 
 export async function completeJob(id: string, result: Record<string, unknown> = {}): Promise<void> {

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 const taskStoreMocks = vi.hoisted(() => ({
   enqueueJob: vi.fn(),
+  enqueueLatestJob: vi.fn(),
   getJob: vi.fn(),
   getWorkerStatus: vi.fn(),
   listWorkerStatus: vi.fn(),
@@ -98,5 +99,38 @@ describe('云端报告异步任务路由', () => {
       batchId: 'batch-1',
       report,
     })
+  })
+
+  it('长桥订单读取只保留同一用户的最新排队请求', async () => {
+    taskStoreMocks.enqueueLatestJob.mockResolvedValue('orders-job-1')
+    taskStoreMocks.getJob.mockResolvedValue({
+      id: 'orders-job-1',
+      job_type: 'longbridge_live.orders',
+      payload: { requestedBy: null },
+      status: 'succeeded',
+      result: {
+        response: {
+          ok: true,
+          orders: [],
+          page: 1,
+          pageSize: 12,
+          total: 0,
+          totalPages: 1,
+          startDate: '2026-09-16',
+          endDate: '2026-09-23',
+          warnings: [],
+        },
+      },
+      last_error: null,
+    })
+
+    const response = await fetch(`${baseUrl}/api/longbridge/live-trading/orders?page=1&pageSize=12`)
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).ok).toBe(true)
+    expect(taskStoreMocks.enqueueLatestJob).toHaveBeenCalledWith(
+      'longbridge_live.orders',
+      expect.objectContaining({ page: 1, pageSize: 12 }),
+    )
   })
 })

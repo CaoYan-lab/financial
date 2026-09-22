@@ -1,5 +1,12 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
-import { enqueueJob, getJob, getWorkerStatus, listWorkerStatus, setEngineDesired } from '../state/taskStores.js'
+import {
+  enqueueJob,
+  enqueueLatestJob,
+  getJob,
+  getWorkerStatus,
+  listWorkerStatus,
+  setEngineDesired,
+} from '../state/taskStores.js'
 import { listManagedOrderEvents, listManagedOrders } from '../state/managedOrderStore.js'
 import { loadBrokerExecutionSettings } from '../state/brokerExecutionSettingsStore.js'
 import { logger } from '../../utils/logger.js'
@@ -202,9 +209,10 @@ async function forwardBrokerControlJob(
   jobType: string,
   payload: Record<string, unknown>,
   timeoutMs = CONTROL_JOB_TIMEOUT_MS,
+  latestOnly = false,
 ): Promise<void> {
   try {
-    const jobId = await enqueueJob(jobType, payload)
+    const jobId = await (latestOnly ? enqueueLatestJob(jobType, payload) : enqueueJob(jobType, payload))
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const job = await getJob(jobId)
@@ -372,7 +380,7 @@ export function createRouteOverrideRouter(): Router {
       status: typeof req.query.status === 'string' ? req.query.status : undefined,
       side: typeof req.query.side === 'string' ? req.query.side : undefined,
       requestedBy: (req as Request & { user?: { username?: string } }).user?.username ?? null,
-    }, ORDER_READ_JOB_TIMEOUT_MS)
+    }, ORDER_READ_JOB_TIMEOUT_MS, true)
   })
   router.get('/longbridge/live-trading/orders/:orderId/detail', async (req: Request, res: Response) => {
     return forwardBrokerControlJob(res, 'longbridge_live.order_detail', {
@@ -488,7 +496,7 @@ export function createRouteOverrideRouter(): Router {
         status: typeof req.query.status === 'string' ? req.query.status : undefined,
         side: typeof req.query.side === 'string' ? req.query.side : undefined,
       }
-      const jobId = await enqueueJob('futu_live.orders', payload)
+      const jobId = await enqueueLatestJob('futu_live.orders', payload)
       const deadline = Date.now() + FUTU_ORDERS_JOB_TIMEOUT_MS
       while (Date.now() < deadline) {
         const job = await getJob(jobId)

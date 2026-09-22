@@ -15,7 +15,16 @@ import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { closePool } from '../db/pgClient.js'
 import { logger } from '../../utils/logger.js'
-import { claimNextJob, completeJob, failJob, getEngineDesired, getWorkerStatus, upsertWorkerStatus } from '../state/taskStores.js'
+import {
+  claimNextJob,
+  completeJob,
+  failJob,
+  failOrphanedRunningJobs,
+  getEngineDesired,
+  getWorkerStatus,
+  upsertWorkerStatus,
+  type CloudJobLane,
+} from '../state/taskStores.js'
 import { collectEngineSnapshots, handleJob, mergeEngineSnapshot } from '../jobs/jobHandlers.js'
 import {
   tryAcquireLeader,
@@ -43,7 +52,7 @@ let deploymentGenerationReserved = false
 let startedAt = new Date().toISOString()
 let lastJobAt: string | null = null
 let running = true
-let processing = false
+const processingLanes = new Set<CloudJobLane>()
 let leaderClient: PoolClient | null = null
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -59,20 +68,21 @@ function buildStatus() {
     workerId: WORKER_ID,
     startedAt,
     lastJobAt,
-    processing,
+    processing: processingLanes.size > 0,
+    processingLanes: [...processingLanes],
     deploymentGeneration,
     longbridgeOrderProxyConfigured: longbridgeOrderProxyConfigured(),
     now: new Date().toISOString(),
   }
 }
 
-async function processOneJob(): Promise<boolean> {
-  if (processing) return false
-  const job = await claimNextJob(WORKER_ID)
+async function processOneJob(lane: CloudJobLane = 'all'): Promise<boolean> {
+  if (lane === 'all' ? processingLanes.size > 0 : processingLanes.has(lane)) return false
+  const job = await claimNextJob(WORKER_ID, lane)
   if (!job) return false
-  processing = true
+  processingLanes.add(lane)
   lastJobAt = new Date().toISOString()
-  logger.info({ event: 'cloud.worker.job.claimed', jobId: job.id, jobType: job.jobType, workerId: WORKER_ID }, '认领任务')
+  logger.info({ event: 'cloud.worker.job.claimed', jobId: job.id, jobType: job.jobType, lane, workerId: WORKER_ID }, '认领任务')
   try {
     const result = await handleJob(job.jobType, job.payload)
     if (result.ok) {
@@ -98,7 +108,7 @@ async function processOneJob(): Promise<boolean> {
     await failJob(job.id, message)
     logger.error({ event: 'cloud.worker.job.error', jobId: job.id, error: message }, '任务异常')
   } finally {
-    processing = false
+    processingLanes.delete(lane)
   }
   return true
 }
@@ -165,19 +175,19 @@ async function reconcileDesiredState(): Promise<void> {
   }
 }
 
-function startJobLoop(): void {
+function startJobLoop(lane: Exclude<CloudJobLane, 'all'>): void {
   const tick = async () => {
     if (!running) return
     try {
       // 一轮尽量排空队列（连续处理），但单次最多 10 个，避免独占
       let processed = 0
       while (running && processed < 10) {
-        const did = await processOneJob()
+        const did = await processOneJob(lane)
         if (!did) break
         processed += 1
       }
     } catch (error) {
-      logger.error({ event: 'cloud.worker.loop.error', error: error instanceof Error ? error.message : String(error) }, '任务循环异常')
+      logger.error({ event: 'cloud.worker.loop.error', lane, error: error instanceof Error ? error.message : String(error) }, '任务循环异常')
     }
     setTimeout(tick, JOB_POLL_INTERVAL_MS)
   }
@@ -246,9 +256,17 @@ async function campaignLeadership(): Promise<void> {
           managedOrders: managedOrderSupervisor.snapshot(),
         })
         await managedOrderSupervisor.start()
+        const orphanedJobCount = await failOrphanedRunningJobs(WORKER_ID)
+        if (orphanedJobCount > 0) {
+          logger.warn(
+            { event: 'cloud.worker.jobs.orphaned_failed', count: orphanedJobCount },
+            '已终止旧 Worker 遗留的运行中任务',
+          )
+        }
         await reconcileDesiredState().catch(() => undefined)
         startMultiUserWorkerRuntime(WORKER_ID)
-        startJobLoop()
+        startJobLoop('interactive')
+        startJobLoop('background')
         startHeartbeatLoop()
         startLeaderKeepalive(client)
         return
