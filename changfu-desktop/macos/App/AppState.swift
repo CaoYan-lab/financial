@@ -60,10 +60,34 @@ private struct ShadowHistoryState {
     var candidates: [TradingCandidate] = []
 }
 
+enum ShadowEvaluationItemState: Equatable {
+    case active
+    case waiting
+    case error
+}
+
+struct ShadowEvaluationItem: Identifiable, Equatable {
+    var id: String { symbol }
+    let symbol: String
+    let market: String
+    let marketState: String
+    let state: ShadowEvaluationItemState
+    let reason: String
+}
+
+private struct ShadowEvaluationTaskResult: Sendable {
+    let symbol: String
+    let errorCode: String?
+    let reason: String?
+}
+
 private struct ShadowRuntimeState {
     var status = "已停止"
     var lastRunAt: Date?
     var isRunning = false
+    var isEvaluating = false
+    var evaluationItems: [ShadowEvaluationItem] = []
+    var evaluationUpdatedAt: Date?
 }
 
 @MainActor
@@ -388,6 +412,41 @@ final class AppState {
     var isShadowTradingRunning: Bool {
         guard let connectionId = currentBrokerConnectionId else { return false }
         return shadowRuntimeByConnection[connectionId]?.isRunning ?? false
+    }
+
+    var isShadowEvaluationInFlight: Bool {
+        guard let connectionId = currentBrokerConnectionId else { return false }
+        return shadowRuntimeByConnection[connectionId]?.isEvaluating ?? false
+    }
+
+    var shadowEvaluationItems: [ShadowEvaluationItem] {
+        guard let connectionId = currentBrokerConnectionId else { return [] }
+        let runtimeItems = shadowRuntimeByConnection[connectionId]?.evaluationItems ?? []
+        if !runtimeItems.isEmpty { return runtimeItems }
+        let provider = currentProviderId
+        guard let pool = providerPools[provider],
+              let market = provider == "LONGBRIDGE" ? longbridgeMarket : self.market else {
+            return []
+        }
+        return pool.items.map { item in
+            let readiness = shadowEvaluationItem(
+                for: item,
+                fallback: market,
+                provider: provider
+            )
+            return ShadowEvaluationItem(
+                symbol: readiness.symbol,
+                market: readiness.market,
+                marketState: readiness.marketState,
+                state: .waiting,
+                reason: "量化评估尚未启动"
+            )
+        }
+    }
+
+    var shadowEvaluationUpdatedAt: Date? {
+        guard let connectionId = currentBrokerConnectionId else { return nil }
+        return shadowRuntimeByConnection[connectionId]?.evaluationUpdatedAt
     }
 
     var shadowModelRunPageCount: Int {
@@ -2063,9 +2122,6 @@ final class AppState {
             accessToken: accessToken
         )
         brokerConnectionId = connection.brokerConnectionId
-        // #region debug-point B:futu-connection
-        Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "B", "location": "AppState.registerBrokerConnectionIfNeeded", "msg": "[DEBUG] Futu connection registered", "data": ["platform": self.platform.rawValue, "futuConnectionId": connection.brokerConnectionId, "longbridgeConnectionId": self.longbridgeBrokerConnectionId ?? ""]]); _ = try? await URLSession.shared.data(for: request) }
-        // #endregion
         await loadTradingControlPlane(
             connection.brokerConnectionId,
             provider: "FUTU",
@@ -2088,9 +2144,6 @@ final class AppState {
             accessToken: accessToken
         )
         longbridgeBrokerConnectionId = connection.brokerConnectionId
-        // #region debug-point B:longbridge-connection
-        Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "B", "location": "AppState.registerLongbridgeConnectionIfNeeded", "msg": "[DEBUG] Longbridge connection registered", "data": ["platform": self.platform.rawValue, "futuConnectionId": self.brokerConnectionId ?? "", "longbridgeConnectionId": connection.brokerConnectionId]]); _ = try? await URLSession.shared.data(for: request) }
-        // #endregion
         await loadTradingControlPlane(
             connection.brokerConnectionId,
             provider: "LONGBRIDGE",
@@ -2188,9 +2241,6 @@ final class AppState {
         shadowTradingTasks[connectionId] = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                // #region debug-point C:scheduler-tick-start
-                Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "quant-context-invalid", "runId": "pre-fix", "hypothesisId": "C", "location": "AppState.startShadowTrading.loop", "msg": "[DEBUG] Scheduled evaluation tick started", "data": ["provider": provider, "connectionId": connectionId, "isCancelled": Task.isCancelled]]); _ = try? await URLSession.shared.data(for: request) }
-                // #endregion
                 await self.runShadowTradingOnce(
                     connectionId: connectionId,
                     provider: provider
@@ -2198,9 +2248,6 @@ final class AppState {
                 guard !Task.isCancelled else { break }
                 let interval = self.tradingConfigurations[connectionId]?
                     .scanIntervalSeconds ?? 60
-                // #region debug-point C:scheduler-tick-complete
-                Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "quant-context-invalid", "runId": "pre-fix", "hypothesisId": "C", "location": "AppState.startShadowTrading.sleep", "msg": "[DEBUG] Scheduled evaluation tick completed", "data": ["provider": provider, "connectionId": connectionId, "nextIntervalSeconds": interval, "runtimeStatus": self.shadowRuntimeByConnection[connectionId]?.status ?? ""]]); _ = try? await URLSession.shared.data(for: request) }
-                // #endregion
                 try? await Task.sleep(for: .seconds(interval))
             }
         }
@@ -2221,9 +2268,12 @@ final class AppState {
     }
 
     private func runShadowTradingOnce(connectionId: String, provider: String) async {
-        // #region debug-point B-C:run-entry
-        Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "B-C", "location": "AppState.runShadowTradingOnce", "msg": "[DEBUG] Trading run entered", "data": ["platform": self.platform.rawValue, "provider": provider, "frozenConnectionId": connectionId, "currentConnectionId": self.currentBrokerConnectionId ?? "", "futuConnectionId": self.brokerConnectionId ?? "", "longbridgeConnectionId": self.longbridgeBrokerConnectionId ?? "", "hasConfiguration": self.tradingConfigurations[connectionId] != nil, "poolValidated": self.providerPoolOnlineValidated]]); _ = try? await URLSession.shared.data(for: request) }
-        // #endregion
+        guard shadowRuntimeByConnection[connectionId]?.isEvaluating != true else {
+            setShadowRuntimeStatus("上一轮仍在评估，请等待完成", for: connectionId)
+            return
+        }
+        setShadowEvaluationInFlight(true, for: connectionId)
+        defer { setShadowEvaluationInFlight(false, for: connectionId) }
         guard let config = tradingConfigurations[connectionId],
               providerPoolOnlineValidated,
               let pool = providerPools[provider],
@@ -2248,17 +2298,22 @@ final class AppState {
             setShadowRuntimeStatus("券商快照不可用", for: connectionId)
             return
         }
-        let evaluationItems = pool.items.compactMap { item -> ProviderPoolItem? in
-            marketEvaluationDecision(for: item, fallback: market, provider: provider)
-                .shouldEvaluate ? item : nil
+        let readinessItems = pool.items.map {
+            shadowEvaluationItem(for: $0, fallback: market, provider: provider)
+        }
+        setShadowEvaluationItems(readinessItems, for: connectionId)
+        let readySymbols = Set(
+            readinessItems
+                .filter { $0.state == .active }
+                .map(\.symbol)
+        )
+        let evaluationItems = pool.items.filter {
+            readySymbols.contains($0.canonicalSymbol)
         }
         guard !evaluationItems.isEmpty else {
             setShadowLastRunAt(Date(), for: connectionId)
-            let reasons = Array(Set(pool.items.map {
-                marketEvaluationDecision(for: $0, fallback: market, provider: provider).reason
-            })).sorted()
             setShadowRuntimeStatus(
-                "跳过本轮 · \(reasons.joined(separator: "；"))",
+                "等待下一轮 · 可评估 0 个，等待 \(readinessItems.count) 个",
                 for: connectionId
             )
             return
@@ -2270,44 +2325,75 @@ final class AppState {
             guard let requestAccessToken = authenticationSession?.accessToken else {
                 throw BackendClientError.authenticationRejected
             }
-            let concurrency = max(1, min(config.maxConcurrency, evaluationSymbols.count))
+            let concurrency = evaluationSymbols.count
             setShadowRuntimeStatus(
                 "并发分析 \(evaluationSymbols.count) 个标的 · 并发 \(concurrency)",
                 for: connectionId
             )
             let backendClient = backend
-            try await withThrowingTaskGroup(of: Void.self) { group in
+            var taskResults: [ShadowEvaluationTaskResult] = []
+            await withTaskGroup(of: ShadowEvaluationTaskResult.self) { group in
                 var nextIndex = 0
-                func addNext() throws {
+                func addNext() {
                     guard nextIndex < evaluationSymbols.count else { return }
                     let symbol = evaluationSymbols[nextIndex]
                     nextIndex += 1
                     group.addTask {
-                        let context = try await self.makeSingleDecisionContext(
-                            symbol: symbol,
-                            identity: identity,
-                            connectionId: connectionId,
-                            provider: provider,
-                            account: account,
-                            market: market,
-                            poolVersion: pool.version,
-                            config: config
-                        )
-                        _ = try await backendClient.runModel(
-                            context: context,
-                            userMessage: nil,
-                            modelRoute: "OFFICIAL",
-                            accessToken: requestAccessToken
-                        )
+                        do {
+                            let context = try await self.makeSingleDecisionContext(
+                                symbol: symbol,
+                                identity: identity,
+                                connectionId: connectionId,
+                                provider: provider,
+                                account: account,
+                                market: market,
+                                poolVersion: pool.version,
+                                config: config
+                            )
+                            _ = try await backendClient.runModel(
+                                context: context,
+                                userMessage: nil,
+                                modelRoute: "OFFICIAL",
+                                accessToken: requestAccessToken
+                            )
+                            return ShadowEvaluationTaskResult(
+                                symbol: symbol,
+                                errorCode: nil,
+                                reason: nil
+                            )
+                        } catch BackendClientError.authenticationRejected {
+                            return ShadowEvaluationTaskResult(
+                                symbol: symbol,
+                                errorCode: "AUTHENTICATION_REJECTED",
+                                reason: "登录状态已失效"
+                            )
+                        } catch BackendClientError.modelRunFailed(let code) {
+                            return ShadowEvaluationTaskResult(
+                                symbol: symbol,
+                                errorCode: code,
+                                reason: nil
+                            )
+                        } catch {
+                            return ShadowEvaluationTaskResult(
+                                symbol: symbol,
+                                errorCode: "REQUEST_FAILED",
+                                reason: error.localizedDescription
+                            )
+                        }
                     }
                 }
                 for _ in 0..<concurrency {
-                    try addNext()
+                    addNext()
                 }
-                while try await group.next() != nil {
-                    try addNext()
+                while let result = await group.next() {
+                    taskResults.append(result)
+                    addNext()
                 }
             }
+            if taskResults.contains(where: { $0.errorCode == "AUTHENTICATION_REJECTED" }) {
+                throw BackendClientError.authenticationRejected
+            }
+            applyShadowEvaluationResults(taskResults, for: connectionId)
 
             guard let historyAccessToken = authenticationSession?.accessToken else {
                 throw BackendClientError.authenticationRejected
@@ -2365,8 +2451,11 @@ final class AppState {
             }
             setShadowLastRunAt(Date(), for: connectionId)
             let skipped = pool.items.count - evaluationItems.count
-            let summary = "已评估 \(evaluationItems.count) 个标的"
-                + (skipped > 0 ? "，按市场时段跳过 \(skipped) 个" : "")
+            let succeeded = taskResults.filter { $0.errorCode == nil }.count
+            let failed = taskResults.count - succeeded
+            let summary = "已完成 \(succeeded) 个"
+                + (skipped > 0 ? "，等待 \(skipped) 个" : "")
+                + (failed > 0 ? "，\(failed) 个将在后续轮次重试" : "")
             let isRunning = shadowRuntimeByConnection[connectionId]?.isRunning ?? false
             setShadowRuntimeStatus(
                 isRunning ? "等待下一轮 · \(summary)" : "单次运行完成 · \(summary)",
@@ -2380,12 +2469,6 @@ final class AppState {
                 status: "登录状态已失效，量化评估已停止"
             )
         } catch {
-            // #region debug-point C-D:desktop-run-failure
-            Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "quant-context-invalid", "runId": "pre-fix", "hypothesisId": "C-D", "location": "AppState.runShadowTradingOnce.catch", "msg": "[DEBUG] Desktop evaluation run caught failure", "data": ["provider": provider, "connectionId": connectionId, "schedulerRunning": self.shadowRuntimeByConnection[connectionId]?.isRunning ?? false, "errorType": String(reflecting: type(of: error)), "error": error.localizedDescription]]); _ = try? await URLSession.shared.data(for: request) }
-            // #endregion
-            // #region debug-point B-C-E:run-failure
-            Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "B-C-E", "location": "AppState.runShadowTradingOnce.catch", "msg": "[DEBUG] Trading run failed", "data": ["platform": self.platform.rawValue, "provider": provider, "connectionId": connectionId, "errorType": String(reflecting: type(of: error)), "error": error.localizedDescription]]); _ = try? await URLSession.shared.data(for: request) }
-            // #endregion
             setShadowRuntimeStatus(
                 "运行失败：\(error.localizedDescription)",
                 for: connectionId
@@ -2415,6 +2498,12 @@ final class AppState {
         shadowRuntimeByConnection[connectionId] = runtime
     }
 
+    private func setShadowEvaluationInFlight(_ isEvaluating: Bool, for connectionId: String) {
+        var runtime = shadowRuntimeByConnection[connectionId] ?? ShadowRuntimeState()
+        runtime.isEvaluating = isEvaluating
+        shadowRuntimeByConnection[connectionId] = runtime
+    }
+
     private func stopShadowTrading(connectionId: String, status: String) {
         shadowTradingTasks[connectionId]?.cancel()
         shadowTradingTasks[connectionId] = nil
@@ -2433,13 +2522,6 @@ final class AppState {
         config: TradingConfiguration
     ) throws -> ContextEnvelope {
         contextSequence += 1
-        let providerQuotes = provider == "LONGBRIDGE" ? longbridgeQuotes : quotes
-        let providerBars = provider == "LONGBRIDGE" ? longbridgeMinuteBars : minuteBars
-        let providerTicks = provider == "LONGBRIDGE" ? longbridgeTickerPoints : tickerPoints
-        let providerBooks = provider == "LONGBRIDGE" ? longbridgeOrderBooks : orderBooks
-        // #region debug-point A-B:single-context-summary
-        Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "quant-context-invalid", "runId": "pre-fix", "hypothesisId": "A-B", "location": "AppState.makeSingleDecisionContext", "msg": "[DEBUG] Building single-symbol decision context", "data": ["provider": provider, "connectionId": connectionId, "symbol": symbol, "poolVersion": poolVersion, "configVersion": config.version, "quoteCount": providerQuotes.filter { $0.symbol == symbol }.count, "minuteBarCount": providerBars.filter { $0.symbol == symbol }.count, "tickerPointCount": providerTicks.filter { $0.symbol == symbol }.count, "orderBookCount": providerBooks.filter { $0.symbol == symbol }.count]]); _ = try? await URLSession.shared.data(for: request) }
-        // #endregion
         return try ContextEnvelopeFactory.makeTrading(
             deviceId: identity.deviceId,
             brokerConnectionId: connectionId,
@@ -2489,6 +2571,101 @@ final class AppState {
         )
     }
 
+    private func shadowEvaluationItem(
+        for item: ProviderPoolItem,
+        fallback market: MarketSummary,
+        provider: String
+    ) -> ShadowEvaluationItem {
+        let providerQuotes = provider == "LONGBRIDGE" ? longbridgeQuotes : quotes
+        let providerBars = provider == "LONGBRIDGE" ? longbridgeMinuteBars : minuteBars
+        let quote = providerQuotes.first {
+            $0.symbol == item.canonicalSymbol || $0.symbol == item.providerSymbol
+        }
+        let barCount = providerBars.filter {
+            $0.symbol == item.canonicalSymbol || $0.symbol == item.providerSymbol
+        }.count
+        let fallbackMatches: Bool
+        switch item.market {
+        case .us:
+            fallbackMatches = market.name == "美股" || market.name.uppercased() == "US"
+        case .hk:
+            fallbackMatches = market.name == "港股" || market.name.uppercased() == "HK"
+        case .cn:
+            fallbackMatches = market.name == "A 股" || market.name.uppercased() == "CN"
+        case .sg:
+            fallbackMatches = market.name == "新加坡" || market.name.uppercased() == "SG"
+        }
+        let marketState = quote?.marketState ?? (fallbackMatches ? market.state : nil)
+        let readiness = QuantEvaluationReadiness.decide(
+            market: item.market,
+            marketState: marketState,
+            hasQuote: quote != nil,
+            minuteBarCount: barCount
+        )
+        let marketLabel: String
+        switch item.market {
+        case .us: marketLabel = "美股"
+        case .hk: marketLabel = "港股"
+        case .cn: marketLabel = "A 股"
+        case .sg: marketLabel = "新加坡"
+        }
+        return ShadowEvaluationItem(
+            symbol: item.canonicalSymbol,
+            market: marketLabel,
+            marketState: readiness.sessionLabel ?? marketState ?? "状态不可用",
+            state: readiness.shouldEvaluate ? .active : .waiting,
+            reason: readiness.reason
+        )
+    }
+
+    private func setShadowEvaluationItems(
+        _ items: [ShadowEvaluationItem],
+        for connectionId: String
+    ) {
+        var runtime = shadowRuntimeByConnection[connectionId] ?? ShadowRuntimeState()
+        runtime.evaluationItems = items
+        runtime.evaluationUpdatedAt = Date()
+        shadowRuntimeByConnection[connectionId] = runtime
+    }
+
+    private func applyShadowEvaluationResults(
+        _ results: [ShadowEvaluationTaskResult],
+        for connectionId: String
+    ) {
+        let resultBySymbol = Dictionary(uniqueKeysWithValues: results.map { ($0.symbol, $0) })
+        let running = shadowRuntimeByConnection[connectionId]?.isRunning ?? false
+        let updated = (shadowRuntimeByConnection[connectionId]?.evaluationItems ?? []).map { item in
+            guard let result = resultBySymbol[item.symbol] else { return item }
+            guard let code = result.errorCode else {
+                return ShadowEvaluationItem(
+                    symbol: item.symbol,
+                    market: item.market,
+                    marketState: item.marketState,
+                    state: .active,
+                    reason: "本轮评估已完成"
+                )
+            }
+            let retrySuffix = running ? "，将在下一轮自动重试" : "，可再次运行评估"
+            let waitingCodes = Set(["CONTEXT_EXPIRED", "CONTEXT_CLOCK_SKEW"])
+            let reason: String
+            if code == "CONTEXT_EXPIRED" {
+                reason = "上下文在请求前已过期\(retrySuffix)"
+            } else if code == "CONTEXT_CLOCK_SKEW" {
+                reason = "本机与服务端时间暂未对齐\(retrySuffix)"
+            } else {
+                reason = (result.reason ?? "评估未完成（\(code)）") + retrySuffix
+            }
+            return ShadowEvaluationItem(
+                symbol: item.symbol,
+                market: item.market,
+                marketState: item.marketState,
+                state: waitingCodes.contains(code) ? .waiting : .error,
+                reason: reason
+            )
+        }
+        setShadowEvaluationItems(updated, for: connectionId)
+    }
+
     func showPreviousModelRunPage() async {
         guard let connectionId = currentBrokerConnectionId,
               shadowHistory(for: connectionId).modelRunPage > 1,
@@ -2515,9 +2692,6 @@ final class AppState {
 
     private func refreshShadowHistory(connectionId: String, accessToken: String) async {
         let requestedPage = shadowHistory(for: connectionId).modelRunPage
-        // #region debug-point A-B-C-D:history-request
-        Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "A-B-C-D", "location": "AppState.refreshShadowHistory.start", "msg": "[DEBUG] History refresh requested", "data": ["platform": self.platform.rawValue, "requestedConnectionId": connectionId, "currentConnectionId": self.currentBrokerConnectionId ?? "", "futuConnectionId": self.brokerConnectionId ?? "", "longbridgeConnectionId": self.longbridgeBrokerConnectionId ?? "", "page": requestedPage]]); _ = try? await URLSession.shared.data(for: request) }
-        // #endregion
         do {
             async let runs = backend.modelRuns(
                 brokerConnectionId: connectionId,
@@ -2548,13 +2722,7 @@ final class AppState {
             history.signals = signalItems
             history.candidates = candidateItems
             shadowHistoryByConnection[connectionId] = history
-            // #region debug-point A-B-C-D:history-success
-            Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "A-B-C-D", "location": "AppState.refreshShadowHistory.success", "msg": "[DEBUG] History refresh succeeded", "data": ["platform": self.platform.rawValue, "requestedConnectionId": connectionId, "runCount": runPage.items.count, "signalCount": signalItems.count, "candidateCount": candidateItems.count, "responseConnectionIds": Array(Set(runPage.items.map(\.brokerConnectionId) + signalItems.map(\.brokerConnectionId) + candidateItems.map(\.brokerConnectionId)))]]); _ = try? await URLSession.shared.data(for: request) }
-            // #endregion
         } catch {
-            // #region debug-point A-B-C-D:history-failure
-            Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "A-B-C-D", "location": "AppState.refreshShadowHistory.catch", "msg": "[DEBUG] History refresh failed", "data": ["platform": self.platform.rawValue, "requestedConnectionId": connectionId, "currentConnectionId": self.currentBrokerConnectionId ?? "", "errorType": String(reflecting: type(of: error)), "error": error.localizedDescription]]); _ = try? await URLSession.shared.data(for: request) }
-            // #endregion
             setShadowRuntimeStatus(
                 "历史同步失败：\(error.localizedDescription)",
                 for: connectionId

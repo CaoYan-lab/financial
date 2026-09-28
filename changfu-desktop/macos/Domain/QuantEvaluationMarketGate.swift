@@ -12,6 +12,59 @@ public struct QuantEvaluationMarketDecision: Equatable, Sendable {
     }
 }
 
+public enum QuantEvaluationReadinessState: Equatable, Sendable {
+    case ready
+    case waiting
+}
+
+public struct QuantEvaluationReadinessDecision: Equatable, Sendable {
+    public let state: QuantEvaluationReadinessState
+    public let sessionLabel: String?
+    public let reason: String
+
+    public var shouldEvaluate: Bool { state == .ready }
+}
+
+public enum QuantEvaluationReadiness {
+    public static func decide(
+        market: BrokerMarket,
+        marketState: String?,
+        hasQuote: Bool,
+        minuteBarCount: Int
+    ) -> QuantEvaluationReadinessDecision {
+        let session = QuantEvaluationMarketGate.decide(
+            market: market,
+            marketState: marketState
+        )
+        guard session.shouldEvaluate else {
+            return QuantEvaluationReadinessDecision(
+                state: .waiting,
+                sessionLabel: session.sessionLabel,
+                reason: session.reason
+            )
+        }
+        guard hasQuote else {
+            return QuantEvaluationReadinessDecision(
+                state: .waiting,
+                sessionLabel: session.sessionLabel,
+                reason: "关键报价暂不可用，本轮不发送模型请求"
+            )
+        }
+        guard minuteBarCount >= 5 else {
+            return QuantEvaluationReadinessDecision(
+                state: .waiting,
+                sessionLabel: session.sessionLabel,
+                reason: "分钟趋势数据不足（当前 \(minuteBarCount) 根，至少 5 根），本轮不发送模型请求"
+            )
+        }
+        return QuantEvaluationReadinessDecision(
+            state: .ready,
+            sessionLabel: session.sessionLabel,
+            reason: "\(session.sessionLabel ?? market.rawValue)数据就绪，等待本轮评估"
+        )
+    }
+}
+
 public enum QuantEvaluationMarketGate {
     public static func decide(
         market: BrokerMarket,

@@ -655,9 +655,6 @@ const server = createServer(async (request, response) => {
       && typeof (error as { code?: unknown }).code === 'string'
       ? String((error as { code: string }).code)
       : error instanceof Error ? error.name : 'MODEL_RUN_FAILED'
-    // #region debug-point A-B:worker-validation-failure
-    void fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'quant-context-invalid', runId: 'pre-fix', hypothesisId: 'A-B', location: 'decision-worker/server.ts:model-run-catch', msg: '[DEBUG] Worker rejected model context', data: { requestId, code, errorName: error instanceof Error ? error.name : 'UnknownError', reason: error instanceof Error ? error.message.slice(0, 300) : 'UnknownError' }, ts: Date.now() }) }).catch(() => undefined)
-    // #endregion
     safeLogger.error('worker_request_failed', { requestId, errorCode: code })
     if (response.headersSent) {
       writeNdjson(response, {

@@ -787,6 +787,7 @@ private struct ResearchWorkspace: View {
 
 private struct TradingWorkspace: View {
     @Bindable var state: AppState
+    @State private var isEvaluationDetailsPresented = false
 
     var body: some View {
         VStack(spacing: FutuTheme.sectionSpacing) {
@@ -801,16 +802,43 @@ private struct TradingWorkspace: View {
                         : FutuTheme.loss
                 )
                 Spacer()
-                Text(state.shadowRuntimeStatus)
-                    .font(FutuTheme.metricNote)
-                    .foregroundStyle(FutuTheme.inkMuted)
+                Button {
+                    isEvaluationDetailsPresented = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: evaluationErrorCount > 0
+                            ? "exclamationmark.triangle"
+                            : (state.isShadowTradingRunning ? "waveform.path.ecg" : "pause.circle"))
+                            .foregroundStyle(evaluationStatusColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(evaluationTitle)
+                                .font(FutuTheme.metricNote.weight(.semibold))
+                                .foregroundStyle(FutuTheme.ink)
+                            Text(
+                                "可评估 \(evaluationActiveCount) · 等待 \(evaluationWaitingCount)"
+                                    + (evaluationErrorCount > 0 ? " · 异常 \(evaluationErrorCount)" : "")
+                                    + " · 共 \(state.shadowEvaluationItems.count)"
+                            )
+                            .font(FutuTheme.metricNote)
+                            .foregroundStyle(FutuTheme.inkMuted)
+                        }
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(FutuTheme.inkMuted)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("查看量化评估详情")
                 Button {
                     Task { await state.runShadowTradingOnce() }
                 } label: {
                     Label("运行一次", systemImage: "play")
                 }
                 .buttonStyle(.borderless)
-                .disabled(state.currentTradingConfiguration == nil)
+                .disabled(
+                    state.currentTradingConfiguration == nil
+                        || state.isShadowEvaluationInFlight
+                )
                 Button {
                     if state.isShadowTradingRunning {
                         state.stopShadowTrading()
@@ -865,6 +893,37 @@ private struct TradingWorkspace: View {
                 }
             }
         }
+        .sheet(isPresented: $isEvaluationDetailsPresented) {
+            QuantEvaluationDetailsSheet(state: state)
+        }
+    }
+
+    private var evaluationActiveCount: Int {
+        state.shadowEvaluationItems.filter { $0.state == .active }.count
+    }
+
+    private var evaluationWaitingCount: Int {
+        state.shadowEvaluationItems.filter { $0.state == .waiting }.count
+    }
+
+    private var evaluationErrorCount: Int {
+        state.shadowEvaluationItems.filter { $0.state == .error }.count
+    }
+
+    private var evaluationTitle: String {
+        if evaluationErrorCount > 0 {
+            return state.isShadowTradingRunning ? "部分标的待重试" : "部分标的评估未完成"
+        }
+        if state.isShadowTradingRunning {
+            return evaluationActiveCount > 0 ? "量化评估运行中" : "量化评估运行中，等待条件"
+        }
+        return state.shadowLastRunAt == nil ? "量化评估已停止" : state.shadowRuntimeStatus
+    }
+
+    private var evaluationStatusColor: Color {
+        if evaluationErrorCount > 0 { return FutuTheme.loss }
+        if state.isShadowTradingRunning { return FutuTheme.profit }
+        return FutuTheme.inkMuted
     }
 
     private var modelRunPager: some View {
@@ -1120,6 +1179,173 @@ private struct TradingWorkspace: View {
 
     private var connectionColor: Color {
         state.isCurrentBrokerConnected ? FutuTheme.loss : FutuTheme.rose
+    }
+}
+
+private struct QuantEvaluationDetailsSheet: View {
+    @Bindable var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("量化评估状态")
+                        .font(FutuTheme.pageEyebrow)
+                        .foregroundStyle(FutuTheme.orange)
+                    Text("策略与标的详情")
+                        .font(FutuTheme.pageTitle)
+                        .foregroundStyle(FutuTheme.ink)
+                    Text(summary)
+                        .font(FutuTheme.body)
+                        .foregroundStyle(FutuTheme.inkMuted)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .help("关闭")
+            }
+
+            HStack(spacing: 24) {
+                detailValue(
+                    title: "当前策略版本",
+                    value: state.currentTradingCatalog?.strategies.first {
+                        $0.id == state.currentTradingConfiguration?.strategyId
+                    }.map { "\($0.name) \($0.version)" } ?? "未加载"
+                )
+                detailValue(
+                    title: "当前提示词版本",
+                    value: state.currentTradingCatalog?.prompts.first {
+                        $0.id == state.currentTradingConfiguration?.singlePromptId
+                    }.map { "\($0.name) \($0.version)" } ?? "未加载"
+                )
+                detailValue(
+                    title: "执行模式",
+                    value: state.currentTradingConfiguration?.executionMode == "CANDIDATE_POOL"
+                        ? "候选池组合裁决"
+                        : "大模型直推"
+                )
+            }
+
+            HStack {
+                Text("全部标的状态")
+                    .font(FutuTheme.panelTitle)
+                    .foregroundStyle(FutuTheme.ink)
+                Spacer()
+                Text("更新时间：\(updatedAt)")
+                    .font(FutuTheme.metricNote)
+                    .foregroundStyle(FutuTheme.inkMuted)
+            }
+
+            VStack(spacing: 0) {
+                evaluationRow(
+                    symbol: "标的",
+                    market: "市场",
+                    marketState: "当前状态",
+                    status: "评估状态",
+                    reason: "评估说明",
+                    header: true,
+                    index: 0
+                )
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(state.shadowEvaluationItems.enumerated()), id: \.element.id) {
+                            index,
+                            item in
+                            evaluationRow(
+                                symbol: item.symbol,
+                                market: item.market,
+                                marketState: item.marketState,
+                                status: statusLabel(item.state),
+                                reason: item.reason,
+                                header: false,
+                                index: index
+                            )
+                        }
+                    }
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(FutuTheme.lineSoft, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .padding(24)
+        .frame(minWidth: 860, minHeight: 560)
+        .background(FutuTheme.canvas)
+    }
+
+    private var summary: String {
+        let items = state.shadowEvaluationItems
+        let active = items.filter { $0.state == .active }.count
+        let waiting = items.filter { $0.state == .waiting }.count
+        let errors = items.filter { $0.state == .error }.count
+        return "当前股票池共 \(items.count) 个标的，可评估 \(active) 个，等待 \(waiting) 个"
+            + (errors > 0 ? "，异常 \(errors) 个；定时运行会在后续轮次重试。" : "。")
+    }
+
+    private var updatedAt: String {
+        state.shadowEvaluationUpdatedAt?
+            .formatted(date: .numeric, time: .standard) ?? "尚未运行"
+    }
+
+    private func detailValue(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(FutuTheme.tableHeader)
+                .foregroundStyle(FutuTheme.inkMuted)
+            Text(value)
+                .font(FutuTheme.bodyStrong)
+                .foregroundStyle(FutuTheme.ink)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+    }
+
+    private func evaluationRow(
+        symbol: String,
+        market: String,
+        marketState: String,
+        status: String,
+        reason: String,
+        header: Bool,
+        index: Int
+    ) -> some View {
+        HStack(spacing: 12) {
+            fixedCell(symbol, width: 140, alignment: .leading, header: header)
+            fixedCell(market, width: 76, alignment: .leading, header: header)
+            fixedCell(marketState, width: 110, alignment: .leading, header: header)
+            fixedCell(status, width: 92, alignment: .leading, header: header)
+                .foregroundStyle(header ? FutuTheme.inkMuted : statusColor(status))
+            fixedCell(reason, width: nil, alignment: .leading, header: header, lines: 2)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: header ? 36 : 48)
+        .background(header ? FutuTheme.surfaceMuted : (index.isMultiple(of: 2)
+            ? FutuTheme.surface
+            : FutuTheme.surfaceMuted.opacity(0.55)))
+    }
+
+    private func statusLabel(_ state: ShadowEvaluationItemState) -> String {
+        switch state {
+        case .active: "可评估"
+        case .waiting: "暂不评估"
+        case .error: "待重试"
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "可评估": FutuTheme.profit
+        case "待重试": FutuTheme.rose
+        default: FutuTheme.amber
+        }
     }
 }
 

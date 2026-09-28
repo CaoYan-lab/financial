@@ -671,17 +671,7 @@ public actor BackendClient {
         guard http.statusCode == 200 else {
             throw responseError(data: data, statusCode: http.statusCode)
         }
-        do {
-            return try decoder.decode(Response.self, from: data)
-        } catch {
-            // #region debug-point A-D:response-decode
-            if path == "/v1/model/runs" || path == "/v1/signals" || path == "/v1/candidates" {
-                let connectionId = query.first(where: { $0.name == "brokerConnectionId" })?.value ?? ""
-                Task { var request = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); request.httpMethod = "POST"; request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "futu-provider-misattribution", "runId": "post-fix", "hypothesisId": "A-D", "location": "BackendClient.authenticatedGET.decode", "msg": "[DEBUG] Trading history response decode failed", "data": ["path": path, "brokerConnectionId": connectionId, "statusCode": http.statusCode, "byteLength": data.count, "responseType": String(reflecting: Response.self), "errorType": String(reflecting: type(of: error)), "error": String(reflecting: error)]]); _ = try? await URLSession.shared.data(for: request) }
-            }
-            // #endregion
-            throw error
-        }
+        return try decoder.decode(Response.self, from: data)
     }
 
     private func authenticatedMutation<Body: Encodable, Response: Decodable>(
@@ -717,22 +707,7 @@ public actor BackendClient {
         guard acceptedStatusCodes.contains(http.statusCode) else {
             throw responseError(data: data, statusCode: http.statusCode)
         }
-        if path.contains("/sell-put/") {
-            let topLevelKeys = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?.keys.sorted() ?? []
-            // #region debug-point B,E:swift-response-contract
-            { var debugRequest = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); debugRequest.httpMethod = "POST"; debugRequest.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "sell-put-decode-failure", "runId": "post-fix", "hypothesisId": "B,E", "location": "BackendClient.swift:authenticatedMutation", "msg": "[DEBUG] Swift received SELL PUT response", "data": ["path": path, "status": http.statusCode, "byteCount": data.count, "responseType": String(describing: Response.self), "topLevelKeys": topLevelKeys], "ts": Int(Date().timeIntervalSince1970 * 1000)]); URLSession.shared.dataTask(with: debugRequest).resume() }()
-            // #endregion
-        }
-        do {
-            return try decoder.decode(Response.self, from: data)
-        } catch {
-            if path.contains("/sell-put/") {
-                // #region debug-point B,E:swift-decode-error
-                { var debugRequest = URLRequest(url: URL(string: "http://127.0.0.1:7777/event")!); debugRequest.httpMethod = "POST"; debugRequest.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": "sell-put-decode-failure", "runId": "post-fix", "hypothesisId": "B,E", "location": "BackendClient.swift:authenticatedMutation.decode", "msg": "[DEBUG] Swift failed to decode SELL PUT response", "data": ["path": path, "responseType": String(describing: Response.self), "error": String(describing: error)], "ts": Int(Date().timeIntervalSince1970 * 1000)]); URLSession.shared.dataTask(with: debugRequest).resume() }()
-                // #endregion
-            }
-            throw error
-        }
+        return try decoder.decode(Response.self, from: data)
     }
 
     private func authenticatedData(

@@ -649,6 +649,31 @@ struct ChangFuDesktopTests {
                 ).shouldEvaluate
             }
         }
+        suite.test("量化评估在报价或趋势不足时不发送模型请求") {
+            let noQuote = QuantEvaluationReadiness.decide(
+                market: .us,
+                marketState: "盘前",
+                hasQuote: false,
+                minuteBarCount: 60
+            )
+            let insufficientTrend = QuantEvaluationReadiness.decide(
+                market: .us,
+                marketState: "盘前",
+                hasQuote: true,
+                minuteBarCount: 4
+            )
+            let ready = QuantEvaluationReadiness.decide(
+                market: .us,
+                marketState: "盘前",
+                hasQuote: true,
+                minuteBarCount: 5
+            )
+            return !noQuote.shouldEvaluate
+                && noQuote.reason.contains("不发送模型请求")
+                && !insufficientTrend.shouldEvaluate
+                && insufficientTrend.reason.contains("当前 4 根")
+                && ready.shouldEvaluate
+        }
         suite.test("交易目录不完整时拒绝生成影子配置") {
             let data = Data("""
             {"catalogVersion":"v1","publishedAt":"2026-09-19T00:00:00Z",

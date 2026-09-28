@@ -263,7 +263,7 @@ public enum DecisionContextBuilder {
         let requested = Set(requestedSymbols)
         evidence.append(evidenceItem(
             id: "MARKET_INTELLIGENCE_SCOPE",
-            kind: "POLICY",
+            kind: "RISK",
             summary: "市场情报仅注入对美股科技高相关、仍有效且重要级为 HIGH/CRITICAL 的事件；突发风险优先，总量最多 10 条",
             sourceAt: timestamp(sourceAt)
         ))
@@ -312,7 +312,7 @@ public enum DecisionContextBuilder {
             for event in selected {
                 evidence.append(evidenceItem(
                     id: "EVENT_\(event.id)",
-                    kind: event.group.rawValue,
+                    kind: "RISK",
                     summary: marketEventSummary(event),
                     sourceAt: event.publishedAt
                 ))

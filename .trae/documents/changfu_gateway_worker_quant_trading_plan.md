@@ -688,6 +688,8 @@ UI 结构：
 * 任何交易角色返回 ORDER_DRAFT 都失败关闭；本阶段不创建 pending order、不 claim、不调用 BrokerHost。
 * Gateway 增加 model run、signal、candidate 查询，并将 Worker 输出升级为 accepted/progress/result/error NDJSON。
 * 桌面端新增 ContextEnvelope 2.0 交易工厂、手动/定时影子调度、信号/候选/运行记录展示；Futu 与 Longbridge 使用同一协议。
+* 桌面端量化评估按标的隔离任务结果；报价或最小趋势窗口不足时不发送模型请求，单票失败不取消同批任务，定时调度继续后续轮次。顶部摘要与独立详情弹窗按 Web 口径展示每个标的的可评估、暂不评估或待重试原因。
+* 市场情报证据统一使用后端注册的 `RISK` 类型，禁止 `POLICY` 或事件分组名作为 `evidenceCatalog.kind`。
 * 本地启动脚本自动执行幂等 migration 001/002；源码与 `dist` 运行均可定位版本化交易目录。
 * Backend 24 项测试、10 个 Schema 契约检查、Swift 54 项桌面测试和完整 Swift 包构建通过。
 

@@ -111,6 +111,25 @@ do
 done
 
 for contract in \
+  '"策略与标的详情"' \
+  '"全部标的状态"' \
+  '"评估说明"' \
+  '"暂不评估"' \
+  'shadowEvaluationItems' \
+  'isShadowEvaluationInFlight'
+do
+  if ! rg -q "$contract" "$WORKSPACES" "$APP_STATE"; then
+    printf '%s\n' "UI 契约失败：量化评估状态详情缺少 ${contract}" >&2
+    exit 1
+  fi
+done
+
+if rg -q 'kind: "POLICY"|kind: event\.group\.rawValue' "$DECISION_CONTEXT"; then
+  printf '%s\n' "UI 契约失败：市场情报证据类型必须映射到后端注册类型" >&2
+  exit 1
+fi
+
+for contract in \
   'shadowRuntimeByConnection' \
   'shadowTradingTasks: \[String: Task<Void, Never>\]' \
   'runShadowTradingOnce\(connectionId: String, provider: String\)' \
