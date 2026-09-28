@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/subscription-catalog.schema.json",
+  "title": "SubscriptionCatalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["catalogVersion", "publishedAt", "currency", "providers", "plans", "paymentChannels"],
+  "properties": {
+    "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "publishedAt": { "type": "string", "format": "date-time" },
+    "currency": { "const": "CNY" },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/provider" }
+    },
+    "plans": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/plan" }
+    },
+    "paymentChannels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/paymentChannel" }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerId", "displayName", "status", "supportedMarkets",
+        "supportedInstrumentTypes"
+      ],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "status": { "enum": ["ACTIVE", "DISABLED"] },
+        "supportedMarkets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["US", "HK", "CN", "SG"] }
+        },
+        "supportedInstrumentTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["STOCK", "ETF", "OPTION"] }
+        }
+      }
+    },
+    "price": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priceId", "billingPeriod", "durationMonths", "currency", "amountMinor"],
+      "properties": {
+        "priceId": { "type": "string", "format": "uuid" },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "durationMonths": { "enum": [1, 3, 12] },
+        "currency": { "const": "CNY" },
+        "amountMinor": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planVersionId", "planCode", "version", "displayName", "brokerSlotLimit",
+        "poolCapacityPerProvider", "monthlyReplacementLimit", "features", "prices"
+      ],
+      "properties": {
+        "planVersionId": { "type": "string", "format": "uuid" },
+        "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+        "version": { "type": "integer", "minimum": 1 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "brokerSlotLimit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "poolCapacityPerProvider": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "monthlyReplacementLimit": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["batchSize", "optionResearch", "optionTrading"],
+          "properties": {
+            "batchSize": { "const": 100 },
+            "optionResearch": { "type": "boolean" },
+            "optionTrading": { "const": false },
+            "poolCapacityProtectionLimit": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "prices": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/price" }
+        }
+      }
+    },
+    "paymentChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "displayName", "available"],
+      "properties": {
+        "channel": { "enum": ["WECHAT", "ALIPAY", "DOUYIN"] },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "available": { "type": "boolean" },
+        "unavailableReason": { "type": ["string", "null"], "maxLength": 100 }
+      }
+    }
+  }
+}

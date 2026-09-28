@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/trading-session.schema.json",
+  "title": "TradingSession",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sessionId", "brokerConnectionId", "deviceId", "mode", "status",
+    "configVersion", "riskPolicyVersion", "appSessionId", "expiresAt", "version"
+  ],
+  "properties": {
+    "sessionId": { "type": "string", "format": "uuid" },
+    "brokerConnectionId": { "type": "string", "format": "uuid" },
+    "deviceId": { "type": "string", "format": "uuid" },
+    "mode": { "const": "AUTO_EXECUTE" },
+    "status": { "enum": ["ACTIVE", "EXPIRED", "DEACTIVATED"] },
+    "configVersion": { "type": "integer", "minimum": 1 },
+    "riskPolicyVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "appSessionId": { "type": "string", "format": "uuid" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "version": { "type": "integer", "minimum": 1 }
+  }
+}

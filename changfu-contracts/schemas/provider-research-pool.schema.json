@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/provider-research-pool.schema.json",
+  "title": "ProviderResearchPool",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "providerId", "status", "frozenReason", "version", "entitlement",
+    "items", "nextCursor", "updatedAt"
+  ],
+  "properties": {
+    "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+    "status": { "enum": ["ACTIVE", "FROZEN"] },
+    "frozenReason": { "type": ["string", "null"], "maxLength": 100 },
+    "version": { "type": "integer", "minimum": 1 },
+    "entitlement": { "$ref": "#/$defs/entitlement" },
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "nextCursor": { "type": ["string", "null"], "maxLength": 512 },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "entitlement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active", "capacity", "used", "replacementLimit", "replacementUsed",
+        "replacementWindowStart", "replacementWindowEnd"
+      ],
+      "properties": {
+        "active": { "type": "boolean" },
+        "capacity": { "type": ["integer", "null"], "minimum": 1 },
+        "used": { "type": "integer", "minimum": 0 },
+        "replacementLimit": { "type": ["integer", "null"], "minimum": 0 },
+        "replacementUsed": { "type": "integer", "minimum": 0 },
+        "replacementWindowStart": { "type": ["string", "null"], "format": "date-time" },
+        "replacementWindowEnd": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "itemId", "providerId", "providerSymbol", "canonicalSymbol", "displayName",
+        "market", "instrumentType", "optionType", "underlyingSymbol", "expiryDate",
+        "strikePrice", "currency", "contractMultiplier", "status", "addedAt"
+      ],
+      "properties": {
+        "itemId": { "type": "string", "format": "uuid" },
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "providerSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "canonicalSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "market": { "enum": ["US", "HK", "CN", "SG"] },
+        "instrumentType": { "enum": ["STOCK", "ETF", "OPTION"] },
+        "optionType": { "type": ["string", "null"], "enum": ["CALL", "PUT", null] },
+        "underlyingSymbol": { "type": ["string", "null"], "maxLength": 128 },
+        "expiryDate": { "type": ["string", "null"], "format": "date" },
+        "strikePrice": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "contractMultiplier": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "status": { "enum": ["ACTIVE", "FROZEN"] },
+        "addedAt": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "instrumentType": { "const": "OPTION" } },
+            "required": ["instrumentType"]
+          },
+          "then": {
+            "properties": {
+              "optionType": { "enum": ["CALL", "PUT"] },
+              "underlyingSymbol": { "type": "string", "minLength": 1 },
+              "expiryDate": { "type": "string", "format": "date" },
+              "strikePrice": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+              "contractMultiplier": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" }
+            }
+          }
+        }
+      ]
+    },
+    "itemInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerSymbol", "canonicalSymbol", "displayName", "market",
+        "instrumentType", "optionType", "underlyingSymbol", "expiryDate",
+        "strikePrice", "currency", "contractMultiplier", "sourceVerifiedAt"
+      ],
+      "properties": {
+        "providerSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "canonicalSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "market": { "enum": ["US", "HK", "CN", "SG"] },
+        "instrumentType": { "enum": ["STOCK", "ETF", "OPTION"] },
+        "optionType": { "type": ["string", "null"], "enum": ["CALL", "PUT", null] },
+        "underlyingSymbol": { "type": ["string", "null"], "maxLength": 128 },
+        "expiryDate": { "type": ["string", "null"], "format": "date" },
+        "strikePrice": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "contractMultiplier": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "sourceVerifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "instrumentType": { "const": "OPTION" } },
+            "required": ["instrumentType"]
+          },
+          "then": {
+            "properties": {
+              "optionType": { "enum": ["CALL", "PUT"] },
+              "underlyingSymbol": { "type": "string", "minLength": 1 },
+              "expiryDate": { "type": "string", "format": "date" },
+              "strikePrice": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+              "contractMultiplier": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" }
+            }
+          },
+          "else": {
+            "properties": {
+              "optionType": { "type": "null" },
+              "underlyingSymbol": { "type": "null" },
+              "expiryDate": { "type": "null" },
+              "strikePrice": { "type": "null" },
+              "contractMultiplier": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "status", "version", "used", "capacity", "updatedAt"],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "status": { "enum": ["ACTIVE", "FROZEN"] },
+        "version": { "type": "integer", "minimum": 1 },
+        "used": { "type": "integer", "minimum": 0 },
+        "capacity": { "type": ["integer", "null"], "minimum": 1 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/model-provider-config.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eligible", "planCode", "config"],
+  "properties": {
+    "eligible": { "type": "boolean" },
+    "planCode": {
+      "type": ["string", "null"],
+      "enum": ["LITE", "PRO", "FLAGSHIP", null]
+    },
+    "config": {
+      "oneOf": [
+        { "$ref": "#/$defs/config" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "protocol": {
+      "enum": ["OPENAI_RESPONSES", "OPENAI_CHAT_COMPLETIONS"]
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configId",
+        "displayName",
+        "protocol",
+        "endpoint",
+        "model",
+        "enabled",
+        "keyConfigured",
+        "keyLastFour",
+        "updatedAt"
+      ],
+      "properties": {
+        "configId": { "type": "string", "format": "uuid" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "endpoint": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "enabled": { "type": "boolean" },
+        "keyConfigured": { "const": true },
+        "keyLastFour": { "type": "string", "minLength": 4, "maxLength": 4 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "protocol", "endpoint", "model", "enabled"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "endpoint": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "apiKey": { "type": "string", "minLength": 8, "maxLength": 8192 },
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

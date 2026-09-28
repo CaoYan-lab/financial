@@ -21,6 +21,7 @@ dist-ssr
 
 # 运行时数据、日志与虚拟环境
 .data/
+.dbg/
 .logs/
 .tmp/
 .venv*/

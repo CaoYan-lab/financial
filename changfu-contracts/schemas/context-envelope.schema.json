@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/context-envelope.schema.json",
+  "title": "ContextEnvelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "deviceId",
+    "brokerConnectionId",
+    "purpose",
+    "capturedAt",
+    "expiresAt",
+    "sequence",
+    "account",
+    "positions",
+    "marketSessions",
+    "quotes",
+    "minuteBars",
+    "tickerPoints",
+    "orderBooks",
+    "openOrders",
+    "recentDeals",
+    "capabilities",
+    "clientPolicyVersion",
+    "dataGaps",
+    "contentHash",
+    "deviceSignature"
+  ],
+  "properties": {
+    "schemaVersion": { "enum": ["1.0", "2.0"] },
+    "requestId": { "type": "string", "format": "uuid" },
+    "deviceId": { "type": "string", "format": "uuid" },
+    "brokerConnectionId": { "type": "string", "format": "uuid" },
+    "provider": { "enum": ["FUTU", "LONGBRIDGE"] },
+    "purpose": {
+      "enum": [
+        "CHAT",
+        "SINGLE_DECISION",
+        "PORTFOLIO_REVIEW",
+        "MANAGED_ORDER_REVIEW",
+        "REPORT"
+      ]
+    },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "account": { "$ref": "#/$defs/account" },
+    "positions": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/position" }
+    },
+    "marketSessions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/marketSession" }
+    },
+    "quotes": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/quote" }
+    },
+    "minuteBars": {
+      "type": "array",
+      "maxItems": 4000,
+      "items": { "$ref": "#/$defs/minuteBar" }
+    },
+    "tickerPoints": {
+      "type": "array",
+      "maxItems": 4000,
+      "items": { "$ref": "#/$defs/tickerPoint" }
+    },
+    "orderBooks": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/orderBookLevel" }
+    },
+    "openOrders": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/order" }
+    },
+    "recentDeals": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/deal" }
+    },
+    "research": { "$ref": "#/$defs/research" },
+    "decisionContext": { "$ref": "#/$defs/decisionContext" },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "strategyConfigVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "researchPoolVersion": { "type": "integer", "minimum": 1 },
+    "tradingConfigVersion": { "type": "integer", "minimum": 1 },
+    "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "tradingSessionId": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "requestedSymbols": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+    },
+    "clientPolicyVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "dataGaps": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "deviceSignature": { "type": "string", "minLength": 80, "maxLength": 256 }
+  },
+  "$defs": {
+    "money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "currency"],
+      "properties": {
+        "value": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "research": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entitlementStatus",
+        "planName",
+        "poolLimit",
+        "poolSymbols",
+        "conversationSymbols"
+      ],
+      "properties": {
+        "entitlementStatus": {
+          "enum": ["unavailable", "active", "expired"]
+        },
+        "planName": {
+          "type": ["string", "null"],
+          "maxLength": 64
+        },
+        "poolLimit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "poolSymbols": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+        },
+        "conversationSymbols": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+        }
+      }
+    },
+    "decisionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategyRequirements",
+        "evidenceCatalog",
+        "trendContext",
+        "positionExposure",
+        "accountRisk",
+        "ordersKnowledge",
+        "dataWindow",
+        "extendedSession",
+        "gapCatalog",
+        "temporalBoundary",
+        "outputContract"
+      ],
+      "properties": {
+        "strategyRequirements": { "type": "object" },
+        "evidenceCatalog": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "summary", "sourceAt"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "kind": { "enum": ["ACCOUNT", "POSITION", "QUOTE", "TREND", "ORDER", "RISK"] },
+              "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "sourceAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "trendContext": { "type": "array", "maxItems": 100 },
+        "positionExposure": { "type": "array", "maxItems": 500 },
+        "accountRisk": { "type": "object" },
+        "ordersKnowledge": { "type": "object" },
+        "dataWindow": { "type": "array", "maxItems": 100 },
+        "extendedSession": { "type": "array", "maxItems": 100 },
+        "gapCatalog": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "severity", "summary", "sourceSupport"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "severity": { "enum": ["BLOCKING", "DEGRADING", "INFORMATIONAL"] },
+              "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+              "sourceSupport": { "type": "string", "minLength": 1, "maxLength": 80 }
+            }
+          }
+        },
+        "temporalBoundary": { "type": "object" },
+        "outputContract": { "type": "object" }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "promptVersion",
+        "modelProfile",
+        "toolPolicyVersion"
+      ],
+      "properties": {
+        "id": { "enum": ["quantitative", "sellPut"] },
+        "kind": { "const": "skill" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "promptVersion": {
+          "enum": ["research-quantitative-v1", "research-sell-put-v1"]
+        },
+        "modelProfile": { "enum": ["fast", "deep", "risk"] },
+        "toolPolicyVersion": { "const": "research-readonly-v1" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "id": { "const": "quantitative" } } },
+          "then": {
+            "properties": {
+              "promptVersion": { "const": "research-quantitative-v1" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "id": { "const": "sellPut" } } },
+          "then": {
+            "properties": {
+              "promptVersion": { "const": "research-sell-put-v1" }
+            }
+          }
+        }
+      ]
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountIdHash", "broker", "environment", "totalAssets", "cash", "buyingPower"],
+      "properties": {
+        "accountIdHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "broker": { "enum": ["FUTU", "LONGBRIDGE"] },
+        "environment": { "enum": ["SIMULATE", "REAL"] },
+        "totalAssets": { "$ref": "#/$defs/money" },
+        "cash": { "$ref": "#/$defs/money" },
+        "buyingPower": { "$ref": "#/$defs/money" }
+      }
+    },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "market", "side", "quantity", "availableQuantity", "costPrice", "lastPrice", "currency"],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "market": { "enum": ["US", "HK", "CN"] },
+        "side": { "enum": ["LONG", "SHORT"] },
+        "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "availableQuantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "costPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "lastPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "marketSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["market", "state", "sourceAt"],
+      "properties": {
+        "market": { "enum": ["US", "HK", "CN"] },
+        "state": { "enum": ["PRE_MARKET", "OPEN", "MIDDAY_BREAK", "AFTER_HOURS", "CLOSED", "UNKNOWN"] },
+        "sourceAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "market", "sourceAt", "lastPrice", "bidPrice", "askPrice", "lotSize"],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "market": { "enum": ["US", "HK", "CN"] },
+        "sourceAt": { "type": "string", "format": "date-time" },
+        "lastPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "bidPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "askPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "lotSize": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "minuteBar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "timestamp", "open", "high", "low", "close", "volume"],
+      "properties": {
+        "symbol": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "open": { "type": "string" },
+        "high": { "type": "string" },
+        "low": { "type": "string" },
+        "close": { "type": "string" },
+        "volume": { "type": "string" }
+      }
+    },
+    "tickerPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "timestamp", "price", "volume"],
+      "properties": {
+        "symbol": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "price": { "type": "string" },
+        "volume": { "type": "string" }
+      }
+    },
+    "orderBookLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "side", "level", "price", "quantity"],
+      "properties": {
+        "symbol": { "type": "string" },
+        "side": { "enum": ["BID", "ASK"] },
+        "level": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "price": { "type": "string" },
+        "quantity": { "type": "string" }
+      }
+    },
+    "order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["brokerOrderId", "symbol", "side", "quantity", "filledQuantity", "status"],
+      "properties": {
+        "brokerOrderId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "side": { "enum": ["BUY", "SELL"] },
+        "quantity": { "type": "string" },
+        "filledQuantity": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "deal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["brokerDealId", "brokerOrderId", "symbol", "side", "quantity", "price", "dealtAt"],
+      "properties": {
+        "brokerDealId": { "type": "string" },
+        "brokerOrderId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "side": { "enum": ["BUY", "SELL"] },
+        "quantity": { "type": "string" },
+        "price": { "type": "string" },
+        "dealtAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "schemaVersion": { "const": "1.0" } } },
+      "then": {
+        "required": ["strategyConfigVersion"],
+        "properties": {
+          "purpose": { "enum": ["CHAT", "REPORT"] },
+          "provider": { "const": "FUTU" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "schemaVersion": { "const": "2.0" } } },
+      "then": {
+        "required": [
+          "researchPoolVersion",
+          "tradingConfigVersion",
+          "catalogVersion",
+          "tradingSessionId",
+          "requestedSymbols",
+          "provider"
+        ]
+      }
+    }
+  ]
+}

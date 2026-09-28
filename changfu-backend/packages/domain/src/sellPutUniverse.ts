@@ -1,0 +1,138 @@
+export const SELL_PUT_UNIVERSE_SOURCE_URL = 'https://stockanalysis.com/list/biggest-companies/'
+
+export type SellPutUniverseCompany = {
+  rank: number
+  ticker: string
+  companyName: string
+  marketCap: string
+}
+
+const seedCompanies = [
+  ['NVDA', 'NVIDIA'], ['MSFT', 'Microsoft'], ['AAPL', 'Apple'],
+  ['GOOG', 'Alphabet'], ['AMZN', 'Amazon'], ['META', 'Meta Platforms'],
+  ['AVGO', 'Broadcom'], ['TSM', 'Taiwan Semiconductor Manufacturing'],
+  ['BRK.B', 'Berkshire Hathaway'], ['LLY', 'Eli Lilly'], ['TSLA', 'Tesla'],
+  ['WMT', 'Walmart'], ['JPM', 'JPMorgan Chase'], ['V', 'Visa'],
+  ['ORCL', 'Oracle'], ['MA', 'Mastercard'], ['NFLX', 'Netflix'],
+  ['XOM', 'Exxon Mobil'], ['COST', 'Costco Wholesale'],
+  ['JNJ', 'Johnson & Johnson'], ['HD', 'Home Depot'],
+  ['PLTR', 'Palantir Technologies'], ['PG', 'Procter & Gamble'],
+  ['ABBV', 'AbbVie'], ['BAC', 'Bank of America'], ['ASML', 'ASML Holding'],
+  ['KO', 'Coca-Cola'], ['SAP', 'SAP'], ['GE', 'GE Aerospace'],
+  ['CSCO', 'Cisco Systems'],
+] as const
+
+const shareClassGroups: Record<string, { group: string; preferredTicker: string }> = {
+  GOOG: { group: 'Alphabet', preferredTicker: 'GOOG' },
+  GOOGL: { group: 'Alphabet', preferredTicker: 'GOOG' },
+  'BRK.A': { group: 'Berkshire Hathaway', preferredTicker: 'BRK.B' },
+  'BRK.B': { group: 'Berkshire Hathaway', preferredTicker: 'BRK.B' },
+}
+
+export function parseStockAnalysisUniverse(html: string): SellPutUniverseCompany[] {
+  const rows: SellPutUniverseCompany[] = []
+  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
+  const cellPattern = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi
+  let rowMatch: RegExpExecArray | null
+  while ((rowMatch = rowPattern.exec(html))) {
+    const rowHtml = rowMatch[1]
+    if (rowHtml === undefined) continue
+    const cells = [...rowHtml.matchAll(cellPattern)]
+      .map(match => cleanHtml(match[1] ?? ''))
+    const rank = cells[0]
+    const companyName = cells[2]
+    if (cells.length < 4 || rank === undefined || companyName === undefined
+      || Number.isNaN(Number(rank))) continue
+    const ticker = rowHtml.match(/\/stocks\/([a-z0-9.-]+)\//i)?.[1]?.toUpperCase()
+      ?? cells[2]?.toUpperCase()
+    if (!ticker) continue
+    rows.push({
+      rank: Number(rank),
+      ticker,
+      companyName,
+      marketCap: cells[3] ?? 'unavailable',
+    })
+  }
+  return rows
+}
+
+export function lockSellPutTopThirty(
+  companies: SellPutUniverseCompany[],
+): SellPutUniverseCompany[] {
+  const selected = new Map<string, SellPutUniverseCompany>()
+  const seenGroups = new Set<string>()
+  for (const company of companies) {
+    const ticker = company.ticker.toUpperCase()
+    const shareClass = shareClassGroups[ticker]
+    const group = shareClass?.group ?? ticker
+    if (seenGroups.has(group)) {
+      if (shareClass?.preferredTicker === ticker) {
+        selected.set(group, {
+          ...company,
+          ticker,
+          companyName: shareClass.group,
+        })
+      }
+      continue
+    }
+    seenGroups.add(group)
+    selected.set(group, {
+      ...company,
+      ticker: shareClass?.preferredTicker ?? ticker,
+      companyName: shareClass?.group ?? company.companyName,
+    })
+    if (selected.size === 30) break
+  }
+  const locked = [...selected.values()].slice(0, 30).map((company, index) => ({
+    ...company,
+    rank: index + 1,
+  }))
+  if (locked.length !== 30) {
+    throw new Error(`SELL_PUT_TOP30_INCOMPLETE:${locked.length}`)
+  }
+  return locked
+}
+
+export async function fetchSellPutTopThirty(
+  fetcher: typeof fetch = fetch,
+): Promise<{ companies: SellPutUniverseCompany[]; source: string; accessedAt: string; fallback: boolean }> {
+  const accessedAt = new Date().toISOString()
+  try {
+    const response = await fetcher(SELL_PUT_UNIVERSE_SOURCE_URL, {
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!response.ok) throw new Error(`HTTP_${response.status}`)
+    const parsed = parseStockAnalysisUniverse(await response.text())
+    if (parsed.length < 30) throw new Error(`ROWS_${parsed.length}`)
+    return {
+      companies: lockSellPutTopThirty(parsed),
+      source: SELL_PUT_UNIVERSE_SOURCE_URL,
+      accessedAt,
+      fallback: false,
+    }
+  } catch {
+    return {
+      companies: lockSellPutTopThirty(seedCompanies.map(([ticker, companyName], index) => ({
+        rank: index + 1,
+        ticker,
+        companyName,
+        marketCap: 'unavailable',
+      }))),
+      source: SELL_PUT_UNIVERSE_SOURCE_URL,
+      accessedAt,
+      fallback: true,
+    }
+  }
+}
+
+export function providerSymbol(providerId: 'FUTU' | 'LONGBRIDGE', ticker: string): string {
+  return providerId === 'FUTU' ? `US.${ticker}` : `${ticker}.US`
+}
+
+function cleanHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "status": "COMPLETED",
+  "responseType": "HOLD",
+  "summary": "当前数据缺少逐笔与盘口，维持观察，不生成可执行订单。",
+  "evidence": [
+    {
+      "id": "quote-US.AAPL",
+      "kind": "QUOTE",
+      "summary": "最新价 225.00，买一 224.99，卖一 225.01。",
+      "sourceAt": "2026-09-17T02:00:00.000Z"
+    }
+  ],
+  "counterEvidence": [],
+  "risks": ["缺少盘口深度，无法验证可成交价格与滑点。"],
+  "dataGaps": ["示例夹具未包含逐笔与盘口"],
+  "exitCondition": "补齐盘口与逐笔后重新评估。",
+  "sourceValidUntil": "2026-09-17T02:01:00.000Z",
+  "orderIntent": null
+}

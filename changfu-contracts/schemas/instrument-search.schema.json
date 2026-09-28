@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/instrument-search.schema.json",
+  "title": "BrokerInstrumentSearchResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providerId", "query", "queryMode", "results", "fetchedAt"],
+  "properties": {
+    "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+    "query": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "queryMode": { "enum": ["FUZZY", "EXACT_CODE"] },
+    "results": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/instrument" }
+    },
+    "fetchedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "searchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "markets", "instrumentTypes", "limit"],
+      "properties": {
+        "query": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "markets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["US", "HK", "CN", "SG"] }
+        },
+        "instrumentTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["STOCK", "ETF"] }
+        },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerId", "providerSymbol", "canonicalSymbol", "displayName",
+        "market", "instrumentType", "currency", "addable", "unavailableReason"
+      ],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "providerSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "canonicalSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "market": { "enum": ["US", "HK", "CN", "SG"] },
+        "instrumentType": { "enum": ["STOCK", "ETF"] },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "addable": { "type": "boolean" },
+        "unavailableReason": { "type": ["string", "null"], "maxLength": 200 }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerId", "searchMode", "supportedMarkets",
+        "supportedInstrumentTypes", "supportsOptionChain"
+      ],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "searchMode": { "enum": ["FUZZY", "EXACT_CODE"] },
+        "supportedMarkets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["US", "HK", "CN", "SG"] }
+        },
+        "supportedInstrumentTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["STOCK", "ETF", "OPTION"] }
+        },
+        "supportsOptionChain": { "type": "boolean" }
+      }
+    },
+    "optionExpiry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlyingSymbol", "expiryDate"],
+      "properties": {
+        "underlyingSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "expiryDate": { "type": "string", "format": "date" }
+      }
+    },
+    "optionContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerId", "providerSymbol", "canonicalSymbol", "displayName",
+        "market", "optionType", "underlyingSymbol", "expiryDate", "strikePrice",
+        "currency", "contractMultiplier", "addable", "unavailableReason"
+      ],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "providerSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "canonicalSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "market": { "enum": ["US", "HK", "CN", "SG"] },
+        "instrumentType": { "const": "OPTION" },
+        "optionType": { "enum": ["CALL", "PUT"] },
+        "underlyingSymbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "expiryDate": { "type": "string", "format": "date" },
+        "strikePrice": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "contractMultiplier": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "addable": { "type": "boolean" },
+        "unavailableReason": { "type": ["string", "null"], "maxLength": 200 }
+      }
+    }
+  }
+}

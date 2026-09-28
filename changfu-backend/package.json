@@ -1,0 +1,34 @@
+{
+  "name": "changfu-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test",
+    "dev:gateway": "tsx watch apps/gateway/src/server.ts",
+    "dev:worker": "tsx watch apps/decision-worker/src/server.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:verify": "tsx scripts/verify-database.ts",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test:integration": "node scripts/integration-smoke.mjs",
+    "test:subscription-integration": "node --import tsx scripts/subscription-lifecycle-integration.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}

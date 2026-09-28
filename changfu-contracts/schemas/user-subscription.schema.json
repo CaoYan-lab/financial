@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/user-subscription.schema.json",
+  "title": "UserSubscription",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subscriptionId", "planVersionId", "planCode", "planName", "billingPeriod",
+    "status", "version", "purchasedAt", "startsAt", "currentPeriodStart",
+    "expiresAt", "remainingDays", "pendingChange", "slots"
+  ],
+  "properties": {
+    "subscriptionId": { "type": "string", "format": "uuid" },
+    "planVersionId": { "type": "string", "format": "uuid" },
+    "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+    "planName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+    "status": { "enum": ["ACTIVE", "FROZEN", "CANCELLED", "UNAVAILABLE"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "purchasedAt": { "type": "string", "format": "date-time" },
+    "startsAt": { "type": "string", "format": "date-time" },
+    "currentPeriodStart": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "remainingDays": { "type": "integer", "minimum": 0 },
+    "pendingChange": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/pendingChange" }
+      ]
+    },
+    "slots": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/slot" }
+    }
+  },
+  "$defs": {
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId", "slotOrdinal", "providerId", "status", "boundAt",
+        "nextRebindAt", "version"
+      ],
+      "properties": {
+        "slotId": { "type": "string", "format": "uuid" },
+        "slotOrdinal": { "type": "integer", "minimum": 1 },
+        "providerId": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Z][A-Z0-9_]{1,31}$"
+        },
+        "status": { "enum": ["ACTIVE", "FROZEN", "EMPTY"] },
+        "boundAt": { "type": ["string", "null"], "format": "date-time" },
+        "nextRebindAt": { "type": ["string", "null"], "format": "date-time" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "pendingChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planVersionId", "planCode", "billingPeriod", "effectiveAt",
+        "retainedProviderIds"
+      ],
+      "properties": {
+        "planVersionId": { "type": "string", "format": "uuid" },
+        "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "effectiveAt": { "type": "string", "format": "date-time" },
+        "retainedProviderIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }
+        }
+      }
+    },
+    "changeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planVersionId", "billingPeriod", "retainedProviderIds", "expectedVersion"],
+      "properties": {
+        "planVersionId": { "type": "string", "format": "uuid" },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "retainedProviderIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }
+        },
+        "expectedVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "slotUpdateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "expectedVersion"],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "expectedVersion": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

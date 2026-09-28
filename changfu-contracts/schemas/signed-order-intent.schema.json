@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/signed-order-intent.schema.json",
+  "title": "SignedOrderIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "intentId",
+    "userId",
+    "deviceId",
+    "brokerConnectionId",
+    "provider",
+    "accountIdHash",
+    "contextHash",
+    "strategyVersion",
+    "sessionId",
+    "poolVersion",
+    "configVersion",
+    "riskPolicyVersion",
+    "executionMode",
+    "clientRevalidation",
+    "order",
+    "issuedAt",
+    "expiresAt",
+    "keyId",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "intentId": { "type": "string", "format": "uuid" },
+    "userId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "deviceId": { "type": "string", "format": "uuid" },
+    "brokerConnectionId": { "type": "string", "format": "uuid" },
+    "provider": { "enum": ["FUTU", "LONGBRIDGE"] },
+    "accountIdHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "contextHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "strategyVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "sessionId": { "type": ["string", "null"], "format": "uuid" },
+    "poolVersion": { "type": "integer", "minimum": 1 },
+    "configVersion": { "type": "integer", "minimum": 1 },
+    "riskPolicyVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "executionMode": { "enum": ["MANUAL_CONFIRM", "AUTO_EXECUTE"] },
+    "clientRevalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quoteMaxAgeMs", "accountMaxAgeMs", "mustCheckOpenOrders"],
+      "properties": {
+        "quoteMaxAgeMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "accountMaxAgeMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "mustCheckOpenOrders": { "const": true }
+      }
+    },
+    "order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "broker",
+        "environment",
+        "market",
+        "symbol",
+        "side",
+        "positionEffect",
+        "orderType",
+        "quantity",
+        "limitPrice",
+        "currency",
+        "maxSlippageBps"
+      ],
+      "properties": {
+        "broker": { "enum": ["FUTU", "LONGBRIDGE"] },
+        "environment": { "enum": ["SIMULATE", "REAL"] },
+        "market": { "enum": ["US", "HK"] },
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "side": { "enum": ["BUY", "SELL"] },
+        "positionEffect": {
+          "enum": ["OPEN_LONG", "ADD_LONG", "REDUCE_LONG", "OPEN_SHORT", "ADD_SHORT", "COVER_SHORT"]
+        },
+        "orderType": { "const": "MARKETABLE_LIMIT" },
+        "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "limitPrice": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "maxSlippageBps": { "type": "integer", "minimum": 0, "maximum": 15 }
+      }
+    },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "keyId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "signature": { "type": "string", "minLength": 80, "maxLength": 256 }
+  }
+}

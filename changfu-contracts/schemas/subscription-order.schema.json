@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/subscription-order.schema.json",
+  "title": "SubscriptionOrder",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "orderId", "businessOrderNo", "orderType", "planVersionId", "planCode",
+    "billingPeriod", "currency", "originalAmountMinor", "creditAmountMinor",
+    "payableAmountMinor", "status", "providerSelections", "quoteExpiresAt",
+    "createdAt", "paidAt", "payment"
+  ],
+  "properties": {
+    "orderId": { "type": "string", "format": "uuid" },
+    "businessOrderNo": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "orderType": { "enum": ["NEW", "RENEW", "UPGRADE"] },
+    "planVersionId": { "type": "string", "format": "uuid" },
+    "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+    "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+    "currency": { "const": "CNY" },
+    "originalAmountMinor": { "type": "integer", "minimum": 1 },
+    "creditAmountMinor": { "type": "integer", "minimum": 0 },
+    "payableAmountMinor": { "type": "integer", "minimum": 0 },
+    "creditBasis": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/creditBasis" }
+      ]
+    },
+    "status": { "enum": ["CREATED", "PAYING", "PAID", "FAILED", "CLOSED", "REFUNDED"] },
+    "providerSelections": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/providerSelection" }
+    },
+    "quoteExpiresAt": { "type": "string", "format": "date-time" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "paidAt": { "type": ["string", "null"], "format": "date-time" },
+    "payment": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/payment" }
+      ]
+    }
+  },
+  "$defs": {
+    "providerSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slotOrdinal", "providerId"],
+      "properties": {
+        "slotOrdinal": { "type": "integer", "minimum": 1 },
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }
+      }
+    },
+    "creditBasis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceOrderPaidAmountMinor", "remainingSeconds", "sourcePeriodSeconds",
+        "calculatedAt"
+      ],
+      "properties": {
+        "sourceOrderPaidAmountMinor": { "type": "integer", "minimum": 0 },
+        "remainingSeconds": { "type": "integer", "minimum": 0 },
+        "sourcePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "calculatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "payment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "paymentUrl", "qrCodePayload", "expiresAt"],
+      "properties": {
+        "channel": { "enum": ["WECHAT", "ALIPAY", "DOUYIN"] },
+        "paymentUrl": { "type": ["string", "null"], "format": "uri" },
+        "qrCodePayload": { "type": ["string", "null"], "maxLength": 4096 },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "createRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderType", "planVersionId", "billingPeriod", "providerSelections"],
+      "properties": {
+        "orderType": { "enum": ["NEW", "RENEW", "UPGRADE"] },
+        "planVersionId": { "type": "string", "format": "uuid" },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "providerSelections": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/providerSelection" }
+        }
+      }
+    },
+    "paymentRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel"],
+      "properties": {
+        "channel": { "enum": ["WECHAT", "ALIPAY", "DOUYIN"] }
+      }
+    }
+  }
+}

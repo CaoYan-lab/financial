@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+deploy/volcano/out/
+.env
+.env.*
+*.local
+*.log
+*.pem
+*.key

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/trading-config.schema.json",
+  "title": "TradingConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "brokerConnectionId", "provider", "version", "catalogVersion", "executionMode",
+    "confirmationMode", "models", "strategyId", "singlePromptId", "portfolioPromptId",
+    "managedOrderPromptId", "scanIntervalSeconds", "portfolioReviewIntervalSeconds",
+    "candidateTtlSeconds", "maxConcurrency", "disableUsOvernightEvaluation", "riskPolicyId"
+  ],
+  "properties": {
+    "brokerConnectionId": { "type": "string", "format": "uuid" },
+    "provider": { "enum": ["FUTU", "LONGBRIDGE"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "executionMode": { "enum": ["DIRECT", "CANDIDATE_POOL"] },
+    "confirmationMode": { "enum": ["MANUAL_CONFIRM", "AUTO_EXECUTE_PREFERENCE"] },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["singleDecision", "portfolioReview", "managedOrderReview"],
+      "properties": {
+        "singleDecision": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "portfolioReview": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "managedOrderReview": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "strategyId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "singlePromptId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "portfolioPromptId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "managedOrderPromptId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "scanIntervalSeconds": { "type": "integer", "minimum": 30, "maximum": 86400 },
+    "portfolioReviewIntervalSeconds": { "type": "integer", "minimum": 30, "maximum": 86400 },
+    "candidateTtlSeconds": { "type": "integer", "minimum": 60, "maximum": 86400 },
+    "maxConcurrency": { "type": "integer", "minimum": 1, "maximum": 20 },
+    "disableUsOvernightEvaluation": { "type": "boolean" },
+    "riskPolicyId": { "type": "string", "minLength": 1, "maxLength": 64 }
+  }
+}

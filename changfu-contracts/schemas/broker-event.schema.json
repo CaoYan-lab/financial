@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/broker-event.schema.json",
+  "title": "BrokerEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "intentId",
+    "provider",
+    "occurredAt",
+    "type",
+    "brokerOrderId",
+    "symbol",
+    "quantity",
+    "filledQuantity",
+    "averagePrice",
+    "reasonCode"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "eventId": { "type": "string", "format": "uuid" },
+    "intentId": { "type": "string", "format": "uuid" },
+    "provider": { "enum": ["FUTU", "LONGBRIDGE"] },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "type": {
+      "enum": [
+        "CLAIMED",
+        "CONFIRMED",
+        "SUBMITTING",
+        "SUBMITTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCEL_REQUESTED",
+        "CANCELLED",
+        "REJECTED",
+        "FAILED",
+        "EXPIRED"
+      ]
+    },
+    "brokerOrderId": { "type": ["string", "null"], "maxLength": 128 },
+    "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "filledQuantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "averagePrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "reasonCode": { "type": ["string", "null"], "maxLength": 100 }
+  }
+}

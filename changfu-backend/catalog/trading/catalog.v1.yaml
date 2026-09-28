@@ -1,0 +1,70 @@
+{
+  "catalogVersion": "2026.09.2",
+  "publishedAt": "2026-09-19T10:50:00.000Z",
+  "models": [
+    {
+      "id": "ark-balanced",
+      "name": "均衡决策模型",
+      "deploymentId": "env:CHANGFU_ARK_MODEL",
+      "roles": ["SINGLE_DECISION", "PORTFOLIO_REVIEW", "MANAGED_ORDER_REVIEW"],
+      "capabilities": ["STRUCTURED_OUTPUT", "TOOL_CALLING", "REASONING"],
+      "latencyTier": "BALANCED",
+      "plans": ["PRO", "FLAGSHIP"]
+    }
+  ],
+  "strategies": [
+    {
+      "id": "equity-momentum-v1",
+      "name": "正股与 ETF 趋势策略",
+      "version": "1.0.0",
+      "providers": ["FUTU", "LONGBRIDGE"],
+      "markets": ["US", "HK"],
+      "instrumentTypes": ["STOCK", "ETF"]
+    }
+  ],
+  "prompts": [
+    {
+      "id": "single-decision-v1",
+      "name": "单票交易决策",
+      "version": "1.0.0",
+      "role": "SINGLE_DECISION",
+      "summary": "基于单一研究池标的生成信号或观望结论。",
+      "constraints": ["仅正股和 ETF", "数据缺口时返回 HOLD", "不得绕过服务端与本地硬风控"],
+      "outputFields": ["summary", "signal", "evidence", "risks", "exitCondition"],
+      "publishedAt": "2026-09-19T00:00:00.000Z",
+      "contentHash": "43b3655005034b01f288f791154794b666b4c6a6cde64ff4d293ad09590a63aa",
+      "body": "仅基于已验证行情和账户约束生成单票信号。"
+    },
+    {
+      "id": "portfolio-review-v1",
+      "name": "候选池组合裁决",
+      "version": "1.0.0",
+      "role": "PORTFOLIO_REVIEW",
+      "summary": "对候选池逐项分类、排序并决定是否晋级。",
+      "constraints": ["每个候选必须恰好分类一次", "不得修改候选交易参数"],
+      "outputFields": ["promoted", "watch", "suppressed", "expired"],
+      "publishedAt": "2026-09-19T00:00:00.000Z",
+      "contentHash": "99f3a80472ac080957849c370ac1fafad6921ad73896d970c61326268f10a8b1",
+      "body": "对候选逐项分类并排序，不得改变方向、数量、价格或风险方案。"
+    },
+    {
+      "id": "managed-order-review-v1",
+      "name": "挂单监管",
+      "version": "1.0.0",
+      "role": "MANAGED_ORDER_REVIEW",
+      "summary": "复核本系统未终态订单并决定保留或撤销剩余数量。",
+      "constraints": ["状态未知时 KEEP", "仅允许 KEEP 或 CANCEL_REMAINDER"],
+      "outputFields": ["intentId", "action", "reason"],
+      "publishedAt": "2026-09-19T00:00:00.000Z",
+      "contentHash": "ff5d596a9e7f47321e5b3d324b9d485f8f1cde9a4eee1d72806a587e1435e58a",
+      "body": "仅对本系统挂单返回 KEEP 或 CANCEL_REMAINDER。"
+    }
+  ],
+  "riskPolicies": [
+    {
+      "id": "desktop-hard-risk-v1",
+      "name": "桌面硬风控",
+      "version": "1.0.0"
+    }
+  ]
+}

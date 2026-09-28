@@ -1,0 +1,1042 @@
+openapi: 3.1.0
+info:
+  title: 长富桌面服务 API
+  version: 1.0.0
+  description: 桌面客户端与独立 Gateway 的协议。模型上下文不得持久化或写入日志。
+servers:
+  - url: https://api.example.invalid/changfu
+security:
+  - bearerAuth: []
+paths:
+  /v1/health:
+    get:
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: 服务健康
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, service, version]
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  version: { type: string }
+  /v1/auth/login:
+    post:
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401": { $ref: "#/components/responses/Problem" }
+  /v1/auth/refresh:
+    post:
+      security: []
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string, minLength: 40 }
+      responses:
+        "200":
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401": { $ref: "#/components/responses/Problem" }
+  /v1/auth/logout:
+    post:
+      security: []
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string, minLength: 40 }
+      responses:
+        "204":
+          description: 会话已注销
+  /v1/devices/enroll:
+    post:
+      operationId: enrollDevice
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollDeviceRequest"
+      responses:
+        "201":
+          description: 设备已注册
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/broker-connections:
+    get:
+      operationId: listBrokerConnections
+      responses:
+        "200":
+          description: 当前用户的券商连接
+    post:
+      operationId: upsertBrokerConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, accountIdHash, environment, displayName]
+              properties:
+                provider: { enum: [FUTU, LONGBRIDGE] }
+                accountIdHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+                environment: { enum: [SIMULATE, REAL] }
+                displayName: { type: string, minLength: 1, maxLength: 120 }
+      responses:
+        "200": { description: 已注册或更新 }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/broker-connections/{id}:
+    patch:
+      operationId: updateBrokerConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 120 }
+                status: { enum: [ACTIVE, DISABLED, DELETED] }
+      responses:
+        "200": { description: 已更新 }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/subscription/catalog:
+    get:
+      operationId: getSubscriptionCatalog
+      responses:
+        "200":
+          description: 当前可购买的版本化套餐、券商能力和支付渠道
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/subscription-catalog.schema.json"
+  /v1/subscription/current:
+    get:
+      operationId: getCurrentSubscription
+      responses:
+        "200":
+          description: 当前订阅；尚未购买时 subscription 为 null
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [subscription]
+                properties:
+                  subscription:
+                    oneOf:
+                      - $ref: "../schemas/user-subscription.schema.json"
+                      - type: "null"
+  /v1/subscription/orders:
+    post:
+      operationId: createSubscriptionOrder
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/subscription-order.schema.json#/$defs/createRequest"
+      responses:
+        "201":
+          description: 订阅订单已创建，升级抵扣报价有效 15 分钟
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/subscription-order.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/subscription/orders/{orderId}:
+    get:
+      operationId: getSubscriptionOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 订阅订单状态
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/subscription-order.schema.json"
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/subscription/orders/{orderId}/payment:
+    post:
+      operationId: startSubscriptionPayment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/subscription-order.schema.json#/$defs/paymentRequest"
+      responses:
+        "200":
+          description: 已创建短期支付链接或二维码载荷
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/subscription-order.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/subscription/changes:
+    post:
+      operationId: scheduleSubscriptionChange
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/user-subscription.schema.json#/$defs/changeRequest"
+      responses:
+        "200":
+          description: 降级或周期变更已预约在当前到期日生效
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/user-subscription.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/subscription/broker-slots/{slotId}:
+    put:
+      operationId: bindSubscriptionBrokerSlot
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: slotId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/user-subscription.schema.json#/$defs/slotUpdateRequest"
+      responses:
+        "200":
+          description: 空槽已绑定或到达月度周年后已换绑
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/user-subscription.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /internal/v1/payments/{channel}/webhook:
+    post:
+      security: []
+      operationId: receivePaymentWebhook
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          schema: { enum: [WECHAT, ALIPAY, DOUYIN] }
+      description: 回调不使用 Bearer 认证；服务端必须先验证渠道签名、时间窗、商户号和重放。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200": { description: 已验签并幂等处理，重复事件同样返回成功 }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+  /v1/research/pools:
+    get:
+      operationId: listProviderResearchPools
+      responses:
+        "200":
+          description: 当前用户按 Provider 隔离的标的池摘要
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "../schemas/provider-research-pool.schema.json#/$defs/summary"
+        "304": { description: 缓存仍有效 }
+  /v1/research/pools/{providerId}:
+    get:
+      operationId: getProviderResearchPool
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PoolLimit"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: 指定 Provider 标的池的稳定游标分页
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/provider-research-pool.schema.json"
+        "304": { description: 缓存仍有效 }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/research/pools/{providerId}/items:
+    post:
+      operationId: addProviderResearchPoolItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ProviderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/provider-research-pool.schema.json#/$defs/itemInput"
+      responses:
+        "201":
+          description: 已加入 Provider 池且池版本递增
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/provider-research-pool.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/research/pools/{providerId}/items/{itemId}:
+    delete:
+      operationId: removeProviderResearchPoolItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ProviderId"
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 已软删除并立即消耗一次当月替换额度
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/provider-research-pool.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/research/entitlement:
+    get:
+      deprecated: true
+      operationId: getResearchEntitlement
+      responses:
+        "200": { description: 研究套餐权益 }
+  /v1/research/pool:
+    get:
+      deprecated: true
+      operationId: getResearchPool
+      responses:
+        "200":
+          description: 权威研究标的池
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/research-pool.schema.json"
+  /v1/research/pool/items:
+    post:
+      deprecated: true
+      operationId: addResearchPoolItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResearchPoolItemInput"
+      responses:
+        "201": { description: 标的已加入且池版本已递增 }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/research/pool/items/{symbol}:
+    delete:
+      deprecated: true
+      operationId: removeResearchPoolItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 32 }
+      responses:
+        "200": { description: 标的已移除且池版本已递增 }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/research/pool/replacements:
+    post:
+      deprecated: true
+      operationId: replaceResearchPoolItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [oldSymbol, symbol, market, instrumentType]
+              properties:
+                oldSymbol: { type: string, minLength: 1, maxLength: 32 }
+                symbol: { type: string, minLength: 1, maxLength: 32 }
+                market: { enum: [US, HK] }
+                instrumentType: { enum: [STOCK, ETF] }
+      responses:
+        "200": { description: 标的已原子替换且池版本已递增 }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/trading/catalog:
+    get:
+      operationId: getTradingCatalog
+      parameters:
+        - name: brokerConnectionId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 公共模型、策略、提示词摘要与风控目录
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/trading-catalog.schema.json"
+  /v1/trading/config:
+    get:
+      operationId: getTradingConfig
+      parameters:
+        - name: brokerConnectionId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 当前账户交易配置
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/trading-config.schema.json"
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/trading/config/{brokerConnectionId}:
+    put:
+      operationId: putTradingConfig
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: brokerConnectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TradingConfigInput"
+      responses:
+        "200":
+          description: 已保存新版本
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/trading-config.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/trading-sessions/activate:
+    post:
+      operationId: activateTradingSession
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivateTradingSessionRequest"
+      responses:
+        "201":
+          description: 短期自动交易会话已激活
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/trading-session.schema.json"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/trading-sessions/{id}/renew:
+    post:
+      operationId: renewTradingSession
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200":
+          description: 会话已续期
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/trading-session.schema.json"
+  /v1/trading-sessions/{id}/deactivate:
+    post:
+      operationId: deactivateTradingSession
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { description: 会话已停用 }
+  /v1/trading-sessions/current:
+    get:
+      operationId: getCurrentTradingSession
+      parameters:
+        - name: brokerConnectionId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: 当前有效自动交易会话，可能为空 }
+  /v1/trading-lease/acquire:
+    post:
+      operationId: acquireTradingLease
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseRequest"
+      responses:
+        "200":
+          description: 已获取或续期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradingLease"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/trading-lease/renew:
+    post:
+      operationId: renewTradingLease
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseRequest"
+      responses:
+        "200":
+          description: 已续期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradingLease"
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/model-provider/config:
+    get:
+      operationId: getModelProviderConfig
+      description: 返回旗舰版权益和脱敏后的当前第三方模型配置，不返回 API Key。
+      responses:
+        "200":
+          description: 第三方模型配置状态
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/model-provider-config.schema.json"
+    put:
+      operationId: putModelProviderConfig
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schemas/model-provider-config.schema.json#/$defs/input"
+      responses:
+        "200":
+          description: 配置已在服务端加密保存
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/model-provider-config.schema.json"
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteModelProviderConfig
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 配置及密文已删除
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/model-provider-config.schema.json"
+        "403": { $ref: "#/components/responses/Problem" }
+  /v1/model/runs:
+    get:
+      operationId: listModelRuns
+      parameters:
+        - $ref: "#/components/parameters/BrokerConnectionId"
+        - $ref: "#/components/parameters/ResultLimit"
+      responses:
+        "200":
+          description: 模型运行列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemList"
+    post:
+      operationId: createModelRun
+      description: 请求体仅在内存中转发；网关不得记录正文。
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [context, userMessage]
+              properties:
+                context:
+                  $ref: "../schemas/context-envelope.schema.json"
+                userMessage:
+                  type: [string, "null"]
+                  maxLength: 20000
+                modelRoute:
+                  description: OFFICIAL 使用长富官方模型；UUID 指定当前用户已启用的第三方模型配置；省略时兼容旧客户端自动路由。
+                  oneOf:
+                    - type: string
+                      const: OFFICIAL
+                    - type: string
+                      format: uuid
+      responses:
+        "200":
+          description: NDJSON 流
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: "../schemas/model-run-event.schema.json"
+        "400": { $ref: "#/components/responses/Problem" }
+        "413": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/model/runs/{requestId}:
+    get:
+      operationId: getModelRun
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 模型运行详情
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/signals:
+    get:
+      operationId: listSignals
+      parameters:
+        - $ref: "#/components/parameters/BrokerConnectionId"
+        - $ref: "#/components/parameters/ResultLimit"
+      responses:
+        "200":
+          description: 影子信号列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemList"
+  /v1/candidates:
+    get:
+      operationId: listCandidates
+      parameters:
+        - $ref: "#/components/parameters/BrokerConnectionId"
+        - $ref: "#/components/parameters/ResultLimit"
+      responses:
+        "200":
+          description: 候选池列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemList"
+  /v1/pending-orders/{intentId}/claim:
+    post:
+      operationId: claimPendingOrder
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: intentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [deviceId, expectedVersion]
+              properties:
+                deviceId: { type: string, format: uuid }
+                expectedVersion: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Claim 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [claimToken, expiresAt]
+                properties:
+                  claimToken: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/order-events/batch:
+    post:
+      operationId: appendOrderEvents
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    $ref: "../schemas/broker-event.schema.json"
+      responses:
+        "202":
+          description: 已接收
+  /v1/conversations:
+    post:
+      operationId: createConversationAfterFirstMessage
+      description: 只允许在首次发送非空消息时创建。
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, firstMessage]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 120 }
+                firstMessage: { type: string, minLength: 1, maxLength: 20000 }
+      responses:
+        "201":
+          description: 会话已创建
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/ads/active:
+    get:
+      operationId: getActiveAd
+      parameters:
+        - name: placement
+          in: query
+          required: true
+          schema: { enum: [startup, overlay] }
+      responses:
+        "200":
+          description: 当前广告配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdConfig"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    ProviderId:
+      name: providerId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Z][A-Z0-9_]{1,31}$"
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 512
+    PoolLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 100
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 256
+    BrokerConnectionId:
+      name: brokerConnectionId
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+    ResultLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+  responses:
+    Problem:
+      description: 请求失败
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    ItemList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { type: object }
+    TradingConfigInput:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedVersion
+        - catalogVersion
+        - executionMode
+        - confirmationMode
+        - models
+        - strategyId
+        - singlePromptId
+        - portfolioPromptId
+        - managedOrderPromptId
+        - scanIntervalSeconds
+        - portfolioReviewIntervalSeconds
+        - candidateTtlSeconds
+        - maxConcurrency
+        - disableUsOvernightEvaluation
+        - riskPolicyId
+      properties:
+        expectedVersion: { type: integer, minimum: 0 }
+        catalogVersion: { type: string, minLength: 1, maxLength: 64 }
+        executionMode: { enum: [DIRECT, CANDIDATE_POOL] }
+        confirmationMode: { enum: [MANUAL_CONFIRM, AUTO_EXECUTE_PREFERENCE] }
+        models:
+          type: object
+          additionalProperties: false
+          required: [singleDecision, portfolioReview, managedOrderReview]
+          properties:
+            singleDecision: { type: string, minLength: 1, maxLength: 64 }
+            portfolioReview: { type: string, minLength: 1, maxLength: 64 }
+            managedOrderReview: { type: string, minLength: 1, maxLength: 64 }
+        strategyId: { type: string, minLength: 1, maxLength: 64 }
+        singlePromptId: { type: string, minLength: 1, maxLength: 64 }
+        portfolioPromptId: { type: string, minLength: 1, maxLength: 64 }
+        managedOrderPromptId: { type: string, minLength: 1, maxLength: 64 }
+        scanIntervalSeconds: { type: integer, minimum: 30, maximum: 86400 }
+        portfolioReviewIntervalSeconds: { type: integer, minimum: 30, maximum: 86400 }
+        candidateTtlSeconds: { type: integer, minimum: 60, maximum: 86400 }
+        maxConcurrency: { type: integer, minimum: 1, maximum: 20 }
+        disableUsOvernightEvaluation: { type: boolean }
+        riskPolicyId: { type: string, minLength: 1, maxLength: 64 }
+    ResearchPoolItemInput:
+      type: object
+      additionalProperties: false
+      required: [symbol, market, instrumentType]
+      properties:
+        symbol: { type: string, minLength: 1, maxLength: 32 }
+        market: { enum: [US, HK] }
+        instrumentType: { enum: [STOCK, ETF] }
+    ActivateTradingSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [brokerConnectionId, deviceId, configVersion, riskPolicyVersion, confirmationDigest, appSessionId]
+      properties:
+        brokerConnectionId: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        configVersion: { type: integer, minimum: 1 }
+        riskPolicyVersion: { type: string, minLength: 1, maxLength: 64 }
+        confirmationDigest: { type: string, pattern: "^[a-f0-9]{64}$" }
+        appSessionId: { type: string, format: uuid }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, deviceId, deviceFingerprint, displayName, platform, appVersion, publicKey]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 1, maxLength: 500 }
+        deviceId: { type: string, format: uuid }
+        deviceFingerprint: { type: string, minLength: 16, maxLength: 256 }
+        displayName: { type: string, minLength: 1, maxLength: 120 }
+        platform: { enum: [MACOS, WINDOWS] }
+        appVersion: { type: string, minLength: 1, maxLength: 32 }
+        publicKey: { type: string, minLength: 40, maxLength: 256 }
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required: [accessToken, accessExpiresAt, refreshToken, refreshExpiresAt]
+      properties:
+        accessToken: { type: string }
+        accessExpiresAt: { type: string, format: date-time }
+        refreshToken: { type: string }
+        refreshExpiresAt: { type: string, format: date-time }
+    EnrollDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [displayName, platform, appVersion, publicKey]
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 120 }
+        platform: { enum: [MACOS, WINDOWS] }
+        appVersion: { type: string, minLength: 1, maxLength: 32 }
+        publicKey: { type: string, minLength: 40, maxLength: 256 }
+    Device:
+      type: object
+      additionalProperties: false
+      required: [deviceId, displayName, platform, status, enrolledAt]
+      properties:
+        deviceId: { type: string, format: uuid }
+        displayName: { type: string }
+        platform: { enum: [MACOS, WINDOWS] }
+        status: { enum: [ACTIVE, REVOKED] }
+        enrolledAt: { type: string, format: date-time }
+    LeaseRequest:
+      type: object
+      additionalProperties: false
+      required: [deviceId, brokerConnectionId]
+      properties:
+        deviceId: { type: string, format: uuid }
+        brokerConnectionId: { type: string, format: uuid }
+    TradingLease:
+      type: object
+      additionalProperties: false
+      required: [leaseId, deviceId, brokerConnectionId, expiresAt]
+      properties:
+        leaseId: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        brokerConnectionId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+    AdConfig:
+      type: object
+      additionalProperties: false
+      required: [serverTime, enabled, placement, durationSeconds, campaignId, version, localAssetId]
+      properties:
+        serverTime: { type: string, format: date-time }
+        enabled: { type: boolean }
+        placement: { enum: [startup, overlay] }
+        durationSeconds: { type: integer, minimum: 1, maximum: 30 }
+        campaignId: { type: ["string", "null"], format: uuid }
+        version: { type: integer, minimum: 1 }
+        localAssetId: { type: ["string", "null"], enum: [null, startup_default, overlay_default] }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, requestId]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        requestId: { type: string }
+        detail: { type: string }

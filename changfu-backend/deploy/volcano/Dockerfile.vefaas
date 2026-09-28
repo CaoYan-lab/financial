@@ -1,0 +1,41 @@
+FROM node:24.16.0-bookworm-slim AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY apps ./apps
+COPY packages ./packages
+COPY tests ./tests
+COPY scripts ./scripts
+COPY migrations ./migrations
+COPY catalog ./catalog
+# Repository-level contract tests read sibling Web/macOS sources that are
+# intentionally outside this image context. They run before image packaging.
+RUN npm run typecheck && npm run build
+
+FROM node:24.16.0-bookworm-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev \
+    && npm cache clean --force
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/catalog ./catalog
+COPY --from=build /app/migrations ./dist/migrations
+COPY deploy/volcano/run-gateway.sh deploy/volcano/run-worker.sh deploy/volcano/run-migrator.sh ./deploy/volcano/
+RUN chmod 0555 deploy/volcano/run-gateway.sh deploy/volcano/run-worker.sh deploy/volcano/run-migrator.sh \
+    && chown -R node:node /app
+
+USER node
+EXPOSE 8000
+
+FROM runtime AS gateway
+CMD ["bash", "deploy/volcano/run-gateway.sh"]
+
+FROM runtime AS worker
+CMD ["bash", "deploy/volcano/run-worker.sh"]
+
+FROM runtime AS migrator
+CMD ["bash", "deploy/volcano/run-migrator.sh"]

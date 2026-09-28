@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/model-result.schema.json",
+  "title": "ModelResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "status",
+    "responseType",
+    "summary",
+    "evidence",
+    "counterEvidence",
+    "risks",
+    "dataGaps",
+    "exitCondition",
+    "sourceValidUntil",
+    "orderIntent"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "requestId": { "type": "string", "format": "uuid" },
+    "status": { "enum": ["COMPLETED", "REJECTED", "INTERRUPTED"] },
+    "responseType": {
+      "enum": ["RESEARCH", "HOLD", "SIGNAL", "CANDIDATE", "ORDER_DRAFT", "ERROR"]
+    },
+    "summary": { "type": "string", "maxLength": 4000 },
+    "evidence": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/evidence" }
+    },
+    "counterEvidence": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/evidence" }
+    },
+    "risks": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    },
+    "dataGaps": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "exitCondition": { "type": ["string", "null"], "maxLength": 500 },
+    "sourceValidUntil": { "type": ["string", "null"], "format": "date-time" },
+    "orderIntent": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "signed-order-intent.schema.json" }
+      ]
+    },
+    "signal": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["symbol", "action", "confidence"],
+          "properties": {
+            "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+            "action": { "enum": ["BUY", "SELL", "HOLD"] },
+            "intent": {
+              "enum": ["HOLD", "BUY", "BUY_TO_COVER", "SELL_TO_CLOSE", "SELL_SHORT"]
+            },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      ],
+      "default": null
+    },
+    "candidate": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "candidate-pool.schema.json" }
+      ],
+      "default": null
+    },
+    "portfolioReview": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["candidateId", "status", "rank", "reason"],
+            "properties": {
+              "candidateId": { "type": "string", "format": "uuid" },
+              "status": { "enum": ["PROMOTED", "WATCH", "SUPPRESSED", "EXPIRED"] },
+              "rank": { "type": ["integer", "null"], "minimum": 1 },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 300 }
+            }
+          }
+        }
+      ],
+      "default": null
+    },
+    "managedOrderReview": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["intentId", "action", "reason"],
+            "properties": {
+              "intentId": { "type": "string", "format": "uuid" },
+              "action": { "enum": ["KEEP", "CANCEL_REMAINDER"] },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 300 }
+            }
+          }
+        }
+      ],
+      "default": null
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "summary", "sourceAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "kind": { "enum": ["ACCOUNT", "POSITION", "QUOTE", "TREND", "ORDER", "RISK", "USER"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "sourceAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  }
+}

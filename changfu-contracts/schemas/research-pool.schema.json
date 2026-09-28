@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/research-pool.schema.json",
+  "title": "ResearchPool",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entitlement", "version", "items", "updatedAt"],
+  "properties": {
+    "entitlement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "planName", "capacity", "replacementLimit", "replacementUsed", "renewsAt"],
+      "properties": {
+        "status": { "enum": ["UNAVAILABLE", "ACTIVE", "EXPIRED"] },
+        "planName": { "type": ["string", "null"], "maxLength": 64 },
+        "capacity": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "replacementLimit": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "replacementUsed": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "renewsAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "market", "instrumentType", "addedAt"],
+        "properties": {
+          "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "market": { "enum": ["US", "HK"] },
+          "instrumentType": { "enum": ["STOCK", "ETF"] },
+          "addedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  }
+}

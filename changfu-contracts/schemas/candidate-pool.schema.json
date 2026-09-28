@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/candidate-pool.schema.json",
+  "title": "CandidatePoolItem",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidateId", "brokerConnectionId", "signalId", "symbol", "side",
+    "status", "rank", "poolVersion", "configVersion", "createdAt", "expiresAt"
+  ],
+  "properties": {
+    "candidateId": { "type": "string", "format": "uuid" },
+    "brokerConnectionId": { "type": "string", "format": "uuid" },
+    "signalId": { "type": "string", "format": "uuid" },
+    "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "side": { "enum": ["BUY", "SELL"] },
+    "status": { "enum": ["PENDING", "PROMOTED", "WATCH", "SUPPRESSED", "EXPIRED"] },
+    "rank": { "type": ["integer", "null"], "minimum": 1 },
+    "poolVersion": { "type": "integer", "minimum": 1 },
+    "configVersion": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" }
+  }
+}

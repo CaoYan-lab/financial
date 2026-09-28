@@ -1,0 +1,87 @@
+{
+  "catalogVersion": "2026.09.1",
+  "publishedAt": "2026-09-19T00:00:00.000Z",
+  "currency": "CNY",
+  "providers": [
+    {
+      "providerId": "FUTU",
+      "displayName": "富途",
+      "status": "ACTIVE",
+      "supportedMarkets": ["US", "HK", "CN", "SG"],
+      "supportedInstrumentTypes": ["STOCK", "ETF", "OPTION"]
+    },
+    {
+      "providerId": "LONGBRIDGE",
+      "displayName": "长桥",
+      "status": "ACTIVE",
+      "supportedMarkets": ["US", "HK", "CN", "SG"],
+      "supportedInstrumentTypes": ["STOCK", "ETF", "OPTION"]
+    }
+  ],
+  "plans": [
+    {
+      "planVersionId": "00000000-0000-4000-8000-000000000101",
+      "planCode": "LITE",
+      "version": 1,
+      "displayName": "轻量版",
+      "status": "ACTIVE",
+      "effectiveFrom": "2026-09-19T00:00:00.000Z",
+      "brokerSlotLimit": 1,
+      "poolCapacityPerProvider": 5,
+      "monthlyReplacementLimit": 1,
+      "features": {
+        "batchSize": 100,
+        "optionResearch": true,
+        "optionTrading": false
+      },
+      "prices": [
+        { "priceId": "00000000-0000-4000-8000-000000000201", "billingPeriod": "MONTHLY", "durationMonths": 1, "amountMinor": 2900 },
+        { "priceId": "00000000-0000-4000-8000-000000000202", "billingPeriod": "QUARTERLY", "durationMonths": 3, "amountMinor": 7900 },
+        { "priceId": "00000000-0000-4000-8000-000000000203", "billingPeriod": "YEARLY", "durationMonths": 12, "amountMinor": 29900 }
+      ]
+    },
+    {
+      "planVersionId": "00000000-0000-4000-8000-000000000102",
+      "planCode": "PRO",
+      "version": 1,
+      "displayName": "高级版",
+      "status": "ACTIVE",
+      "effectiveFrom": "2026-09-19T00:00:00.000Z",
+      "brokerSlotLimit": 2,
+      "poolCapacityPerProvider": 15,
+      "monthlyReplacementLimit": 15,
+      "features": {
+        "batchSize": 100,
+        "optionResearch": true,
+        "optionTrading": false
+      },
+      "prices": [
+        { "priceId": "00000000-0000-4000-8000-000000000204", "billingPeriod": "MONTHLY", "durationMonths": 1, "amountMinor": 9900 },
+        { "priceId": "00000000-0000-4000-8000-000000000205", "billingPeriod": "QUARTERLY", "durationMonths": 3, "amountMinor": 26900 },
+        { "priceId": "00000000-0000-4000-8000-000000000206", "billingPeriod": "YEARLY", "durationMonths": 12, "amountMinor": 99900 }
+      ]
+    },
+    {
+      "planVersionId": "00000000-0000-4000-8000-000000000103",
+      "planCode": "FLAGSHIP",
+      "version": 1,
+      "displayName": "旗舰版",
+      "status": "ACTIVE",
+      "effectiveFrom": "2026-09-19T00:00:00.000Z",
+      "brokerSlotLimit": 5,
+      "poolCapacityPerProvider": null,
+      "monthlyReplacementLimit": null,
+      "features": {
+        "batchSize": 100,
+        "optionResearch": true,
+        "optionTrading": false,
+        "poolCapacityProtectionLimit": 10000
+      },
+      "prices": [
+        { "priceId": "00000000-0000-4000-8000-000000000207", "billingPeriod": "MONTHLY", "durationMonths": 1, "amountMinor": 29900 },
+        { "priceId": "00000000-0000-4000-8000-000000000208", "billingPeriod": "QUARTERLY", "durationMonths": 3, "amountMinor": 79900 },
+        { "priceId": "00000000-0000-4000-8000-000000000209", "billingPeriod": "YEARLY", "durationMonths": 12, "amountMinor": 299900 }
+      ]
+    }
+  ]
+}
