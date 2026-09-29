@@ -137,6 +137,31 @@ function normalizedSignal(
   }
 }
 
+function normalizedProposedOrder(
+  value: unknown,
+  signal: NonNullable<ModelRunResult['signal']>,
+): NonNullable<ModelRunResult['proposedOrder']> | null {
+  const order = record(value)
+  const expectedAction = signal.intent
+  if (
+    !order
+    || signal.action === 'HOLD'
+    || order.symbol !== signal.symbol
+    || order.action !== expectedAction
+    || typeof order.quantity !== 'string'
+    || !/^[1-9][0-9]*$/.test(order.quantity)
+    || typeof order.limitPrice !== 'string'
+    || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$/.test(order.limitPrice)
+    || Number(order.limitPrice) <= 0
+  ) return null
+  return {
+    symbol: signal.symbol,
+    action: order.action as NonNullable<ModelRunResult['proposedOrder']>['action'],
+    quantity: order.quantity,
+    limitPrice: order.limitPrice,
+  }
+}
+
 function normalizedPortfolioReview(
   value: unknown,
   authority: ResolvedTradingDecision,
@@ -216,6 +241,7 @@ export function normalizeModelResult(
   const dataGaps = [...new Set([...contextGaps, ...modelGaps])].slice(0, 100)
   let responseType: ModelRunResult['responseType'] = 'HOLD'
   let signal: NonNullable<ModelRunResult['signal']> | null = null
+  let proposedOrder: NonNullable<ModelRunResult['proposedOrder']> | null = null
   let portfolioReview: NonNullable<ModelRunResult['portfolioReview']> | null = null
   let managedOrderReview: NonNullable<ModelRunResult['managedOrderReview']> | null = null
   const hasVerifiableEvidence = evidence.length > 0
@@ -234,6 +260,7 @@ export function normalizeModelResult(
       ? proposed
       : { symbol, action: 'HOLD', intent: 'HOLD', confidence: 0 }
     if (signal.action === 'BUY' || signal.action === 'SELL') {
+      proposedOrder = normalizedProposedOrder(result.proposedOrder, signal)
       responseType = authority.executionMode === 'CANDIDATE_POOL' ? 'CANDIDATE' : 'SIGNAL'
     }
   } else if (
@@ -277,6 +304,7 @@ export function normalizeModelResult(
     sourceValidUntil: contextSourceValidUntil(context)
       ?? validSourceTime(result.sourceValidUntil),
     orderIntent: null,
+    proposedOrder,
     signal,
     candidate: null,
     portfolioReview,

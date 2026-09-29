@@ -57,7 +57,8 @@ public enum BrokerClientError: LocalizedError {
 public final class FutuBrokerClient:
     BrokerClient,
     BrokerInstrumentDiscoveryClient,
-    MarketIntelligenceClient
+    MarketIntelligenceClient,
+    LiveOrderBrokerClient
 {
     public private(set) var connectionState: OpenDConnectionState = .disconnected
     private let runner: BrokerHostRunner
@@ -167,6 +168,46 @@ public final class FutuBrokerClient:
             MarketIntelligenceSnapshot.self,
             command: "market-intelligence",
             request: MarketIntelligenceRequest(symbols: symbols)
+        )
+    }
+
+    public func tradeReadiness(
+        _ request: BrokerTradeReadinessRequest
+    ) async throws -> BrokerTradeReadiness {
+        try await decode(
+            BrokerTradeReadiness.self,
+            command: "trade-readiness",
+            request: request
+        )
+    }
+
+    public func placeOrder(
+        _ request: BrokerPlaceOrderRequest
+    ) async throws -> BrokerOrderReceipt {
+        try await decode(
+            BrokerOrderReceipt.self,
+            command: "place-order",
+            request: request
+        )
+    }
+
+    public func cancelOrder(
+        _ request: BrokerCancelOrderRequest
+    ) async throws -> BrokerOrderReceipt {
+        try await decode(
+            BrokerOrderReceipt.self,
+            command: "cancel-order",
+            request: request
+        )
+    }
+
+    public func findOrder(
+        _ request: BrokerFindOrderRequest
+    ) async throws -> BrokerOrderReceipt? {
+        try await decode(
+            BrokerOrderReceipt?.self,
+            command: "find-order-by-intent",
+            request: request
         )
     }
 

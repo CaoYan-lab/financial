@@ -10,6 +10,10 @@ import {
   seedSubscriptionCatalog,
 } from '../../../packages/subscriptions/src/catalog.js'
 import { MAX_ENVELOPE_BYTES } from '../../../packages/domain/src/contextEnvelope.js'
+import {
+  liveTradingGateDigest,
+  readLiveTradingGates,
+} from '../../../packages/domain/src/liveTradingGates.js'
 import { verifyAccessToken, type AccessClaims } from '../../../packages/auth/src/accessToken.js'
 import {
   AuthService,
@@ -18,7 +22,6 @@ import {
   type DesktopLogin,
 } from '../../../packages/auth/src/authService.js'
 import { PostgresTradingLeaseRepository } from '../../../packages/persistence/src/postgresTradingLeaseRepository.js'
-import { PostgresOrderIntentRepository } from '../../../packages/persistence/src/postgresOrderIntentRepository.js'
 import {
   IdempotencyService,
   requestHash,
@@ -46,9 +49,17 @@ const workerUrl = process.env.CHANGFU_DECISION_WORKER_URL ?? 'http://127.0.0.1:4
 const accessPublicKeyPem = process.env.CHANGFU_ACCESS_PUBLIC_KEY_PEM?.replaceAll('\\n', '\n') ?? ''
 const accessPrivateKeyPem = process.env.CHANGFU_ACCESS_PRIVATE_KEY_PEM?.replaceAll('\\n', '\n') ?? ''
 const accessKeyId = process.env.CHANGFU_ACCESS_KEY_ID ?? 'changfu-access-v1'
+const orderIntentPublicKeyPem = process.env.CHANGFU_ORDER_INTENT_PUBLIC_KEY_PEM
+  ?.replaceAll('\\n', '\n') ?? ''
+const orderIntentKeyId = process.env.CHANGFU_ORDER_INTENT_KEY_ID ?? ''
+const orderIntentSigningKeys = orderIntentPublicKeyPem && orderIntentKeyId
+  ? [{ keyId: orderIntentKeyId, publicKey: orderIntentPublicKeyPem }]
+  : []
 const internalToken = process.env.CHANGFU_INTERNAL_TOKEN ?? ''
 const databaseUrl = process.env.CHANGFU_DATABASE_URL ?? ''
 const modelCredentialKey = process.env.CHANGFU_MODEL_CREDENTIAL_KEY ?? ''
+const liveTradingGates = readLiveTradingGates()
+const liveTradingGateHash = liveTradingGateDigest(liveTradingGates)
 const maxRequestBytes = MAX_ENVELOPE_BYTES + 128 * 1024
 const workerRequestTimeoutMs = 330_000
 const pool = databaseUrl
@@ -209,7 +220,11 @@ const server = createServer(async (request, response) => {
         pool
         && accessPublicKeyPem
         && internalToken
-        && modelCredentialKey,
+        && modelCredentialKey
+        && (
+          (!liveTradingGates.FUTU && !liveTradingGates.LONGBRIDGE)
+          || orderIntentSigningKeys.length > 0
+        )
       ),
     })
     return
@@ -224,8 +239,23 @@ const server = createServer(async (request, response) => {
           AbortSignal.timeout(5_000),
         ]),
       }).then(async result => {
-        await result.arrayBuffer()
         if (!result.ok) throw new Error('WORKER_NOT_READY')
+        const body = await result.json() as {
+          liveTradingGateHash?: unknown
+          liveOrderSigningConfigured?: unknown
+        }
+        if (body.liveTradingGateHash !== liveTradingGateHash) {
+          throw new Error('LIVE_TRADING_GATE_MISMATCH')
+        }
+        if (
+          (liveTradingGates.FUTU || liveTradingGates.LONGBRIDGE)
+          && (
+            body.liveOrderSigningConfigured !== true
+            || orderIntentSigningKeys.length === 0
+          )
+        ) {
+          throw new Error('LIVE_TRADING_SIGNING_CONFIG_MISSING')
+        }
       }),
     ])
     const database = databaseResult.status === 'fulfilled'
@@ -234,6 +264,8 @@ const server = createServer(async (request, response) => {
       ok: database && worker,
       database,
       worker,
+      liveTradingGates,
+      liveTradingGateHash,
     })
     return
   }
@@ -510,6 +542,8 @@ const server = createServer(async (request, response) => {
       deviceId,
       pool,
       catalog: tradingCatalog,
+      liveTradingGates,
+      orderIntentSigningKeys,
     })) return
 
     if (request.method === 'POST' && url.pathname === '/v1/broker-connections/futu') {
@@ -569,29 +603,6 @@ const server = createServer(async (request, response) => {
         brokerConnectionId: lease.brokerConnectionId,
         expiresAt: lease.expiresAt.toISOString(),
         version: lease.version,
-      })
-      return
-    }
-
-    const claimMatch = request.method === 'POST'
-      ? url.pathname.match(/^\/v1\/pending-orders\/([0-9a-f-]+)\/claim$/i)
-      : null
-    if (claimMatch?.[1]) {
-      const body = await readJsonBody(request)
-      if (body.deviceId !== deviceId || !Number.isInteger(body.expectedVersion)) {
-        problem(response, 403, 'DEVICE_MISMATCH', requestId)
-        return
-      }
-      const claim = await new PostgresOrderIntentRepository(pool).claim({
-        intentId: claimMatch[1],
-        userId,
-        deviceId,
-        expectedVersion: Number(body.expectedVersion),
-      })
-      sendJson(response, 200, {
-        claimToken: claim.claimToken,
-        expiresAt: claim.expiresAt.toISOString(),
-        version: claim.version,
       })
       return
     }
@@ -675,6 +686,7 @@ const server = createServer(async (request, response) => {
         || error.name === 'SubscriptionRuleError'
         || error.name === 'ProviderPoolError'
         || error.name === 'SellPutResearchError'
+        || error.name === 'LiveTradingConflictError'
       )
     const status = tooLarge ? 413 : invalid ? 400 : conflict ? 409 : 503
     const errorCode = tooLarge

@@ -25,15 +25,19 @@
 #include "Proto/Trd_GetFunds.pb.h"
 #include "Proto/Trd_GetHistoryOrderFillList.pb.h"
 #include "Proto/Trd_GetHistoryOrderList.pb.h"
+#include "Proto/Trd_GetMaxTrdQtys.pb.h"
 #include "Proto/Trd_GetOrderFillList.pb.h"
 #include "Proto/Trd_GetOrderList.pb.h"
 #include "Proto/Trd_GetPositionList.pb.h"
+#include "Proto/Trd_ModifyOrder.pb.h"
+#include "Proto/Trd_PlaceOrder.pb.h"
 #include <google/protobuf/message.h>
 #include <google/protobuf/struct.pb.h>
 #include <google/protobuf/util/json_util.h>
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
@@ -58,6 +62,8 @@ struct ChangFuFutuReply {
 struct ChangFuFutuAccount {
     unsigned long long id = 0;
     int environment = 0;
+    int accountType = 0;
+    int accountStatus = 0;
     std::vector<int> markets;
 };
 
@@ -70,6 +76,7 @@ struct ChangFuFutuClient {
     bool connectCompleted = false;
     bool connected = false;
     long long connectError = 0;
+    std::atomic<unsigned int> tradeSerial{0};
     std::string lastError;
     std::unordered_map<unsigned int, ChangFuFutuReply> replies;
 };
@@ -400,6 +407,12 @@ ChangFuFutuStatus loadAccounts(
         ChangFuFutuAccount account;
         account.id = item.accid();
         account.environment = item.trdenv();
+        account.accountType = item.has_acctype()
+            ? item.acctype()
+            : Trd_Common::TrdAccType_Unknown;
+        account.accountStatus = item.has_accstatus()
+            ? item.accstatus()
+            : Trd_Common::TrdAccStatus_Active;
         account.markets.assign(
             item.trdmarketauthlist().begin(),
             item.trdmarketauthlist().end()
@@ -1650,6 +1663,279 @@ void loadTradeSnapshot(
     if (!historyOrderSucceeded) appendGap(gaps, "近 30 日历史订单不可用");
     if (!historyFillSucceeded) appendGap(gaps, "近 30 日历史成交不可用");
 }
+
+bool tradeMarketForSecurity(
+    const Qot_Common::Security &security,
+    int *tradeMarket,
+    int *securityMarket
+) {
+    switch (security.market()) {
+    case Qot_Common::QotMarket_US_Security:
+        *tradeMarket = Trd_Common::TrdMarket_US;
+        *securityMarket = Trd_Common::TrdSecMarket_US;
+        return true;
+    case Qot_Common::QotMarket_HK_Security:
+        *tradeMarket = Trd_Common::TrdMarket_HK;
+        *securityMarket = Trd_Common::TrdSecMarket_HK;
+        return true;
+    case Qot_Common::QotMarket_CNSH_Security:
+        *tradeMarket = Trd_Common::TrdMarket_CN;
+        *securityMarket = Trd_Common::TrdSecMarket_CN_SH;
+        return true;
+    case Qot_Common::QotMarket_CNSZ_Security:
+        *tradeMarket = Trd_Common::TrdMarket_CN;
+        *securityMarket = Trd_Common::TrdSecMarket_CN_SZ;
+        return true;
+    case Qot_Common::QotMarket_SG_Security:
+        *tradeMarket = Trd_Common::TrdMarket_SG;
+        *securityMarket = Trd_Common::TrdSecMarket_SG;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool parseAccountID(const char *raw, unsigned long long *accountID) {
+    if (raw == nullptr || *raw == '\0') return false;
+    try {
+        std::size_t consumed = 0;
+        const std::string value(raw);
+        *accountID = std::stoull(value, &consumed);
+        return consumed == value.size();
+    } catch (...) {
+        return false;
+    }
+}
+
+ChangFuFutuStatus selectTradeAccount(
+    ChangFuFutuClient *client,
+    const char *accountID,
+    int tradeMarket,
+    ChangFuFutuAccount *selected
+) {
+    unsigned long long expected = 0;
+    if (!parseAccountID(accountID, &expected)) {
+        setError(client, "Futu 订单账户 ID 无效");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    std::vector<ChangFuFutuAccount> accounts;
+    ChangFuFutuStatus status = loadAccounts(client, &accounts);
+    if (status != ChangFuFutuStatusOk) return status;
+    std::vector<ChangFuFutuAccount> matches;
+    for (const auto &account : accounts) {
+        if (account.id == expected
+            && account.environment == Trd_Common::TrdEnv_Real
+            && account.accountStatus == Trd_Common::TrdAccStatus_Active
+            && std::find(account.markets.begin(), account.markets.end(), tradeMarket)
+                != account.markets.end()) {
+            matches.push_back(account);
+        }
+    }
+    if (matches.size() != 1) {
+        setError(client, "Futu REAL 账户、状态或市场授权不匹配");
+        return ChangFuFutuStatusOperationFailed;
+    }
+    *selected = matches.front();
+    return ChangFuFutuStatusOk;
+}
+
+bool configureTrade(
+    ChangFuFutuClient *client,
+    const char *symbol,
+    const char *side,
+    const char *positionEffect,
+    const char *orderType,
+    const char *tradingSession,
+    const char *timeInForce,
+    double quantity,
+    double limitPrice,
+    Qot_Common::Security *security,
+    std::string *canonicalSymbol,
+    int *tradeMarket,
+    int *securityMarket,
+    int *tradeSide
+) {
+    if (symbol == nullptr || side == nullptr || positionEffect == nullptr
+        || orderType == nullptr || tradingSession == nullptr || timeInForce == nullptr
+        || !std::isfinite(quantity) || quantity <= 0 || std::floor(quantity) != quantity
+        || !std::isfinite(limitPrice) || limitPrice <= 0) {
+        setError(client, "Futu 订单参数无效");
+        return false;
+    }
+    if (!parseProviderSymbol(symbol, security, canonicalSymbol)
+        || !tradeMarketForSecurity(*security, tradeMarket, securityMarket)) {
+        setError(client, "Futu 订单标的格式或市场不受支持");
+        return false;
+    }
+    if (std::string(orderType) != "MARKETABLE_LIMIT"
+        || std::string(timeInForce) != "DAY"
+        || std::string(tradingSession) != "RTH") {
+        setError(client, "Futu 当前只允许 MARKETABLE_LIMIT + DAY + RTH");
+        return false;
+    }
+    const std::string direction(side);
+    const std::string effect(positionEffect);
+    if ((direction == "BUY" && (effect == "OPEN_LONG" || effect == "ADD_LONG"))
+        || (direction == "BUY" && effect == "COVER_SHORT")) {
+        *tradeSide = Trd_Common::TrdSide_Buy;
+        return true;
+    }
+    if ((direction == "SELL" && effect == "REDUCE_LONG")
+        || (direction == "SELL"
+            && (effect == "OPEN_SHORT" || effect == "ADD_SHORT"))) {
+        *tradeSide = Trd_Common::TrdSide_Sell;
+        return true;
+    }
+    setError(client, "Futu 订单方向与 position effect 不匹配");
+    return false;
+}
+
+bool configurePacketID(ChangFuFutuClient *client, Common::PacketID *packetID) {
+    const auto connectionID = FTAPIChannel_GetConnectID(client->channel);
+    if (connectionID == 0) {
+        setError(client, "OpenD 连接 ID 无效，禁止发送真实交易请求");
+        return false;
+    }
+    packetID->set_connid(connectionID);
+    packetID->set_serialno(client->tradeSerial.fetch_add(1) + 1);
+    return true;
+}
+
+void setBrokerResponseError(
+    ChangFuFutuClient *client,
+    int errorCode,
+    const std::string &message
+) {
+    const std::string lower = uppercaseAscii(message);
+    const bool locked = lower.find("UNLOCK") != std::string::npos
+        || message.find("解锁") != std::string::npos
+        || message.find("交易密码") != std::string::npos;
+    if (locked) {
+        setError(
+            client,
+            "FUTU_TRADE_LOCKED_EXTERNAL_ACTION_REQUIRED: "
+            "Futu OpenD 尚未解锁交易，请在 OpenD 界面完成交易解锁后重新提交。"
+        );
+        return;
+    }
+    setError(
+        client,
+        "Futu 券商拒绝，错误码=" + std::to_string(errorCode)
+            + (message.empty() ? "" : "，原因=" + message)
+    );
+}
+
+std::string normalizedFutuOrderStatus(int status) {
+    switch (status) {
+    case Trd_Common::OrderStatus_Filled_All: return "FILLED";
+    case Trd_Common::OrderStatus_Filled_Part: return "PARTIALLY_FILLED";
+    case Trd_Common::OrderStatus_Cancelled_Part:
+    case Trd_Common::OrderStatus_FillCancelled:
+        return "PARTIAL_CANCELLED";
+    case Trd_Common::OrderStatus_Cancelled_All:
+    case Trd_Common::OrderStatus_Deleted:
+        return "CANCELLED";
+    case Trd_Common::OrderStatus_SubmitFailed:
+    case Trd_Common::OrderStatus_Failed:
+    case Trd_Common::OrderStatus_Disabled:
+        return "REJECTED";
+    case Trd_Common::OrderStatus_Cancelling_Part:
+    case Trd_Common::OrderStatus_Cancelling_All:
+        return "CANCEL_PENDING";
+    case Trd_Common::OrderStatus_WaitingSubmit:
+    case Trd_Common::OrderStatus_Submitting:
+    case Trd_Common::OrderStatus_Submitted:
+        return "SUBMITTED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void writeOrderReceipt(
+    google::protobuf::Struct *root,
+    const Trd_Common::Order &order,
+    const std::string &fallbackRemark
+) {
+    setString(
+        root,
+        "brokerOrderId",
+        order.has_orderidex() && !order.orderidex().empty()
+            ? order.orderidex()
+            : std::to_string(order.orderid())
+    );
+    setString(root, "status", normalizedFutuOrderStatus(order.orderstatus()));
+    setNumber(root, "submittedQuantity", order.qty());
+    setNumber(root, "filledQuantity", order.has_fillqty() ? order.fillqty() : 0);
+    if (order.has_fillavgprice()) {
+        setNumber(root, "filledAveragePrice", order.fillavgprice());
+    }
+    setString(
+        root,
+        "remark",
+        order.has_remark() && !order.remark().empty() ? order.remark() : fallbackRemark
+    );
+    if (order.has_lasterrmsg() && !order.lasterrmsg().empty()) {
+        setString(root, "brokerCode", order.lasterrmsg());
+    }
+    setString(
+        root,
+        "updatedAt",
+        order.updatetime().empty() ? utcNow() : order.updatetime()
+    );
+}
+
+ChangFuFutuStatus loadManagedOrders(
+    ChangFuFutuClient *client,
+    const ChangFuFutuAccount &account,
+    int tradeMarket,
+    std::vector<Trd_Common::Order> *orders
+) {
+    Trd_GetOrderList::Request request;
+    auto *c2s = request.mutable_c2s();
+    auto *header = c2s->mutable_header();
+    header->set_trdenv(account.environment);
+    header->set_accid(account.id);
+    header->set_trdmarket(tradeMarket);
+    c2s->set_refreshcache(true);
+    Trd_GetOrderList::Response response;
+    const ChangFuFutuStatus status = sendRequest(
+        client,
+        FTAPI_ProtoID_Trd_GetOrderList,
+        request,
+        &response
+    );
+    if (status != ChangFuFutuStatusOk) return status;
+    if (response.rettype() != Common::RetType_Succeed || !response.has_s2c()) {
+        setBrokerResponseError(
+            client,
+            response.has_errcode() ? response.errcode() : 0,
+            response.has_retmsg() ? response.retmsg() : "查询订单失败"
+        );
+        return ChangFuFutuStatusOperationFailed;
+    }
+    orders->assign(response.s2c().orderlist().begin(), response.s2c().orderlist().end());
+    return ChangFuFutuStatusOk;
+}
+
+bool sameOrderIdentity(
+    const Trd_Common::Order &order,
+    const std::string &remark,
+    const std::string &code,
+    int expectedSide,
+    double quantity,
+    double limitPrice
+) {
+    return order.has_remark() && order.remark() == remark
+        && uppercaseAscii(order.code()) == uppercaseAscii(code)
+        && (order.trdside() == expectedSide
+            || (expectedSide == Trd_Common::TrdSide_Sell
+                && order.trdside() == Trd_Common::TrdSide_SellShort)
+            || (expectedSide == Trd_Common::TrdSide_Buy
+                && order.trdside() == Trd_Common::TrdSide_BuyBack))
+        && std::fabs(order.qty() - quantity) < 0.000001
+        && order.has_price()
+        && std::fabs(order.price() - limitPrice) < 0.000001;
+}
 }
 #endif
 
@@ -1709,6 +1995,7 @@ ChangFuFutuStatus changfu_futu_connect(
         client->connectCompleted = false;
         client->connected = false;
         client->connectError = 0;
+        client->tradeSerial.store(0);
         client->lastError.clear();
         client->replies.clear();
     }
@@ -1763,6 +2050,7 @@ void changfu_futu_disconnect(ChangFuFutuClient *client) {
         std::lock_guard<std::mutex> lock(client->mutex);
         client->connected = false;
         client->connectCompleted = false;
+        client->tradeSerial.store(0);
         client->replies.clear();
     }
     client->condition.notify_all();
@@ -1837,6 +2125,18 @@ ChangFuFutuStatus changfu_futu_load_snapshot_json(
         setNumber(accountObject, "realizedProfit", funds.realizedpl());
     }
     setString(accountObject, "currency", currencyCode(currency));
+    setBool(
+        accountObject,
+        "marginAccount",
+        account.accountType == Trd_Common::TrdAccType_Margin
+    );
+    setBool(
+        accountObject,
+        "marginCallActive",
+        (funds.has_margincallmargin() && funds.margincallmargin() > 0)
+            || (funds.has_risklevel()
+                && funds.risklevel() == Trd_Common::CltRiskLevel_Danger)
+    );
 
     google::protobuf::ListValue *positionList =
         (*root.mutable_fields())["positions"].mutable_list_value();
@@ -2936,6 +3236,479 @@ ChangFuFutuStatus changfu_futu_market_intelligence_json(
         );
     }
     return writeJson(client, root, "市场情报", json);
+#else
+    client->lastError = "未配置 Futu C++ SDK";
+    return ChangFuFutuStatusSdkUnavailable;
+#endif
+}
+
+ChangFuFutuStatus changfu_futu_trade_readiness_json(
+    ChangFuFutuClient *client,
+    const char *accountId,
+    const char *symbol,
+    const char *side,
+    const char *positionEffect,
+    const char *orderType,
+    const char *tradingSession,
+    const char *timeInForce,
+    double quantity,
+    double limitPrice,
+    char **json
+) {
+    if (client == nullptr || accountId == nullptr || symbol == nullptr || side == nullptr
+        || positionEffect == nullptr || orderType == nullptr || tradingSession == nullptr
+        || timeInForce == nullptr || json == nullptr) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    *json = nullptr;
+#if defined(CHANGFU_FUTU_SDK_AVAILABLE)
+    if (!changfu_futu_is_connected(client)) {
+        setError(client, "OpenD 尚未连接");
+        return ChangFuFutuStatusConnectionFailed;
+    }
+    Qot_Common::Security security;
+    std::string canonicalSymbol;
+    int tradeMarket = 0;
+    int securityMarket = 0;
+    int tradeSide = 0;
+    if (!configureTrade(
+        client,
+        symbol,
+        side,
+        positionEffect,
+        orderType,
+        tradingSession,
+        timeInForce,
+        quantity,
+        limitPrice,
+        &security,
+        &canonicalSymbol,
+        &tradeMarket,
+        &securityMarket,
+        &tradeSide
+    )) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    ChangFuFutuAccount account;
+    ChangFuFutuStatus status =
+        selectTradeAccount(client, accountId, tradeMarket, &account);
+    if (status != ChangFuFutuStatusOk) return status;
+
+    Trd_Common::Funds funds;
+    status = loadFunds(
+        client,
+        account,
+        tradeMarket,
+        currencyForMarket(tradeMarket),
+        true,
+        &funds
+    );
+    if (status != ChangFuFutuStatusOk) return status;
+
+    Trd_GetMaxTrdQtys::Request maxRequest;
+    auto *maxC2S = maxRequest.mutable_c2s();
+    auto *maxHeader = maxC2S->mutable_header();
+    maxHeader->set_trdenv(account.environment);
+    maxHeader->set_accid(account.id);
+    maxHeader->set_trdmarket(tradeMarket);
+    maxC2S->set_ordertype(Trd_Common::OrderType_Normal);
+    maxC2S->set_code(security.code());
+    maxC2S->set_price(limitPrice);
+    maxC2S->set_secmarket(securityMarket);
+    maxC2S->set_session(Common::Session_RTH);
+    Trd_GetMaxTrdQtys::Response maxResponse;
+    status = sendRequest(
+        client,
+        FTAPI_ProtoID_Trd_GetMaxTrdQtys,
+        maxRequest,
+        &maxResponse
+    );
+    if (status != ChangFuFutuStatusOk) return status;
+    if (maxResponse.rettype() != Common::RetType_Succeed
+        || !maxResponse.has_s2c()
+        || !maxResponse.s2c().has_maxtrdqtys()) {
+        setBrokerResponseError(
+            client,
+            maxResponse.has_errcode() ? maxResponse.errcode() : 0,
+            maxResponse.has_retmsg() ? maxResponse.retmsg() : "最大可交易数量不可用"
+        );
+        return ChangFuFutuStatusOperationFailed;
+    }
+
+    const auto &maximums = maxResponse.s2c().maxtrdqtys();
+    const std::string effect(positionEffect);
+    double maximum = 0;
+    bool shortable = false;
+    std::string reason;
+    const bool marginAccount =
+        account.accountType == Trd_Common::TrdAccType_Margin;
+    const bool marginCallActive =
+        (funds.has_margincallmargin() && funds.margincallmargin() > 0)
+        || (funds.has_risklevel()
+            && funds.risklevel() == Trd_Common::CltRiskLevel_Danger);
+    if (effect == "OPEN_LONG" || effect == "ADD_LONG") {
+        maximum = marginAccount && maximums.has_maxcashandmarginbuy()
+            ? maximums.maxcashandmarginbuy()
+            : maximums.maxcashbuy();
+    } else if (effect == "REDUCE_LONG") {
+        maximum = maximums.maxpositionsell();
+    } else if (effect == "COVER_SHORT") {
+        maximum = maximums.has_maxbuyback() ? maximums.maxbuyback() : 0;
+    } else if (effect == "OPEN_SHORT" || effect == "ADD_SHORT") {
+        maximum = maximums.has_maxsellshort() ? maximums.maxsellshort() : 0;
+        shortable = maximum >= quantity;
+        if (!marginAccount) {
+            reason = "Futu 当前账户不是保证金账户";
+        } else if (marginCallActive) {
+            reason = "Futu 账户处于保证金追缴或高风险状态";
+        } else if (!maximums.has_maxsellshort() || !maximums.has_shortrequiredim()
+            || maximums.shortrequiredim() <= 0 || !shortable) {
+            reason = "Futu 无法确认该标的券源、卖空额度或初始保证金";
+        }
+    }
+    if (reason.empty() && maximum < quantity) {
+        reason = "Futu 最大可交易数量不足";
+    }
+
+    google::protobuf::Struct root;
+    setString(&root, "provider", "FUTU");
+    setString(&root, "accountId", std::to_string(account.id));
+    setString(&root, "environment", "REAL");
+    setBool(&root, "ready", reason.empty());
+    if (!reason.empty()) setString(&root, "reason", reason);
+    setBool(&root, "marginAccount", marginAccount);
+    setBool(&root, "marginCallActive", marginCallActive);
+    if (effect == "OPEN_SHORT" || effect == "ADD_SHORT") {
+        setBool(&root, "shortable", shortable);
+    }
+    setNumber(&root, "maxOrderQuantity", maximum);
+    setString(&root, "checkedAt", utcNow());
+    return writeJson(client, root, "交易就绪检查", json);
+#else
+    client->lastError = "未配置 Futu C++ SDK";
+    return ChangFuFutuStatusSdkUnavailable;
+#endif
+}
+
+ChangFuFutuStatus changfu_futu_place_order_json(
+    ChangFuFutuClient *client,
+    const char *intentId,
+    const char *accountId,
+    const char *symbol,
+    const char *side,
+    const char *positionEffect,
+    const char *orderType,
+    const char *tradingSession,
+    const char *timeInForce,
+    double quantity,
+    double limitPrice,
+    char **json
+) {
+    if (client == nullptr || intentId == nullptr || accountId == nullptr
+        || symbol == nullptr || side == nullptr || positionEffect == nullptr
+        || orderType == nullptr || tradingSession == nullptr || timeInForce == nullptr
+        || json == nullptr) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    *json = nullptr;
+#if defined(CHANGFU_FUTU_SDK_AVAILABLE)
+    if (!changfu_futu_is_connected(client)) {
+        setError(client, "OpenD 尚未连接");
+        return ChangFuFutuStatusConnectionFailed;
+    }
+    const std::string remark = "cf:" + std::string(intentId);
+    if (remark.size() > 64) {
+        setError(client, "Futu 订单 intent ID 超过 remark 长度限制");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    Qot_Common::Security security;
+    std::string canonicalSymbol;
+    int tradeMarket = 0;
+    int securityMarket = 0;
+    int tradeSide = 0;
+    if (!configureTrade(
+        client,
+        symbol,
+        side,
+        positionEffect,
+        orderType,
+        tradingSession,
+        timeInForce,
+        quantity,
+        limitPrice,
+        &security,
+        &canonicalSymbol,
+        &tradeMarket,
+        &securityMarket,
+        &tradeSide
+    )) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    ChangFuFutuAccount account;
+    ChangFuFutuStatus status =
+        selectTradeAccount(client, accountId, tradeMarket, &account);
+    if (status != ChangFuFutuStatusOk) return status;
+
+    char *readinessJson = nullptr;
+    status = changfu_futu_trade_readiness_json(
+        client,
+        accountId,
+        symbol,
+        side,
+        positionEffect,
+        orderType,
+        tradingSession,
+        timeInForce,
+        quantity,
+        limitPrice,
+        &readinessJson
+    );
+    if (status != ChangFuFutuStatusOk) return status;
+    google::protobuf::Struct readiness;
+    const auto readinessStatus = google::protobuf::util::JsonStringToMessage(
+        readinessJson == nullptr ? "" : readinessJson,
+        &readiness
+    );
+    if (readinessJson != nullptr) std::free(readinessJson);
+    const auto ready = readiness.fields().find("ready");
+    if (!readinessStatus.ok() || ready == readiness.fields().end()
+        || !ready->second.bool_value()) {
+        const auto reason = readiness.fields().find("reason");
+        setError(
+            client,
+            reason == readiness.fields().end()
+                ? "Futu 本地真实交易复核未通过"
+                : reason->second.string_value()
+        );
+        return ChangFuFutuStatusOperationFailed;
+    }
+
+    Trd_PlaceOrder::Request request;
+    auto *c2s = request.mutable_c2s();
+    if (!configurePacketID(client, c2s->mutable_packetid())) {
+        return ChangFuFutuStatusConnectionFailed;
+    }
+    auto *header = c2s->mutable_header();
+    header->set_trdenv(account.environment);
+    header->set_accid(account.id);
+    header->set_trdmarket(tradeMarket);
+    c2s->set_trdside(tradeSide);
+    c2s->set_ordertype(Trd_Common::OrderType_Normal);
+    c2s->set_code(security.code());
+    c2s->set_qty(quantity);
+    c2s->set_price(limitPrice);
+    c2s->set_secmarket(securityMarket);
+    c2s->set_remark(remark);
+    c2s->set_timeinforce(Trd_Common::TimeInForce_DAY);
+    c2s->set_filloutsiderth(false);
+    c2s->set_session(Common::Session_RTH);
+    Trd_PlaceOrder::Response response;
+    status = sendRequest(client, FTAPI_ProtoID_Trd_PlaceOrder, request, &response);
+    if (status != ChangFuFutuStatusOk) return status;
+    if (response.rettype() != Common::RetType_Succeed || !response.has_s2c()) {
+        setBrokerResponseError(
+            client,
+            response.has_errcode() ? response.errcode() : 0,
+            response.has_retmsg() ? response.retmsg() : "提交订单失败"
+        );
+        return ChangFuFutuStatusOperationFailed;
+    }
+    const auto &result = response.s2c();
+    google::protobuf::Struct root;
+    setString(
+        &root,
+        "brokerOrderId",
+        result.has_orderidex() && !result.orderidex().empty()
+            ? result.orderidex()
+            : std::to_string(result.orderid())
+    );
+    setString(&root, "status", "SUBMITTED");
+    setNumber(&root, "submittedQuantity", quantity);
+    setNumber(&root, "filledQuantity", 0);
+    setString(&root, "remark", remark);
+    setString(&root, "updatedAt", utcNow());
+    return writeJson(client, root, "提交订单", json);
+#else
+    client->lastError = "未配置 Futu C++ SDK";
+    return ChangFuFutuStatusSdkUnavailable;
+#endif
+}
+
+ChangFuFutuStatus changfu_futu_find_order_by_intent_json(
+    ChangFuFutuClient *client,
+    const char *intentId,
+    const char *accountId,
+    const char *symbol,
+    const char *side,
+    double quantity,
+    double limitPrice,
+    char **json
+) {
+    if (client == nullptr || intentId == nullptr || accountId == nullptr
+        || symbol == nullptr || side == nullptr || json == nullptr) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    *json = nullptr;
+#if defined(CHANGFU_FUTU_SDK_AVAILABLE)
+    Qot_Common::Security security;
+    std::string canonicalSymbol;
+    if (!parseProviderSymbol(symbol, &security, &canonicalSymbol)) {
+        setError(client, "Futu 订单标的格式无效");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    int tradeMarket = 0;
+    int securityMarket = 0;
+    if (!tradeMarketForSecurity(security, &tradeMarket, &securityMarket)) {
+        setError(client, "Futu 订单市场不受支持");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    ChangFuFutuAccount account;
+    ChangFuFutuStatus status =
+        selectTradeAccount(client, accountId, tradeMarket, &account);
+    if (status != ChangFuFutuStatusOk) return status;
+    std::vector<Trd_Common::Order> orders;
+    status = loadManagedOrders(client, account, tradeMarket, &orders);
+    if (status != ChangFuFutuStatusOk) return status;
+    const std::string remark = "cf:" + std::string(intentId);
+    const int expectedSide = std::string(side) == "BUY"
+        ? Trd_Common::TrdSide_Buy
+        : Trd_Common::TrdSide_Sell;
+    std::vector<Trd_Common::Order> matches;
+    for (const auto &order : orders) {
+        if (sameOrderIdentity(
+            order,
+            remark,
+            security.code(),
+            expectedSide,
+            quantity,
+            limitPrice
+        )) {
+            matches.push_back(order);
+        }
+    }
+    if (matches.size() > 1) {
+        setError(client, "按订单意图查到多笔 Futu 订单，已停止自动处理");
+        return ChangFuFutuStatusOperationFailed;
+    }
+    if (matches.empty()) {
+        const char literal[] = "null";
+        char *buffer = static_cast<char *>(std::malloc(sizeof(literal)));
+        if (buffer == nullptr) {
+            setError(client, "Futu 查单结果内存分配失败");
+            return ChangFuFutuStatusOperationFailed;
+        }
+        std::memcpy(buffer, literal, sizeof(literal));
+        *json = buffer;
+        setError(client, "");
+        return ChangFuFutuStatusOk;
+    }
+    google::protobuf::Struct root;
+    writeOrderReceipt(&root, matches.front(), remark);
+    return writeJson(client, root, "订单意图查单", json);
+#else
+    client->lastError = "未配置 Futu C++ SDK";
+    return ChangFuFutuStatusSdkUnavailable;
+#endif
+}
+
+ChangFuFutuStatus changfu_futu_cancel_order_json(
+    ChangFuFutuClient *client,
+    const char *intentId,
+    const char *accountId,
+    const char *brokerOrderId,
+    const char *symbol,
+    char **json
+) {
+    if (client == nullptr || intentId == nullptr || accountId == nullptr
+        || brokerOrderId == nullptr || symbol == nullptr || json == nullptr) {
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    *json = nullptr;
+#if defined(CHANGFU_FUTU_SDK_AVAILABLE)
+    Qot_Common::Security security;
+    std::string canonicalSymbol;
+    if (!parseProviderSymbol(symbol, &security, &canonicalSymbol)) {
+        setError(client, "Futu 撤单标的格式无效");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    int tradeMarket = 0;
+    int securityMarket = 0;
+    if (!tradeMarketForSecurity(security, &tradeMarket, &securityMarket)) {
+        setError(client, "Futu 撤单市场不受支持");
+        return ChangFuFutuStatusInvalidArgument;
+    }
+    ChangFuFutuAccount account;
+    ChangFuFutuStatus status =
+        selectTradeAccount(client, accountId, tradeMarket, &account);
+    if (status != ChangFuFutuStatusOk) return status;
+    std::vector<Trd_Common::Order> orders;
+    status = loadManagedOrders(client, account, tradeMarket, &orders);
+    if (status != ChangFuFutuStatusOk) return status;
+    const std::string expectedRemark = "cf:" + std::string(intentId);
+    const std::string expectedOrderID(brokerOrderId);
+    const Trd_Common::Order *target = nullptr;
+    for (const auto &order : orders) {
+        const std::string currentID =
+            order.has_orderidex() && !order.orderidex().empty()
+                ? order.orderidex()
+                : std::to_string(order.orderid());
+        if (currentID == expectedOrderID) {
+            target = &order;
+            break;
+        }
+    }
+    if (target == nullptr || !target->has_remark() || target->remark() != expectedRemark
+        || uppercaseAscii(target->code()) != uppercaseAscii(security.code())) {
+        setError(client, "拒绝撤销不属于当前系统意图的 Futu 订单");
+        return ChangFuFutuStatusOperationFailed;
+    }
+    const std::string currentStatus = normalizedFutuOrderStatus(target->orderstatus());
+    if (currentStatus == "FILLED" || currentStatus == "CANCELLED"
+        || currentStatus == "PARTIAL_CANCELLED" || currentStatus == "REJECTED") {
+        google::protobuf::Struct root;
+        writeOrderReceipt(&root, *target, expectedRemark);
+        return writeJson(client, root, "撤单终态查询", json);
+    }
+
+    Trd_ModifyOrder::Request request;
+    auto *c2s = request.mutable_c2s();
+    if (!configurePacketID(client, c2s->mutable_packetid())) {
+        return ChangFuFutuStatusConnectionFailed;
+    }
+    auto *header = c2s->mutable_header();
+    header->set_trdenv(account.environment);
+    header->set_accid(account.id);
+    header->set_trdmarket(tradeMarket);
+    c2s->set_modifyorderop(Trd_Common::ModifyOrderOp_Cancel);
+    c2s->set_forall(false);
+    if (target->has_orderidex() && !target->orderidex().empty()) {
+        c2s->set_orderid(0);
+        c2s->set_orderidex(target->orderidex());
+    } else {
+        c2s->set_orderid(target->orderid());
+    }
+    Trd_ModifyOrder::Response response;
+    status = sendRequest(client, FTAPI_ProtoID_Trd_ModifyOrder, request, &response);
+    if (status != ChangFuFutuStatusOk) return status;
+    if (response.rettype() != Common::RetType_Succeed || !response.has_s2c()) {
+        setBrokerResponseError(
+            client,
+            response.has_errcode() ? response.errcode() : 0,
+            response.has_retmsg() ? response.retmsg() : "撤销订单失败"
+        );
+        return ChangFuFutuStatusOperationFailed;
+    }
+    google::protobuf::Struct root;
+    setString(&root, "brokerOrderId", expectedOrderID);
+    setString(&root, "status", "CANCEL_PENDING");
+    setNumber(&root, "submittedQuantity", target->qty());
+    setNumber(&root, "filledQuantity", target->has_fillqty() ? target->fillqty() : 0);
+    if (target->has_fillavgprice()) {
+        setNumber(&root, "filledAveragePrice", target->fillavgprice());
+    }
+    setString(&root, "remark", expectedRemark);
+    setString(&root, "updatedAt", utcNow());
+    return writeJson(client, root, "撤销订单", json);
 #else
     client->lastError = "未配置 Futu C++ SDK";
     return ChangFuFutuStatusSdkUnavailable;

@@ -11,12 +11,23 @@ struct ChangFuDesktopTests {
         if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "sell-put" {
             runResearchProductTests(&suite)
             suite.finish()
-            return
         }
         if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "longbridge" {
             await runLongbridgeBrokerTests(&suite)
             suite.finish()
-            return
+        }
+        if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "futu" {
+            await runBrokerTests(&suite)
+            suite.finish()
+        }
+        if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "backend-client" {
+            await runBackendClientTests(&suite)
+            suite.finish()
+        }
+        if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "live-order" {
+            runOrderIntentTests(&suite)
+            await runLiveOrderCoordinatorTests(&suite)
+            suite.finish()
         }
         runWorkspaceTests(&suite)
         runMarketIntelligenceTests(&suite)
@@ -26,6 +37,7 @@ struct ChangFuDesktopTests {
         runOrderIntentTests(&suite)
         runAuthenticationTests(&suite)
         await runBackendClientTests(&suite)
+        await runLiveOrderCoordinatorTests(&suite)
         await runBrokerTests(&suite)
         await runLongbridgeBrokerTests(&suite)
         suite.finish()
@@ -1346,6 +1358,69 @@ struct ChangFuDesktopTests {
                 .invalidSignatureEncoding, .invalidSignature
             ].allSatisfy { !$0.localizedDescription.isEmpty }
         }
+        suite.test("系统挂单安全撤单与服务端策略保持同一优先级") {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let base = ManagedOrderSafetyInput(
+                now: now,
+                signalValidUntil: now.addingTimeInterval(60),
+                intentExpiresAt: now.addingTimeInterval(60),
+                submittedAt: now.addingTimeInterval(-20),
+                orderType: "MARKETABLE_LIMIT",
+                limitPrice: 100,
+                latestReferencePrice: 100,
+                marketDataFresh: true,
+                marketSessionOpen: true,
+                securityHalted: false,
+                brokerMarketable: true,
+                accountRiskValid: true,
+                leaseValid: true,
+                connectionActive: true,
+                filledQuantity: 0,
+                lastFilledQuantity: 0,
+                lastFillProgressAt: nil
+            )
+            let expired = ManagedOrderSafetyInput(
+                now: now,
+                signalValidUntil: now.addingTimeInterval(-1),
+                intentExpiresAt: base.intentExpiresAt,
+                submittedAt: base.submittedAt,
+                orderType: base.orderType,
+                limitPrice: base.limitPrice,
+                latestReferencePrice: base.latestReferencePrice,
+                marketDataFresh: false,
+                marketSessionOpen: false,
+                securityHalted: false,
+                brokerMarketable: true,
+                accountRiskValid: true,
+                leaseValid: true,
+                connectionActive: true,
+                filledQuantity: 0,
+                lastFilledQuantity: 0,
+                lastFillProgressAt: nil
+            )
+            let timedOut = ManagedOrderSafetyInput(
+                now: now,
+                signalValidUntil: base.signalValidUntil,
+                intentExpiresAt: base.intentExpiresAt,
+                submittedAt: now.addingTimeInterval(-91),
+                orderType: base.orderType,
+                limitPrice: base.limitPrice,
+                latestReferencePrice: base.latestReferencePrice,
+                marketDataFresh: true,
+                marketSessionOpen: true,
+                securityHalted: false,
+                brokerMarketable: true,
+                accountRiskValid: true,
+                leaseValid: true,
+                connectionActive: true,
+                filledQuantity: 0,
+                lastFilledQuantity: 0,
+                lastFillProgressAt: nil
+            )
+            return ManagedOrderSafetyPolicy.cancellationReason(base) == nil
+                && ManagedOrderSafetyPolicy.cancellationReason(expired) == "SIGNAL_EXPIRED"
+                && ManagedOrderSafetyPolicy.cancellationReason(timedOut) == "FILL_TIMEOUT"
+        }
     }
 
     private static func runAuthenticationTests(_ suite: inout TestSuite) {
@@ -1715,6 +1790,268 @@ struct ChangFuDesktopTests {
             suite.fail("首次 Futu 影子配置通过鉴权幂等接口保存", detail: error.localizedDescription)
         }
 
+        let liveIntentJSON = """
+        {"schemaVersion":"2.0","intentId":"22222222-2222-4222-8222-222222222222",
+         "userId":"42","deviceId":"11111111-1111-4111-8111-111111111111",
+         "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+         "provider":"FUTU","accountIdHash":"account-hash","contextHash":"context-hash",
+         "strategyVersion":"strategy-v1","sessionId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+         "poolVersion":2,"configVersion":3,"riskPolicyVersion":"risk-v1",
+         "executionMode":"AUTO_EXECUTE",
+         "clientRevalidation":{"quoteMaxAgeMs":3000,"accountMaxAgeMs":5000,
+         "mustCheckOpenOrders":true},
+         "order":{"broker":"FUTU","environment":"REAL","market":"US",
+         "symbol":"US.AAPL","side":"BUY","positionEffect":"OPEN_LONG",
+         "orderType":"LIMIT","tradingSession":"RTH","timeInForce":"DAY",
+         "quantity":"1","limitPrice":"180","currency":"USD","maxSlippageBps":10},
+         "issuedAt":"2026-09-29T10:00:00.000Z","expiresAt":"2026-09-29T10:01:00.000Z",
+         "keyId":"order-key-1","signature":"signature"}
+        """
+        let pendingOrderJSON = """
+        {"items":[{"intentId":"22222222-2222-4222-8222-222222222222",
+         "signalId":"33333333-3333-4333-8333-333333333333",
+         "userId":"42","deviceId":"11111111-1111-4111-8111-111111111111",
+         "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+         "provider":"FUTU","accountIdHash":"account-hash","contextHash":"context-hash",
+         "strategyVersion":"strategy-v1",
+         "symbol":"US.AAPL","side":"BUY","positionEffect":"OPEN_LONG",
+         "submissionMode":"AUTO_EXECUTE",
+         "order":{"broker":"FUTU","environment":"REAL","market":"US",
+         "symbol":"US.AAPL","side":"BUY","positionEffect":"OPEN_LONG",
+         "orderType":"LIMIT","tradingSession":"RTH","timeInForce":"DAY",
+         "quantity":"1","limitPrice":"180","currency":"USD","maxSlippageBps":10},
+         "state":"PENDING_CONFIRMATION","signature":"signature","keyId":"order-key-1",
+         "version":1,"sessionId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+         "poolVersion":"2","configVersion":"3","riskPolicyVersion":"risk-v1",
+         "clientRevalidation":{"quoteMaxAgeMs":3000,"accountMaxAgeMs":5000,
+         "mustCheckOpenOrders":true},"issuedAt":"2026-09-29T10:00:00.000Z",
+         "expiresAt":"2026-09-29T10:01:00.000Z",
+         "signalValidUntil":"2026-09-29T10:01:00.000Z","cancelReasonCode":null,
+         "brokerOrderId":"broker-order-1",
+         "updatedAt":"2026-09-29T10:00:00.000Z"}]}
+        """
+        let sessionJSON = Data("""
+        {"sessionId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+         "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+         "deviceId":"11111111-1111-4111-8111-111111111111",
+         "mode":"AUTO_EXECUTE","status":"ACTIVE","configVersion":3,
+         "riskPolicyVersion":"risk-v1",
+         "appSessionId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+         "expiresAt":"2026-09-29T10:02:00.000Z","version":1}
+        """.utf8)
+        MockURLProtocol.configure([
+            "/v1/trading/order-intent-keys": .http(
+                200,
+                Data(#"{"keys":[{"keyId":"order-key-1","publicKey":"pem"}]}"#.utf8)
+            ),
+            "/v1/trading-lease/acquire": .http(
+                200,
+                Data("""
+                {"leaseId":"lease-1","deviceId":"11111111-1111-4111-8111-111111111111",
+                 "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                 "expiresAt":"2026-09-29T10:02:00.000Z","version":1}
+                """.utf8)
+            ),
+            "/v1/trading-lease/renew": .http(
+                200,
+                Data("""
+                {"leaseId":"lease-1","deviceId":"11111111-1111-4111-8111-111111111111",
+                 "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                 "expiresAt":"2026-09-29T10:03:00.000Z","version":2}
+                """.utf8)
+            ),
+            "/v1/trading/execution-settings": .http(
+                200,
+                Data("""
+                {"provider":"FUTU","hardGateEnabled":true,"autoSubmitEnabled":false,
+                 "version":0,"blockers":[]}
+                """.utf8)
+            ),
+            "/v1/trading/execution-settings/FUTU": .http(
+                200,
+                Data("""
+                {"provider":"FUTU","hardGateEnabled":true,"autoSubmitEnabled":true,
+                 "version":1,"blockers":[],"updatedAt":"2026-09-29T10:00:00.000Z"}
+                """.utf8)
+            ),
+            "/v1/pending-orders": .http(200, Data(pendingOrderJSON.utf8)),
+            "/v1/pending-orders/22222222-2222-4222-8222-222222222222/claim":
+                .http(200, Data(#"{"claimToken":"claim","expiresAt":"2026-09-29T10:01:00.000Z","version":2}"#.utf8)),
+            "/v1/pending-orders/22222222-2222-4222-8222-222222222222/submissions":
+                .http(201, Data("{\"executionId\":\"execution-1\",\"intent\":\(liveIntentJSON)}".utf8)),
+            "/v1/order-executions/execution-1/result":
+                .http(200, Data(#"{"recorded":true}"#.utf8)),
+            "/v1/pending-orders/22222222-2222-4222-8222-222222222222/reject":
+                .http(200, Data(#"{"rejected":true}"#.utf8)),
+            "/v1/pending-orders/22222222-2222-4222-8222-222222222222/cancel-request":
+                .http(202, Data(#"{"actionId":"action-1"}"#.utf8)),
+            "/v1/order-actions": .http(
+                200,
+                Data("""
+                {"items":[{"actionId":"action-1",
+                 "intentId":"22222222-2222-4222-8222-222222222222","provider":"FUTU",
+                 "brokerConnectionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                 "actionType":"CANCEL","reasonCode":"USER_REQUESTED","state":"PENDING",
+                 "version":1,"createdAt":"2026-09-29T10:00:00.000Z",
+                 "updatedAt":"2026-09-29T10:00:00.000Z"}]}
+                """.utf8)
+            ),
+            "/v1/order-actions/action-1/claim":
+                .http(200, Data(#"{"claimToken":"action-claim","expiresAt":"2026-09-29T10:01:00.000Z","version":2}"#.utf8)),
+            "/v1/order-actions/action-1/result":
+                .http(200, Data(#"{"recorded":true}"#.utf8)),
+            "/v1/trading-sessions/activate": .http(201, sessionJSON),
+            "/v1/trading-sessions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/renew":
+                .http(200, sessionJSON),
+            "/v1/trading-sessions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/deactivate":
+                .http(200, Data(#"{"deactivated":true}"#.utf8)),
+            "/v1/trading-sessions/current":
+                .http(200, Data("{\"session\":\(String(decoding: sessionJSON, as: UTF8.self))}".utf8))
+        ])
+        do {
+            let connectionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            let deviceId = "11111111-1111-4111-8111-111111111111"
+            let intentId = "22222222-2222-4222-8222-222222222222"
+            let sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            let leaseInput = TradingLeaseRequest(
+                deviceId: deviceId,
+                brokerConnectionId: connectionId
+            )
+            let keys = try await client.orderIntentVerificationKeys(accessToken: "access")
+            let acquired = try await client.acquireTradingLease(leaseInput, accessToken: "access")
+            let renewedLease = try await client.renewTradingLease(leaseInput, accessToken: "access")
+            let setting = try await client.liveExecutionSetting(
+                provider: "FUTU",
+                accessToken: "access"
+            )
+            let updatedSetting = try await client.updateLiveExecutionSetting(
+                provider: "FUTU",
+                input: UpdateLiveExecutionSettingRequest(
+                    autoSubmitEnabled: true,
+                    expectedVersion: 0
+                ),
+                accessToken: "access"
+            )
+            let orders = try await client.pendingLiveOrders(
+                brokerConnectionId: connectionId,
+                accessToken: "access"
+            )
+            let claim = try await client.claimPendingOrder(
+                intentId: intentId,
+                input: ClaimPendingOrderRequest(
+                    deviceId: deviceId,
+                    provider: "FUTU",
+                    expectedVersion: 1
+                ),
+                accessToken: "access"
+            )
+            let submission = try await client.beginOrderSubmission(
+                intentId: intentId,
+                input: BeginOrderSubmissionRequest(
+                    deviceId: deviceId,
+                    provider: "FUTU",
+                    claimToken: claim.claimToken,
+                    brokerRequestHash: String(repeating: "a", count: 64)
+                ),
+                accessToken: "access"
+            )
+            let executionResult = try await client.recordOrderExecutionResult(
+                executionId: submission.executionId,
+                input: RecordOrderExecutionResultRequest(
+                    deviceId: deviceId,
+                    status: "SUBMITTED",
+                    brokerOrderId: "broker-order-1",
+                    responseSummary: .object(["filledQuantity": .number(0)])
+                ),
+                accessToken: "access"
+            )
+            let rejected = try await client.rejectPendingOrder(
+                intentId: intentId,
+                input: PendingOrderDecisionRequest(
+                    deviceId: deviceId,
+                    reasonCode: "USER_REJECTED"
+                ),
+                accessToken: "access"
+            )
+            let cancel = try await client.requestPendingOrderCancel(
+                intentId: intentId,
+                input: PendingOrderDecisionRequest(
+                    deviceId: deviceId,
+                    reasonCode: "USER_REQUESTED"
+                ),
+                accessToken: "access"
+            )
+            let actions = try await client.pendingOrderActions(
+                brokerConnectionId: connectionId,
+                accessToken: "access"
+            )
+            let actionClaim = try await client.claimOrderAction(
+                actionId: cancel.actionId,
+                input: ClaimOrderActionRequest(deviceId: deviceId, expectedVersion: 1),
+                accessToken: "access"
+            )
+            let actionResult = try await client.recordOrderActionResult(
+                actionId: cancel.actionId,
+                input: RecordOrderActionResultRequest(
+                    deviceId: deviceId,
+                    claimToken: actionClaim.claimToken,
+                    status: "CANCELLED",
+                    resultSummary: .object(["brokerStatus": .string("CANCELLED")])
+                ),
+                accessToken: "access"
+            )
+            let activated = try await client.activateLiveTradingSession(
+                ActivateLiveTradingSessionRequest(
+                    brokerConnectionId: connectionId,
+                    provider: "FUTU",
+                    deviceId: deviceId,
+                    configVersion: 3,
+                    riskPolicyVersion: "risk-v1",
+                    confirmationDigest: String(repeating: "b", count: 64),
+                    appSessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+                ),
+                accessToken: "access"
+            )
+            let renewedSession = try await client.renewLiveTradingSession(
+                sessionId: sessionId,
+                accessToken: "access"
+            )
+            let current = try await client.currentLiveTradingSession(
+                brokerConnectionId: connectionId,
+                accessToken: "access"
+            )
+            let deactivated = try await client.deactivateLiveTradingSession(
+                sessionId: sessionId,
+                accessToken: "access"
+            )
+            let requests = MockURLProtocol.capturedRequests()
+            let mutations = requests.filter { $0.method != "GET" }
+            suite.test("真实交易控制面 API 与 DTO 严格映射") {
+                keys.keys.first?.keyId == "order-key-1"
+                    && acquired.version == 1
+                    && renewedLease.version == 2
+                    && setting.autoSubmitEnabled == false
+                    && updatedSetting.autoSubmitEnabled
+                    && orders.first?.symbol == "US.AAPL"
+                    && orders.first?.signedIntent.strategyVersion == "strategy-v1"
+                    && orders.first?.brokerOrderId == "broker-order-1"
+                    && claim.version == 2
+                    && submission.intent.strategyVersion == "strategy-v1"
+                    && executionResult.recorded
+                    && rejected.rejected
+                    && actions.first?.actionType == "CANCEL"
+                    && actionResult.recorded
+                    && activated.status == "ACTIVE"
+                    && renewedSession.sessionId == sessionId
+                    && current?.brokerConnectionId == connectionId
+                    && deactivated.deactivated
+                    && mutations.allSatisfy { $0.authorization == "Bearer access" }
+                    && mutations.allSatisfy { $0.idempotencyKey != nil }
+            }
+        } catch {
+            suite.fail("真实交易控制面 API 与 DTO 严格映射", detail: String(reflecting: error))
+        }
+
         MockURLProtocol.configure([
             "/v1/subscription/catalog": .http(
                 200,
@@ -1985,6 +2322,251 @@ struct ChangFuDesktopTests {
     }
 
     @MainActor
+    private static func runLiveOrderCoordinatorTests(_ suite: inout TestSuite) async {
+        let session = makeMockSession()
+        let backend = BackendClient(
+            baseURL: URL(string: "http://changfu.test:4310")!,
+            session: session
+        )
+        let coordinator = LiveOrderCoordinator(backend: backend)
+        let supervisor = ManagedOrderSupervisor(backend: backend)
+        let privateKey = Curve25519.Signing.PrivateKey()
+        let now = Date()
+
+        do {
+            let intent = try makeSignedIntent(
+                key: privateKey,
+                now: now,
+                expiresAt: now.addingTimeInterval(300)
+            )
+            let pending = try makePendingLiveOrder(intent: intent)
+            MockURLProtocol.configure(try liveOrderResponses(
+                intent: intent,
+                publicKey: privateKey.publicKey
+            ))
+            let broker = FakeLiveOrderBrokerClient()
+            broker.placeOrderResult = testBrokerReceipt(
+                brokerOrderId: "broker-order-success",
+                status: "SUBMITTED"
+            )
+
+            let outcome = try await coordinator.execute(
+                pending: pending,
+                context: liveOrderContext(),
+                broker: broker,
+                accessToken: "access"
+            )
+            let requests = MockURLProtocol.capturedRequests()
+            let claimBody = requests.first {
+                $0.path == "/v1/pending-orders/intent-1/claim"
+            }?.body.flatMap {
+                try? JSONDecoder().decode(ClaimPendingOrderRequest.self, from: $0)
+            }
+            let submissionBody = requests.first {
+                $0.path == "/v1/pending-orders/intent-1/submissions"
+            }?.body.flatMap {
+                try? JSONDecoder().decode(BeginOrderSubmissionRequest.self, from: $0)
+            }
+            let resultBody = requests.last?.body.flatMap {
+                try? JSONDecoder().decode(RecordOrderExecutionResultRequest.self, from: $0)
+            }
+            suite.test("有效签名完成 claim、submission、券商提交与结果回传") {
+                outcome.executionId == "execution-1"
+                    && outcome.brokerOrderId == "broker-order-success"
+                    && broker.readinessRequests.count == 1
+                    && broker.placeOrderRequests.count == 1
+                    && broker.findOrderRequests.isEmpty
+                    && requests.map(\.path) == [
+                        "/v1/trading/order-intent-keys",
+                        "/v1/pending-orders/intent-1/claim",
+                        "/v1/pending-orders/intent-1/submissions",
+                        "/v1/order-executions/execution-1/result"
+                    ]
+                    && claimBody?.expectedVersion == pending.version
+                    && submissionBody?.claimToken == "claim-1"
+                    && submissionBody?.brokerRequestHash.count == 64
+                    && resultBody?.status == "SUBMITTED"
+                    && resultBody?.brokerOrderId == "broker-order-success"
+            }
+        } catch {
+            suite.fail(
+                "有效签名完成 claim、submission、券商提交与结果回传",
+                detail: String(reflecting: error)
+            )
+        }
+
+        do {
+            let intent = try makeSignedIntent(
+                key: privateKey,
+                now: now,
+                expiresAt: now.addingTimeInterval(300),
+                signatureOverride: "AAAA"
+            )
+            let pending = try makePendingLiveOrder(intent: intent)
+            MockURLProtocol.configure([
+                "/v1/trading/order-intent-keys": .http(
+                    200,
+                    verificationKeysJSON(publicKey: privateKey.publicKey)
+                )
+            ])
+            let broker = FakeLiveOrderBrokerClient()
+            let rejected = await awaitCatches {
+                _ = try await coordinator.execute(
+                    pending: pending,
+                    context: liveOrderContext(),
+                    broker: broker,
+                    accessToken: "access"
+                )
+            } matches: {
+                guard let error = $0 as? OrderIntentVerificationError else { return false }
+                if case .invalidSignature = error { return true }
+                return false
+            }
+            suite.test("无效签名在任何券商调用前拒绝") {
+                rejected
+                    && broker.readinessRequests.isEmpty
+                    && broker.placeOrderRequests.isEmpty
+                    && broker.findOrderRequests.isEmpty
+                    && broker.cancelOrderRequests.isEmpty
+                    && MockURLProtocol.capturedRequests().map(\.path)
+                        == ["/v1/trading/order-intent-keys"]
+            }
+        } catch {
+            suite.fail("无效签名在任何券商调用前拒绝", detail: String(reflecting: error))
+        }
+
+        do {
+            let intent = try makeSignedIntent(
+                key: privateKey,
+                now: now,
+                expiresAt: now.addingTimeInterval(300)
+            )
+            let pending = try makePendingLiveOrder(intent: intent)
+            MockURLProtocol.configure(try liveOrderResponses(
+                intent: intent,
+                publicKey: privateKey.publicKey
+            ))
+            let broker = FakeLiveOrderBrokerClient()
+            broker.placeOrderError = URLError(.timedOut)
+            broker.findOrderResult = testBrokerReceipt(
+                brokerOrderId: "broker-order-reconciled",
+                status: "SUBMITTED"
+            )
+
+            let outcome = try await coordinator.execute(
+                pending: pending,
+                context: liveOrderContext(),
+                broker: broker,
+                accessToken: "access"
+            )
+            suite.test("place 超时后 find 唯一订单并且不重复提交") {
+                outcome.brokerOrderId == "broker-order-reconciled"
+                    && outcome.message.contains("查询确认")
+                    && broker.placeOrderRequests.count == 1
+                    && broker.findOrderRequests.count == 1
+                    && broker.findOrderRequests.first?.intentId == intent.intentId
+                    && MockURLProtocol.capturedRequests()
+                        .filter { $0.path == "/v1/order-executions/execution-1/result" }
+                        .count == 1
+            }
+        } catch {
+            suite.fail(
+                "place 超时后 find 唯一订单并且不重复提交",
+                detail: String(reflecting: error)
+            )
+        }
+
+        do {
+            let intent = try makeSignedIntent(
+                key: privateKey,
+                now: now,
+                expiresAt: now.addingTimeInterval(300)
+            )
+            let pending = try makePendingLiveOrder(
+                intent: intent,
+                brokerOrderId: "pending-broker-order"
+            )
+            let action = try makeCancelAction()
+            MockURLProtocol.configure(orderActionResponses())
+            let broker = FakeLiveOrderBrokerClient()
+            broker.cancelOrderResult = testBrokerReceipt(
+                brokerOrderId: "pending-broker-order",
+                status: "CANCELLED"
+            )
+
+            await supervisor.process(
+                actions: [action],
+                orders: [pending],
+                deviceId: "device-1",
+                accountId: "account-1",
+                broker: broker,
+                accessToken: "access"
+            )
+            let resultBody = MockURLProtocol.capturedRequests().last?.body.flatMap {
+                try? JSONDecoder().decode(RecordOrderActionResultRequest.self, from: $0)
+            }
+            suite.test("cancel action 仅使用 pending 的 brokerOrderId 并回传结果") {
+                broker.findOrderRequests.isEmpty
+                    && broker.cancelOrderRequests.count == 1
+                    && broker.cancelOrderRequests.first?.brokerOrderId
+                        == "pending-broker-order"
+                    && resultBody?.status == "CANCELLED"
+                    && resultBody?.claimToken == "action-claim"
+            }
+        } catch {
+            suite.fail(
+                "cancel action 仅使用 pending 的 brokerOrderId 并回传结果",
+                detail: String(reflecting: error)
+            )
+        }
+
+        do {
+            let intent = try makeSignedIntent(
+                key: privateKey,
+                now: now,
+                expiresAt: now.addingTimeInterval(300)
+            )
+            let pending = try makePendingLiveOrder(intent: intent)
+            let action = try makeCancelAction()
+            MockURLProtocol.configure(orderActionResponses())
+            let broker = FakeLiveOrderBrokerClient()
+            broker.findOrderResult = testBrokerReceipt(
+                brokerOrderId: "found-by-intent",
+                status: "SUBMITTED"
+            )
+            broker.cancelOrderResult = testBrokerReceipt(
+                brokerOrderId: "found-by-intent",
+                status: "CANCELLED"
+            )
+
+            await supervisor.process(
+                actions: [action],
+                orders: [pending],
+                deviceId: "device-1",
+                accountId: "account-1",
+                broker: broker,
+                accessToken: "access"
+            )
+            suite.test("缺少 brokerOrderId 时按 intent 查找后撤单") {
+                broker.findOrderRequests.count == 1
+                    && broker.findOrderRequests.first?.intentId == intent.intentId
+                    && broker.findOrderRequests.first?.accountId == "account-1"
+                    && broker.cancelOrderRequests.first?.brokerOrderId == "found-by-intent"
+                    && MockURLProtocol.capturedRequests().map(\.path) == [
+                        "/v1/order-actions/action-1/claim",
+                        "/v1/order-actions/action-1/result"
+                    ]
+            }
+        } catch {
+            suite.fail(
+                "缺少 brokerOrderId 时按 intent 查找后撤单",
+                detail: String(reflecting: error)
+            )
+        }
+        session.invalidateAndCancel()
+    }
+
+    @MainActor
     private static func runBrokerTests(_ suite: inout TestSuite) async {
         let fixtureDirectory = FileManager.default.temporaryDirectory
             .appending(path: "changfu-broker-tests-\(UUID().uuidString)")
@@ -2134,6 +2716,132 @@ struct ChangFuDesktopTests {
                     && expiries.expiries.first?.expiryDate == "2026-09-25"
                     && chain.contracts.first?.optionType == .call
                     && chain.contracts.first?.contractMultiplier == "100"
+            }
+
+            let tradeHost = try makeBrokerFixture(
+                in: fixtureDirectory,
+                name: "futu-trade-host",
+                script: """
+                #!/bin/sh
+                input="$(cat)"
+                printf '%s\t%s\\n' "$1" "$input" >> "$0.requests"
+                case "$1" in
+                  trade-readiness)
+                    case "$input" in
+                      *'"positionEffect":"OPEN_SHORT"'*)
+                        printf '{"provider":"FUTU","accountId":"futu-account","environment":"REAL","ready":false,"reason":"Futu 无法确认该标的券源、卖空额度或初始保证金","marginAccount":true,"marginCallActive":false,"shortable":false,"maxOrderQuantity":0,"checkedAt":"2026-09-29T10:00:00.000Z"}'
+                        ;;
+                      *)
+                        printf '{"provider":"FUTU","accountId":"futu-account","environment":"REAL","ready":true,"reason":null,"marginAccount":true,"marginCallActive":false,"shortable":null,"maxOrderQuantity":100,"checkedAt":"2026-09-29T10:00:00.000Z"}'
+                        ;;
+                    esac
+                    ;;
+                  place-order)
+                    printf '{"brokerOrderId":"futu-order-1","status":"SUBMITTED","submittedQuantity":2,"filledQuantity":0,"filledAveragePrice":null,"remark":"cf:futu-intent-1","brokerCode":"0","updatedAt":"2026-09-29T10:00:01.000Z"}'
+                    ;;
+                  cancel-order)
+                    printf '{"brokerOrderId":"futu-order-1","status":"CANCEL_PENDING","submittedQuantity":2,"filledQuantity":0,"filledAveragePrice":null,"remark":"cf:futu-intent-1","brokerCode":"0","updatedAt":"2026-09-29T10:00:02.000Z"}'
+                    ;;
+                  find-order-by-intent)
+                    printf '{"brokerOrderId":"futu-order-1","status":"SUBMITTED","submittedQuantity":2,"filledQuantity":0,"filledAveragePrice":null,"remark":"cf:futu-intent-1","brokerCode":"0","updatedAt":"2026-09-29T10:00:01.000Z"}'
+                    ;;
+                  *)
+                    exit 8
+                    ;;
+                esac
+                """
+            )
+            let tradeBroker = FutuBrokerClient(hostExecutableURL: tradeHost)
+            let order = brokerOrderFixture(broker: "FUTU")
+            let readiness = try await tradeBroker.tradeReadiness(
+                BrokerTradeReadinessRequest(accountId: "futu-account", order: order)
+            )
+            let placed = try await tradeBroker.placeOrder(
+                BrokerPlaceOrderRequest(
+                    intentId: "futu-intent-1",
+                    accountId: "futu-account",
+                    order: order
+                )
+            )
+            let cancelled = try await tradeBroker.cancelOrder(
+                BrokerCancelOrderRequest(
+                    intentId: "futu-intent-1",
+                    accountId: "futu-account",
+                    brokerOrderId: "futu-order-1",
+                    symbol: "US.AAPL"
+                )
+            )
+            let found = try await tradeBroker.findOrder(
+                BrokerFindOrderRequest(
+                    intentId: "futu-intent-1",
+                    accountId: "futu-account",
+                    symbol: "US.AAPL",
+                    side: "BUY",
+                    quantity: "2",
+                    limitPrice: "180.50",
+                    submittedAfter: "2026-09-29T09:59:55.000Z"
+                )
+            )
+            let shortOrder = brokerOrderFixture(
+                broker: "FUTU",
+                side: "SELL",
+                positionEffect: "OPEN_SHORT"
+            )
+            let shortReadiness = try await tradeBroker.tradeReadiness(
+                BrokerTradeReadinessRequest(
+                    accountId: "futu-account",
+                    order: shortOrder
+                )
+            )
+            let requestLines = try String(
+                contentsOf: URL(fileURLWithPath: tradeHost.path + ".requests"),
+                encoding: .utf8
+            ).split(separator: "\n")
+            let recordedRequests = requestLines.compactMap {
+                line -> (String, [String: Any])? in
+                let parts = line.split(separator: "\t", maxSplits: 1)
+                guard parts.count == 2,
+                      let data = String(parts[1]).data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data)
+                        as? [String: Any] else {
+                    return nil
+                }
+                return (String(parts[0]), object)
+            }
+            suite.test("Futu 交易命令 JSON 契约与意图 remark") {
+                let byCommand = Dictionary(
+                    uniqueKeysWithValues: recordedRequests.prefix(4)
+                )
+                let readinessOrder = byCommand["trade-readiness"]?["order"]
+                    as? [String: Any]
+                let placeOrder = byCommand["place-order"]?["order"]
+                    as? [String: Any]
+                return readiness.provider == "FUTU"
+                    && readiness.ready
+                    && readiness.maxOrderQuantity == 100
+                    && placed.brokerOrderId == "futu-order-1"
+                    && placed.remark == "cf:futu-intent-1"
+                    && cancelled.status == "CANCEL_PENDING"
+                    && cancelled.remark == "cf:futu-intent-1"
+                    && found?.remark == "cf:futu-intent-1"
+                    && readinessOrder?["symbol"] as? String == "US.AAPL"
+                    && readinessOrder?["quantity"] as? String == "2"
+                    && placeOrder?["orderType"] as? String == "MARKETABLE_LIMIT"
+                    && byCommand["place-order"]?["intentId"] as? String
+                        == "futu-intent-1"
+                    && byCommand["cancel-order"]?["brokerOrderId"] as? String
+                        == "futu-order-1"
+                    && byCommand["find-order-by-intent"]?["submittedAfter"] as? String
+                        == "2026-09-29T09:59:55.000Z"
+            }
+            suite.test("Futu 卖空就绪检查缺少确定券源时 fail-closed") {
+                shortReadiness.ready == false
+                    && shortReadiness.shortable == false
+                    && shortReadiness.reason?.contains("无法确认") == true
+                    && recordedRequests.last?.0 == "trade-readiness"
+                    && recordedRequests.last?.1["order"]
+                        .flatMap { $0 as? [String: Any] }?["positionEffect"] as? String
+                        == "OPEN_SHORT"
             }
         } catch {
             suite.fail("Broker 异常夹具", detail: error.localizedDescription)
@@ -2285,6 +2993,13 @@ struct ChangFuDesktopTests {
                 name: "longbridge",
                 script: """
                 #!/bin/sh
+                printf '%s\\n' "$*" >> "$0.argv"
+                case " $* " in
+                  *"$LONGBRIDGE_APP_KEY"*|*"$LONGBRIDGE_APP_SECRET"*|*"$LONGBRIDGE_ACCESS_TOKEN"*)
+                    printf 'credentials leaked into argv\\n' >&2
+                    exit 9
+                    ;;
+                esac
                 if [ "$LONGBRIDGE_APP_KEY" != "test-app-key" ] || \
                    [ "$LONGBRIDGE_APP_SECRET" != "test-app-secret" ] || \
                    [ "$LONGBRIDGE_ACCESS_TOKEN" != "test-access-token" ]; then
@@ -2296,10 +3011,16 @@ struct ChangFuDesktopTests {
                     printf '{"token":{"status":"authenticated"}}\\n'
                     ;;
                   assets)
-                    printf '{"currency":"USD","net_assets":"12000.50","total_cash":4000,"buy_power":"8000.25"}\\n'
+                    printf '{"account_id":"longbridge-account","currency":"USD","net_assets":"12000.50","total_cash":4000,"buy_power":"8000.25","max_finance_amount":"5000","remaining_finance_amount":"4000","margin_call":"0","risk_level":"safe"}\\n'
                     ;;
                   positions)
                     printf '[{"symbol":"AAPL.US","name":"Apple","quantity":"10","cost_price":"180","currency":"USD","market":"US"},{"symbol":"700.HK","name":"腾讯控股","quantity":20,"cost_price":"500","currency":"HKD","market":"HK"}]\\n'
+                    ;;
+                  max-qty)
+                    printf '{"margin_max_qty":"100","cash_max_qty":"20"}\\n'
+                    ;;
+                  margin-ratio)
+                    printf '{"symbol":"AAPL.US"}\\n'
                     ;;
                   quote)
                     printf '[{"symbol":"AAPL.US","last":"200","prev_close":"198","trade_status":"Overnight","status":"Normal","pre_market":{"last":"199.5"},"post_market":{"last":"200.5"},"overnight":{"last":"201.5"}},{"symbol":"700.HK","last":"510","prev_close":"505","status":"Normal"}]\\n'
@@ -2329,6 +3050,17 @@ struct ChangFuDesktopTests {
                   order)
                     if [ "$2" = "executions" ]; then
                       printf '[{"trade_id":"fill-1","order_id":"order-1","symbol":"AAPL.US","side":"Buy","quantity":"1","price":"199","trade_done_at":"2026-09-18T01:00:00Z"}]\\n'
+                    elif [ "$2" = "buy" ]; then
+                      printf 'confirm-only\\n{"order_id":"longbridge-order-1"}\\n'
+                    elif [ "$2" = "detail" ]; then
+                      status="New"
+                      if [ -f "$0.cancelled" ]; then status="Canceled"; fi
+                      printf '{"order_id":"longbridge-order-1","symbol":"AAPL.US","side":"Buy","status":"%s","quantity":"2","price":"180.5","executed_quantity":"0","remark":"cf:longbridge-intent-1","submitted_at":"2026-09-29T10:00:00.000Z"}\\n' "$status"
+                    elif [ "$2" = "cancel" ]; then
+                      : > "$0.cancelled"
+                      printf '{"cancelled":true}\\n'
+                    elif [ "$2" = "--symbol" ]; then
+                      printf '[{"order_id":"longbridge-order-1","symbol":"AAPL.US","side":"Buy","status":"New","quantity":"2","price":"180.5","submitted_at":"2026-09-29T10:00:00.000Z"}]\\n'
                     else
                       printf '[{"order_id":"order-1","symbol":"AAPL.US","side":"Buy","status":"Filled","quantity":"1","price":"199","executed_quantity":"1","executed_price":"199"}]\\n'
                     fi
@@ -2341,18 +3073,16 @@ struct ChangFuDesktopTests {
             )
             setenv("CHANGFU_LONGBRIDGE_CLI", cli.path, 1)
             defer { unsetenv("CHANGFU_LONGBRIDGE_CLI") }
-            let credentialStore = SecureCredentialStore(
-                service: "com.changfu.desktop.tests.\(UUID().uuidString)"
-            )
-            try credentialStore.saveLongbridgeCredentials(LongbridgeCredentials(
+            let credentials = LongbridgeCredentials(
                 appKey: "test-app-key",
                 appSecret: "test-app-secret",
                 accessToken: "test-access-token"
-            ))
-            defer { try? credentialStore.clearLongbridgeCredentials() }
+            )
             let broker = LongbridgeBrokerClient(
                 hostExecutableURL: URL(fileURLWithPath: hostPath),
-                credentialStore: credentialStore
+                credentialStore: TestLongbridgeCredentialProvider(
+                    credentials: credentials
+                )
             )
             await broker.connect()
             let snapshot = try await broker.loadSnapshot()
@@ -2377,6 +3107,53 @@ struct ChangFuDesktopTests {
                     instrumentTypes: [.stock]
                 )
             )
+            let order = brokerOrderFixture(broker: "LONGBRIDGE")
+            let readiness = try await broker.tradeReadiness(
+                BrokerTradeReadinessRequest(
+                    accountId: "longbridge-account",
+                    order: order
+                )
+            )
+            let placed = try await broker.placeOrder(
+                BrokerPlaceOrderRequest(
+                    intentId: "longbridge-intent-1",
+                    accountId: "longbridge-account",
+                    order: order
+                )
+            )
+            let found = try await broker.findOrder(
+                BrokerFindOrderRequest(
+                    intentId: "longbridge-intent-1",
+                    accountId: "longbridge-account",
+                    symbol: "US.AAPL",
+                    side: "BUY",
+                    quantity: "2",
+                    limitPrice: "180.50",
+                    submittedAfter: "2026-09-29T09:59:55.000Z"
+                )
+            )
+            let cancelled = try await broker.cancelOrder(
+                BrokerCancelOrderRequest(
+                    intentId: "longbridge-intent-1",
+                    accountId: "longbridge-account",
+                    brokerOrderId: "longbridge-order-1",
+                    symbol: "US.AAPL"
+                )
+            )
+            let shortReadiness = try await broker.tradeReadiness(
+                BrokerTradeReadinessRequest(
+                    accountId: "longbridge-account",
+                    order: brokerOrderFixture(
+                        broker: "LONGBRIDGE",
+                        side: "SELL",
+                        positionEffect: "OPEN_SHORT"
+                    )
+                )
+            )
+            let cliArgv = try String(
+                contentsOf: URL(fileURLWithPath: cli.path + ".argv"),
+                encoding: .utf8
+            )
             suite.test("Longbridge Host 标准化动态 JSON") {
                 snapshot.account.totalAssets == Decimal(string: "12000.50")
                     && snapshot.positions.count == 2
@@ -2387,7 +3164,7 @@ struct ChangFuDesktopTests {
                     && snapshot.dataGaps.count == 2
             }
             suite.test("Longbridge API 凭据经安全通道传入 Host") {
-                (try? credentialStore.longbridgeCredentials())?.appKey == "test-app-key"
+                credentials.appKey == "test-app-key"
                     && broker.connectionState == .connected
             }
             suite.test("Longbridge 美股与港股时段互不污染") {
@@ -2413,6 +3190,34 @@ struct ChangFuDesktopTests {
                     && dottedSearch.results.first?.canonicalSymbol == "US.BRK.B"
                     && dottedSearch.results.first?.addable == true
             }
+            suite.test("Longbridge 交易命令 JSON 契约与意图 remark") {
+                readiness.provider == "LONGBRIDGE"
+                    && readiness.accountId == "longbridge-account"
+                    && readiness.ready
+                    && readiness.maxOrderQuantity == 100
+                    && placed.brokerOrderId == "longbridge-order-1"
+                    && placed.status == "SUBMITTED"
+                    && placed.remark == "cf:longbridge-intent-1"
+                    && found?.brokerOrderId == "longbridge-order-1"
+                    && found?.remark == "cf:longbridge-intent-1"
+                    && cancelled.status == "CANCELLED"
+                    && cancelled.remark == "cf:longbridge-intent-1"
+            }
+            suite.test("Longbridge 卖空信息不完整时 fail-closed 且不提交") {
+                shortReadiness.ready == false
+                    && shortReadiness.shortable == true
+                    && shortReadiness.reason?.contains("无法确认") == true
+                    && !cliArgv.split(separator: "\n").contains {
+                        $0.hasPrefix("order sell ")
+                    }
+            }
+            suite.test("Longbridge API 凭据仅经环境变量传递且不进入 argv") {
+                !cliArgv.contains("test-app-key")
+                    && !cliArgv.contains("test-app-secret")
+                    && !cliArgv.contains("test-access-token")
+                    && cliArgv.contains("order buy AAPL.US 2")
+                    && cliArgv.contains("--remark cf:longbridge-intent-1")
+            }
         } catch {
             suite.fail("Longbridge Host 解析夹具", detail: error.localizedDescription)
         }
@@ -2430,6 +3235,28 @@ struct ChangFuDesktopTests {
             ofItemAtPath: url.path
         )
         return url
+    }
+
+    private static func brokerOrderFixture(
+        broker: String,
+        side: String = "BUY",
+        positionEffect: String = "OPEN_LONG"
+    ) -> SignedOrderIntent.OrderSpec {
+        SignedOrderIntent.OrderSpec(
+            broker: broker,
+            environment: "REAL",
+            market: "US",
+            symbol: "US.AAPL",
+            side: side,
+            positionEffect: positionEffect,
+            orderType: "MARKETABLE_LIMIT",
+            tradingSession: "RTH",
+            timeInForce: "DAY",
+            quantity: "2",
+            limitPrice: "180.50",
+            currency: "USD",
+            maxSlippageBps: 10
+        )
     }
 
     private static func makeSignedIntent(
@@ -2508,6 +3335,141 @@ struct ChangFuDesktopTests {
             expiresAt: unsigned.expiresAt,
             keyId: unsigned.keyId,
             signature: signatureOverride ?? signature
+        )
+    }
+
+    private static func makePendingLiveOrder(
+        intent: SignedOrderIntent,
+        brokerOrderId: String? = nil
+    ) throws -> PendingLiveOrder {
+        let encoded = try JSONEncoder().encode(intent)
+        guard var object = try JSONSerialization.jsonObject(with: encoded)
+            as? [String: Any] else {
+            throw TestFixtureError.invalidJSON
+        }
+        object["signalId"] = "signal-1"
+        object["symbol"] = intent.order.symbol
+        object["side"] = intent.order.side
+        object["positionEffect"] = intent.order.positionEffect
+        object["submissionMode"] = intent.executionMode
+        object["state"] = "PENDING_CONFIRMATION"
+        object["version"] = 1
+        object["signalValidUntil"] = intent.expiresAt
+        object["updatedAt"] = intent.issuedAt
+        if let brokerOrderId {
+            object["brokerOrderId"] = brokerOrderId
+        }
+        return try JSONDecoder().decode(
+            PendingLiveOrder.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+    }
+
+    private static func makeCancelAction() throws -> PendingOrderAction {
+        try JSONDecoder().decode(
+            PendingOrderAction.self,
+            from: Data("""
+            {"actionId":"action-1","intentId":"intent-1","provider":"FUTU",
+             "brokerConnectionId":"broker-1","actionType":"CANCEL",
+             "reasonCode":"USER_REQUESTED","state":"PENDING","version":1,
+             "createdAt":"2026-09-29T10:00:00.000Z",
+             "updatedAt":"2026-09-29T10:00:00.000Z"}
+            """.utf8)
+        )
+    }
+
+    private static func liveOrderContext() -> LiveOrderExecutionContext {
+        LiveOrderExecutionContext(
+            userId: "user-1",
+            deviceId: "device-1",
+            brokerConnectionId: "broker-1",
+            provider: "FUTU",
+            accountId: "account-1",
+            accountIdHash: "account-hash",
+            poolVersion: 1,
+            configVersion: 1,
+            riskPolicyVersion: "risk-v1",
+            sessionId: nil
+        )
+    }
+
+    private static func liveOrderResponses(
+        intent: SignedOrderIntent,
+        publicKey: Curve25519.Signing.PublicKey
+    ) throws -> [String: MockResponse] {
+        let intentObject = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(intent)
+        )
+        let submission = try JSONSerialization.data(withJSONObject: [
+            "executionId": "execution-1",
+            "intent": intentObject
+        ])
+        return [
+            "/v1/trading/order-intent-keys": .http(
+                200,
+                verificationKeysJSON(publicKey: publicKey)
+            ),
+            "/v1/pending-orders/intent-1/claim": .http(
+                200,
+                Data("""
+                {"claimToken":"claim-1","expiresAt":"2099-01-01T00:00:00.000Z",
+                 "version":2}
+                """.utf8)
+            ),
+            "/v1/pending-orders/intent-1/submissions": .http(201, submission),
+            "/v1/order-executions/execution-1/result": .http(
+                200,
+                Data(#"{"recorded":true}"#.utf8)
+            )
+        ]
+    }
+
+    private static func verificationKeysJSON(
+        publicKey: Curve25519.Signing.PublicKey
+    ) -> Data {
+        let prefix = Data([
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
+            0x2b, 0x65, 0x70, 0x03, 0x21, 0x00
+        ])
+        let pem = """
+        -----BEGIN PUBLIC KEY-----
+        \((prefix + publicKey.rawRepresentation).base64EncodedString())
+        -----END PUBLIC KEY-----
+        """
+        return try! JSONEncoder().encode([
+            "keys": [["keyId": "key-1", "publicKey": pem]]
+        ])
+    }
+
+    private static func orderActionResponses() -> [String: MockResponse] {
+        [
+            "/v1/order-actions/action-1/claim": .http(
+                200,
+                Data("""
+                {"claimToken":"action-claim","expiresAt":"2099-01-01T00:00:00.000Z",
+                 "version":2}
+                """.utf8)
+            ),
+            "/v1/order-actions/action-1/result": .http(
+                200,
+                Data(#"{"recorded":true}"#.utf8)
+            )
+        ]
+    }
+
+    private static func testBrokerReceipt(
+        brokerOrderId: String,
+        status: String
+    ) -> BrokerOrderReceipt {
+        BrokerOrderReceipt(
+            brokerOrderId: brokerOrderId,
+            status: status,
+            submittedQuantity: 1,
+            filledQuantity: 0,
+            filledAveragePrice: nil,
+            remark: "test-only",
+            brokerCode: "0",
+            updatedAt: "2026-09-29T10:00:01.000Z"
         )
     }
 
@@ -2649,6 +3611,77 @@ private struct TestUnsignedOrderIntent: Encodable {
     let issuedAt: String
     let expiresAt: String
     let keyId: String
+}
+
+private enum TestFixtureError: Error {
+    case invalidJSON
+    case unconfiguredBrokerResponse
+}
+
+private struct TestLongbridgeCredentialProvider: LongbridgeCredentialProviding {
+    let credentials: LongbridgeCredentials?
+
+    func longbridgeCredentials() throws -> LongbridgeCredentials? {
+        credentials
+    }
+}
+
+@MainActor
+private final class FakeLiveOrderBrokerClient: LiveOrderBrokerClient {
+    var readinessResult = BrokerTradeReadiness(
+        provider: "FUTU",
+        accountId: "account-1",
+        environment: "REAL",
+        ready: true,
+        reason: nil,
+        marginAccount: true,
+        marginCallActive: false,
+        shortable: true,
+        maxOrderQuantity: 100,
+        checkedAt: "2026-09-29T10:00:00.000Z"
+    )
+    var placeOrderResult: BrokerOrderReceipt?
+    var placeOrderError: Error?
+    var cancelOrderResult: BrokerOrderReceipt?
+    var cancelOrderError: Error?
+    var findOrderResult: BrokerOrderReceipt?
+    var findOrderError: Error?
+
+    private(set) var readinessRequests: [BrokerTradeReadinessRequest] = []
+    private(set) var placeOrderRequests: [BrokerPlaceOrderRequest] = []
+    private(set) var cancelOrderRequests: [BrokerCancelOrderRequest] = []
+    private(set) var findOrderRequests: [BrokerFindOrderRequest] = []
+
+    func tradeReadiness(
+        _ request: BrokerTradeReadinessRequest
+    ) async throws -> BrokerTradeReadiness {
+        readinessRequests.append(request)
+        return readinessResult
+    }
+
+    func placeOrder(_ request: BrokerPlaceOrderRequest) async throws -> BrokerOrderReceipt {
+        placeOrderRequests.append(request)
+        if let placeOrderError { throw placeOrderError }
+        guard let placeOrderResult else {
+            throw TestFixtureError.unconfiguredBrokerResponse
+        }
+        return placeOrderResult
+    }
+
+    func cancelOrder(_ request: BrokerCancelOrderRequest) async throws -> BrokerOrderReceipt {
+        cancelOrderRequests.append(request)
+        if let cancelOrderError { throw cancelOrderError }
+        guard let cancelOrderResult else {
+            throw TestFixtureError.unconfiguredBrokerResponse
+        }
+        return cancelOrderResult
+    }
+
+    func findOrder(_ request: BrokerFindOrderRequest) async throws -> BrokerOrderReceipt? {
+        findOrderRequests.append(request)
+        if let findOrderError { throw findOrderError }
+        return findOrderResult
+    }
 }
 
 private struct TestSuite {

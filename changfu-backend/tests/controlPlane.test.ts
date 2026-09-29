@@ -174,6 +174,9 @@ test('Worker 只接受与权威券商、配置、目录和研究池一致的交�
             catalog_version: catalog.catalogVersion,
             entitlement_status: 'ACTIVE',
             pool_version: '7',
+            account_id_hash: 'a'.repeat(64),
+            environment: 'REAL',
+            auto_submit_enabled: false,
             config: {
               catalogVersion: catalog.catalogVersion,
               executionMode: 'CANDIDATE_POOL',
@@ -208,12 +211,17 @@ test('Worker 只接受与权威券商、配置、目录和研究池一致的交�
     schemaVersion: '2.0',
     brokerConnectionId: '33333333-3333-4333-8333-333333333333',
     provider: 'FUTU',
+    deviceId: '22222222-2222-4222-8222-222222222222',
+    account: {
+      accountIdHash: 'a'.repeat(64),
+      environment: 'REAL',
+    },
     purpose: 'SINGLE_DECISION',
     tradingConfigVersion: 3,
     researchPoolVersion: 7,
     catalogVersion: catalog.catalogVersion,
     requestedSymbols: ['US.TEST'],
-  } as ContextEnvelope
+  } as unknown as ContextEnvelope
   try {
     const resolved = await new PostgresTradingDecisionAuthority(pool, catalog)
       .resolve('42', context)

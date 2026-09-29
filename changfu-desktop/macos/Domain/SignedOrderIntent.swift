@@ -87,6 +87,8 @@ public struct SignedOrderIntent: Codable, Equatable, Sendable {
         public let side: String
         public let positionEffect: String
         public let orderType: String
+        public let tradingSession: String
+        public let timeInForce: String
         public let quantity: String
         public let limitPrice: String
         public let currency: String
@@ -100,6 +102,8 @@ public struct SignedOrderIntent: Codable, Equatable, Sendable {
             side: String,
             positionEffect: String,
             orderType: String,
+            tradingSession: String = "RTH",
+            timeInForce: String = "DAY",
             quantity: String,
             limitPrice: String,
             currency: String,
@@ -112,6 +116,8 @@ public struct SignedOrderIntent: Codable, Equatable, Sendable {
             self.side = side
             self.positionEffect = positionEffect
             self.orderType = orderType
+            self.tradingSession = tradingSession
+            self.timeInForce = timeInForce
             self.quantity = quantity
             self.limitPrice = limitPrice
             self.currency = currency

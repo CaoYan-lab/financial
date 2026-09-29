@@ -33,6 +33,16 @@ export type ResolvedTradingDecision = {
   riskPolicyId: string
   requestedSymbols: string[]
   candidates: AuthorizedCandidate[]
+  accountIdHash?: string
+  environment?: 'SIMULATE' | 'REAL'
+  instrument?: {
+    market: 'US' | 'HK'
+    instrumentType: 'STOCK' | 'ETF'
+  } | null
+  hardGateEnabled?: boolean
+  autoSubmitEnabled?: boolean
+  submissionMode?: 'MANUAL_CONFIRM' | 'AUTO_EXECUTE'
+  tradingSessionId?: string | null
   model: {
     id: string
     deploymentId: string
@@ -90,6 +100,10 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
   constructor(
     private readonly pool: Pool,
     private readonly catalog: TradingCatalog,
+    private readonly liveTradingGates: Readonly<Record<BrokerProvider, boolean>> = {
+      FUTU: false,
+      LONGBRIDGE: false,
+    },
   ) {}
 
   async resolve(userId: string, context: ContextEnvelope): Promise<ResolvedTradingDecision | null> {
@@ -106,11 +120,16 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
       config: unknown
       entitlement_status: string | null
       pool_version: string | null
+      account_id_hash: string
+      environment: 'SIMULATE' | 'REAL'
+      auto_submit_enabled: boolean
     }>(
       `SELECT c.broker AS provider, t.provider AS config_provider,
               t.version AS config_version,
               t.catalog_version, t.config,
-              s.status AS entitlement_status, p.version AS pool_version
+              s.status AS entitlement_status, p.version AS pool_version,
+              c.account_id_hash, c.environment,
+              COALESCE(setting.auto_submit_enabled, false) AS auto_submit_enabled
          FROM changfu.broker_connections c
          JOIN changfu.trading_configs t
            ON t.broker_connection_id = c.broker_connection_id
@@ -129,6 +148,9 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
            ON p.user_id = c.user_id
           AND p.provider_id = c.broker
           AND p.status = 'ACTIVE'
+         LEFT JOIN changfu.user_provider_execution_settings setting
+           ON setting.user_id = c.user_id
+          AND setting.provider = c.broker
         WHERE c.broker_connection_id = $1::uuid
           AND c.user_id = $2::bigint
           AND c.status = 'ACTIVE'`,
@@ -158,6 +180,12 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
     }
     if (poolVersion !== context.researchPoolVersion) {
       throw new TradingAuthorityError('RESEARCH_POOL_VERSION_MISMATCH')
+    }
+    if (
+      context.account.accountIdHash !== row.account_id_hash
+      || context.account.environment !== row.environment
+    ) {
+      throw new TradingAuthorityError('BROKER_ACCOUNT_BINDING_MISMATCH')
     }
 
     const requestedSymbols = context.requestedSymbols ?? []
@@ -220,6 +248,39 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
       throw new TradingAuthorityError('RISK_POLICY_NOT_AUTHORIZED')
     }
 
+    const hardGateEnabled = this.liveTradingGates[row.provider]
+    let tradingSessionId: string | null = null
+    if (
+      hardGateEnabled
+      && row.environment === 'REAL'
+      && config.confirmationMode === 'AUTO_EXECUTE_PREFERENCE'
+      && row.auto_submit_enabled
+      && context.tradingSessionId
+    ) {
+      const session = await this.pool.query<{ session_id: string }>(
+        `SELECT session_id
+           FROM changfu.trading_sessions
+          WHERE session_id = $1::uuid
+            AND broker_connection_id = $2::uuid
+            AND user_id = $3::bigint
+            AND device_id = $4::uuid
+            AND mode = 'AUTO_EXECUTE'
+            AND status = 'ACTIVE'
+            AND config_version = $5
+            AND risk_policy_version = $6
+            AND expires_at > now()`,
+        [
+          context.tradingSessionId,
+          context.brokerConnectionId,
+          userId,
+          context.deviceId,
+          configVersion,
+          config.riskPolicyId,
+        ],
+      )
+      tradingSessionId = session.rows[0]?.session_id ?? null
+    }
+
     if (role === 'PORTFOLIO_REVIEW') {
       await this.pool.query(
         `UPDATE changfu.candidate_pool_items
@@ -275,6 +336,18 @@ export class PostgresTradingDecisionAuthority implements TradingDecisionAuthorit
         rank: item.rank,
         expiresAt: item.expires_at.toISOString(),
       })),
+      accountIdHash: row.account_id_hash,
+      environment: row.environment,
+      instrument: poolItems.rows.length === 1
+        ? {
+            market: poolItems.rows[0]!.market as 'US' | 'HK',
+            instrumentType: poolItems.rows[0]!.instrument_type as 'STOCK' | 'ETF',
+          }
+        : null,
+      hardGateEnabled,
+      autoSubmitEnabled: row.auto_submit_enabled,
+      submissionMode: tradingSessionId ? 'AUTO_EXECUTE' : 'MANUAL_CONFIRM',
+      tradingSessionId,
       model: {
         id: model.id,
         deploymentId: deploymentId(model.deploymentId),

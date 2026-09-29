@@ -62,6 +62,8 @@
         "side",
         "positionEffect",
         "orderType",
+        "tradingSession",
+        "timeInForce",
         "quantity",
         "limitPrice",
         "currency",
@@ -77,6 +79,8 @@
           "enum": ["OPEN_LONG", "ADD_LONG", "REDUCE_LONG", "OPEN_SHORT", "ADD_SHORT", "COVER_SHORT"]
         },
         "orderType": { "const": "MARKETABLE_LIMIT" },
+        "tradingSession": { "const": "RTH" },
+        "timeInForce": { "const": "DAY" },
         "quantity": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
         "limitPrice": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
         "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },

@@ -17,7 +17,7 @@ private enum HostError: LocalizedError {
         case .unauthorized:
             "Longbridge 未授权，请先完成 Longbridge 登录授权"
         case .commandFailed(let message):
-            "Longbridge 查询失败：\(message)"
+            "Longbridge 操作失败：\(message)"
         case .invalidJSON(let command):
             "Longbridge \(command) 返回了无效 JSON"
         case .missingField(let field):
@@ -71,6 +71,23 @@ private struct CLI {
         }
     }
 
+    func mixedJSON(_ arguments: [String], name: String) throws -> Any {
+        let data = try run(arguments + ["--format", "json"])
+        guard let text = String(data: data, encoding: .utf8),
+              let start = text.firstIndex(of: "{") else {
+            throw HostError.invalidJSON(name)
+        }
+        do {
+            return try JSONSerialization.jsonObject(with: Data(text[start...].utf8))
+        } catch {
+            throw HostError.invalidJSON(name)
+        }
+    }
+
+    func execute(_ arguments: [String]) throws {
+        _ = try run(arguments)
+    }
+
     private func run(_ arguments: [String]) throws -> Data {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "changfu-longbridge-\(UUID().uuidString)")
@@ -80,6 +97,14 @@ private struct CLI {
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data().write(to: outputURL)
         try Data().write(to: errorURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: outputURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: errorURL.path
+        )
 
         let output = try FileHandle(forWritingTo: outputURL)
         let error = try FileHandle(forWritingTo: errorURL)
@@ -91,11 +116,16 @@ private struct CLI {
         process.executableURL = executableURL
         process.arguments = arguments
         if let credentials {
-            process.environment = ProcessInfo.processInfo.environment.merging([
+            let inherited = ProcessInfo.processInfo.environment
+            process.environment = [
+                "PATH": inherited["PATH"] ?? "/usr/bin:/bin",
+                "HOME": inherited["HOME"] ?? NSHomeDirectory(),
+                "TMPDIR": inherited["TMPDIR"] ?? NSTemporaryDirectory(),
+                "LANG": inherited["LANG"] ?? "en_US.UTF-8",
                 "LONGBRIDGE_APP_KEY": credentials.appKey,
                 "LONGBRIDGE_APP_SECRET": credentials.appSecret,
                 "LONGBRIDGE_ACCESS_TOKEN": credentials.accessToken
-            ]) { _, configured in configured }
+            ]
         }
         process.standardOutput = output
         process.standardError = error
@@ -160,6 +190,22 @@ private struct JSONRecord {
         }
         return nil
     }
+
+    func bool(_ keys: String...) -> Bool? {
+        for key in keys {
+            guard let raw = value[key], !(raw is NSNull) else { continue }
+            if let value = raw as? Bool { return value }
+            if let number = raw as? NSNumber { return number.boolValue }
+            if let string = raw as? String {
+                switch string.lowercased() {
+                case "true", "yes", "1": return true
+                case "false", "no", "0": return false
+                default: continue
+                }
+            }
+        }
+        return nil
+    }
 }
 
 private func records(_ json: Any, keys: [String] = []) -> [JSONRecord] {
@@ -178,6 +224,10 @@ private func records(_ json: Any, keys: [String] = []) -> [JSONRecord] {
 
 private func fetchedAt() -> String {
     ISO8601DateFormatter().string(from: Date())
+}
+
+private func decimalString(_ value: Decimal) -> String {
+    NSDecimalNumber(decimal: value).stringValue
 }
 
 private func double(_ value: Decimal?) -> Double? {
@@ -792,6 +842,360 @@ private func verifyAuthorization(_ cli: CLI, forceRemoteCheck: Bool = false) thr
     }
 }
 
+private func validatedQuantity(_ raw: String) throws -> Int {
+    guard let decimal = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")),
+          decimal > 0 else {
+        throw HostError.invalidRequest("订单数量必须为正整数")
+    }
+    var source = decimal
+    var rounded = Decimal()
+    NSDecimalRound(&rounded, &source, 0, .plain)
+    guard rounded == decimal,
+          let quantity = Int(exactly: NSDecimalNumber(decimal: decimal).int64Value),
+          quantity > 0 else {
+        throw HostError.invalidRequest("订单数量必须为正整数")
+    }
+    return quantity
+}
+
+private func validatedOrder(
+    _ order: SignedOrderIntent.OrderSpec
+) throws -> (symbol: String, quantity: Int, price: Decimal, command: String, session: String) {
+    guard order.broker == "LONGBRIDGE", order.environment == "REAL" else {
+        throw HostError.invalidRequest("Longbridge 真实订单必须绑定 REAL 环境")
+    }
+    guard order.orderType == "MARKETABLE_LIMIT", order.timeInForce == "DAY" else {
+        throw HostError.invalidRequest("Longbridge 当前只允许 MARKETABLE_LIMIT + DAY")
+    }
+    let symbol = longbridgeSymbol(order.symbol)
+    guard providerMarket(for: symbol) != nil else {
+        throw HostError.invalidRequest("订单标的必须使用 <CODE>.<MARKET> 格式")
+    }
+    let quantity = try validatedQuantity(order.quantity)
+    guard let price = Decimal(
+        string: order.limitPrice,
+        locale: Locale(identifier: "en_US_POSIX")
+    ), price > 0 else {
+        throw HostError.invalidRequest("限价必须大于零")
+    }
+    let command: String
+    switch (order.side, order.positionEffect) {
+    case ("BUY", "OPEN_LONG"), ("BUY", "ADD_LONG"), ("BUY", "COVER_SHORT"):
+        command = "buy"
+    case ("SELL", "REDUCE_LONG"), ("SELL", "OPEN_SHORT"), ("SELL", "ADD_SHORT"):
+        command = "sell"
+    default:
+        throw HostError.invalidRequest("订单方向与 position effect 不匹配")
+    }
+    guard order.tradingSession == "RTH" else {
+        throw HostError.invalidRequest("Longbridge 当前只允许 RTH 交易时段")
+    }
+    let session = "RTH_ONLY"
+    return (symbol, quantity, price, command, session)
+}
+
+private func longbridgeAsset(
+    _ cli: CLI,
+    accountId expectedAccountId: String,
+    currency: String
+) throws -> JSONRecord {
+    let assetsJSON = try cli.json(["assets", "--currency", currency], name: "账户资产")
+    guard let asset = records(assetsJSON, keys: ["data", "assets", "account"]).first else {
+        throw HostError.missingField("assets")
+    }
+    let accountId = asset.string("account_id", "accountId") ?? "longbridge"
+    guard expectedAccountId == accountId else {
+        throw HostError.invalidRequest("订单账户与 Longbridge 当前账户不匹配")
+    }
+    return asset
+}
+
+private func longbridgeTradeReadiness(
+    _ cli: CLI,
+    accountId expectedAccountId: String,
+    order: SignedOrderIntent.OrderSpec
+) throws -> BrokerTradeReadiness {
+    try verifyAuthorization(cli, forceRemoteCheck: true)
+    let validated = try validatedOrder(order)
+    let asset = try longbridgeAsset(
+        cli,
+        accountId: expectedAccountId,
+        currency: order.currency
+    )
+    let accountId = asset.string("account_id", "accountId") ?? "longbridge"
+    let maxFinance = asset.decimal("max_finance_amount", "maxFinanceAmount")
+    let remainingFinance = asset.decimal(
+        "remaining_finance_amount",
+        "remainingFinanceAmount"
+    )
+    let marginAccount = (maxFinance ?? 0) > 0 || (remainingFinance ?? 0) > 0
+    let marginCallAmount = asset.decimal("margin_call", "marginCall") ?? 0
+    let riskLevel = asset.string("risk_level", "riskLevel")?.lowercased() ?? ""
+    let numericRiskLevel = Int(asset.string("risk_level", "riskLevel") ?? "")
+    let marginCallActive = marginCallAmount > 0
+        || riskLevel.contains("danger")
+        || riskLevel.contains("margin_call")
+        || numericRiskLevel.map { $0 >= 2 } == true
+
+    let positionsJSON = try cli.json(["positions"], name: "持仓")
+    let matchingPosition = records(
+        positionsJSON,
+        keys: ["data", "positions", "list"]
+    ).first {
+        guard let symbol = $0.string("symbol", "code") else { return false }
+        return longbridgeSymbol(symbol).uppercased() == validated.symbol.uppercased()
+    }
+    let positionQuantity = matchingPosition?.decimal("quantity", "qty") ?? 0
+
+    let maxJSON = try cli.json([
+        "max-qty",
+        validated.symbol,
+        "--side", validated.command,
+        "--price", decimalString(validated.price),
+        "--order-type", "LO"
+    ], name: "最大可交易数量")
+    guard let maxRecord = records(
+        maxJSON,
+        keys: ["data", "max_qty", "maxQty"]
+    ).first else {
+        throw HostError.missingField("max-qty")
+    }
+    let maxQuantity = maxRecord.decimal(
+        "margin_max_qty",
+        "marginMaxQty",
+        "cash_max_qty",
+        "cashMaxQty"
+    )
+
+    var shortable: Bool?
+    var reason: String?
+    let requested = Decimal(validated.quantity)
+    switch order.positionEffect {
+    case "REDUCE_LONG":
+        if positionQuantity < requested {
+            reason = "可平多头数量不足"
+        }
+    case "COVER_SHORT":
+        if positionQuantity >= 0 || -positionQuantity < requested {
+            reason = "可回补空头数量不足"
+        }
+    case "OPEN_SHORT", "ADD_SHORT":
+        let marginJSON = try cli.json(
+            ["margin-ratio", validated.symbol],
+            name: "保证金比例"
+        )
+        let margin = records(
+            marginJSON,
+            keys: ["data", "margin_ratio", "marginRatio"]
+        ).first
+        let ratiosKnown = margin?.decimal("im_factor", "imFactor") != nil
+            && margin?.decimal("mm_factor", "mmFactor") != nil
+            && margin?.decimal("fm_factor", "fmFactor") != nil
+        shortable = maxQuantity.map { $0 >= requested } ?? false
+        if !marginAccount {
+            reason = "Longbridge 当前账户无法确认是保证金账户"
+        } else if marginCallActive {
+            reason = "Longbridge 账户处于保证金追缴或高风险状态"
+        } else if !ratiosKnown || shortable != true {
+            reason = "Longbridge 无法确认该标的券源或最大可卖空数量"
+        }
+    default:
+        break
+    }
+    if reason == nil, let maxQuantity, maxQuantity < requested {
+        reason = "券商返回的最大可交易数量不足"
+    }
+    if reason == nil, maxQuantity == nil {
+        reason = "券商未返回最大可交易数量"
+    }
+    return BrokerTradeReadiness(
+        provider: "LONGBRIDGE",
+        accountId: accountId,
+        environment: "REAL",
+        ready: reason == nil,
+        reason: reason,
+        marginAccount: marginAccount,
+        marginCallActive: marginCallActive,
+        shortable: shortable,
+        maxOrderQuantity: maxQuantity,
+        checkedAt: fetchedAt()
+    )
+}
+
+private func normalizedOrderStatus(_ raw: String?) -> String {
+    switch raw?.replacingOccurrences(of: "_", with: "").lowercased() ?? "" {
+    case "filled": return "FILLED"
+    case "partialfilled": return "PARTIALLY_FILLED"
+    case "partialwithdraw", "partialcancelled": return "PARTIAL_CANCELLED"
+    case "canceled", "cancelled", "withdrawn": return "CANCELLED"
+    case "rejected", "failed": return "REJECTED"
+    case "expired": return "EXPIRED"
+    case "new", "waittosubmit", "pendingnew", "submitted": return "SUBMITTED"
+    case "waittocancel", "pendingcancel": return "CANCEL_PENDING"
+    default: return "UNKNOWN"
+    }
+}
+
+private func orderReceipt(_ record: JSONRecord, fallbackRemark: String) throws
+    -> BrokerOrderReceipt {
+    guard let orderId = record.string("order_id", "orderId") else {
+        throw HostError.missingField("order_id")
+    }
+    return BrokerOrderReceipt(
+        brokerOrderId: orderId,
+        status: normalizedOrderStatus(record.string("status", "order_status")),
+        submittedQuantity: record.decimal("quantity", "submitted_quantity") ?? 0,
+        filledQuantity: record.decimal("executed_quantity", "filled_quantity") ?? 0,
+        filledAveragePrice: record.decimal("executed_price", "filled_average_price"),
+        remark: record.string("remark") ?? fallbackRemark,
+        brokerCode: record.string("code", "error_code"),
+        updatedAt: record.string("updated_at", "last_done_at", "submitted_at") ?? fetchedAt()
+    )
+}
+
+private func findLongbridgeOrder(
+    _ cli: CLI,
+    request: BrokerFindOrderRequest
+) throws -> BrokerOrderReceipt? {
+    guard cli.credentials != nil else {
+        throw HostError.unauthorized
+    }
+    try verifyAuthorization(cli, forceRemoteCheck: true)
+    _ = try longbridgeAsset(cli, accountId: request.accountId, currency: "USD")
+    let remark = "cf:\(request.intentId)"
+    let symbol = longbridgeSymbol(request.symbol).uppercased()
+    let expectedQuantity = Decimal(
+        string: request.quantity,
+        locale: Locale(identifier: "en_US_POSIX")
+    )
+    let expectedPrice = Decimal(
+        string: request.limitPrice,
+        locale: Locale(identifier: "en_US_POSIX")
+    )
+    let cutoff = timestamp(request.submittedAfter)
+    let candidates = records(
+        try cli.json(["order", "--symbol", symbol], name: "当前订单"),
+        keys: ["data", "orders", "list"]
+    ).filter { record in
+        guard record.string("symbol").map({ longbridgeSymbol($0).uppercased() }) == symbol,
+              record.decimal("quantity", "submitted_quantity") == expectedQuantity,
+              record.decimal("price", "submitted_price") == expectedPrice else {
+            return false
+        }
+        let rawSide = record.string("side")?.lowercased() ?? ""
+        let expectedSide = request.side == "BUY" ? "buy" : "sell"
+        guard rawSide.contains(expectedSide) else { return false }
+        guard let cutoff else { return true }
+        return timestamp(record.string("submitted_at", "created_at", "createdAt"))
+            .map { $0 >= cutoff.addingTimeInterval(-5) } ?? false
+    }
+    let matches = try candidates.compactMap { candidate -> JSONRecord? in
+        guard let orderId = candidate.string("order_id", "orderId") else { return nil }
+        let detail = try cli.json(["order", "detail", orderId], name: "订单详情")
+        guard let record = records(detail, keys: ["data", "order"]).first,
+              record.string("remark") == remark else {
+            return nil
+        }
+        return record
+    }
+    guard matches.count <= 1 else {
+        throw HostError.commandFailed("按订单意图查到多笔匹配订单，已停止自动处理")
+    }
+    return try matches.first.map { try orderReceipt($0, fallbackRemark: remark) }
+}
+
+private func placeLongbridgeOrder(
+    _ cli: CLI,
+    request: BrokerPlaceOrderRequest
+) throws -> BrokerOrderReceipt {
+    guard cli.credentials != nil else {
+        throw HostError.unauthorized
+    }
+    let readiness = try longbridgeTradeReadiness(
+        cli,
+        accountId: request.accountId,
+        order: request.order
+    )
+    guard readiness.ready else {
+        throw HostError.commandFailed(readiness.reason ?? "本地真实交易复核未通过")
+    }
+    let validated = try validatedOrder(request.order)
+    let remark = "cf:\(request.intentId)"
+    let result = try cli.mixedJSON([
+        "order", validated.command,
+        validated.symbol,
+        String(validated.quantity),
+        "--price", decimalString(validated.price),
+        "--order-type", "LO",
+        "--tif", "day",
+        "--outside-rth", validated.session,
+        "--remark", remark,
+        "--yes"
+    ], name: "提交订单")
+    guard let record = records(result, keys: ["data", "order"]).first,
+          let orderId = record.string("order_id", "orderId") else {
+        throw HostError.missingField("order_id")
+    }
+    if let detail = try? cli.json(["order", "detail", orderId], name: "订单详情"),
+       let detailRecord = records(detail, keys: ["data", "order"]).first {
+        return try orderReceipt(detailRecord, fallbackRemark: remark)
+    }
+    return BrokerOrderReceipt(
+        brokerOrderId: orderId,
+        status: "SUBMITTED",
+        submittedQuantity: Decimal(validated.quantity),
+        filledQuantity: 0,
+        filledAveragePrice: nil,
+        remark: remark,
+        updatedAt: fetchedAt()
+    )
+}
+
+private func cancelLongbridgeOrder(
+    _ cli: CLI,
+    request: BrokerCancelOrderRequest
+) throws -> BrokerOrderReceipt {
+    guard cli.credentials != nil else {
+        throw HostError.unauthorized
+    }
+    try verifyAuthorization(cli, forceRemoteCheck: true)
+    _ = try longbridgeAsset(cli, accountId: request.accountId, currency: "USD")
+    let remark = "cf:\(request.intentId)"
+    let detail = try cli.json(
+        ["order", "detail", request.brokerOrderId],
+        name: "订单详情"
+    )
+    guard let record = records(detail, keys: ["data", "order"]).first else {
+        throw HostError.missingField("order")
+    }
+    guard record.string("remark") == remark,
+          record.string("symbol").map({ longbridgeSymbol($0).uppercased() })
+            == longbridgeSymbol(request.symbol).uppercased() else {
+        throw HostError.invalidRequest("拒绝撤销不属于当前系统意图的订单")
+    }
+    let before = try orderReceipt(record, fallbackRemark: remark)
+    if ["FILLED", "CANCELLED", "PARTIAL_CANCELLED", "REJECTED", "EXPIRED"]
+        .contains(before.status) {
+        return before
+    }
+    try cli.execute(["order", "cancel", request.brokerOrderId, "--yes", "--format", "json"])
+    if let refreshed = try? cli.json(
+        ["order", "detail", request.brokerOrderId],
+        name: "订单详情"
+    ), let refreshedRecord = records(refreshed, keys: ["data", "order"]).first {
+        return try orderReceipt(refreshedRecord, fallbackRemark: remark)
+    }
+    return BrokerOrderReceipt(
+        brokerOrderId: request.brokerOrderId,
+        status: "CANCEL_PENDING",
+        submittedQuantity: before.submittedQuantity,
+        filledQuantity: before.filledQuantity,
+        filledAveragePrice: before.filledAveragePrice,
+        remark: remark,
+        updatedAt: fetchedAt()
+    )
+}
+
 private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -> BrokerSnapshot {
     try verifyAuthorization(cli)
     let assetsJSON = try cli.json(["assets", "--currency", "USD"], name: "账户资产")
@@ -804,13 +1208,25 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
         throw HostError.missingField("net_assets/total_cash/buy_power")
     }
     let currency = asset.string("currency") ?? "USD"
+    let marginCallAmount = asset.decimal("margin_call", "marginCall") ?? 0
+    let riskLevel = asset.string("risk_level", "riskLevel")?.lowercased() ?? ""
     let account = AccountSummary(
         accountId: asset.string("account_id", "accountId") ?? "longbridge",
         environment: "REAL",
         totalAssets: totalAssets,
         cash: cash,
         buyingPower: buyingPower,
-        currency: currency
+        currency: currency,
+        marginAccount: asset.decimal(
+            "max_finance_amount",
+            "maxFinanceAmount",
+            "remaining_finance_amount",
+            "remainingFinanceAmount"
+        ) != nil,
+        marginCallActive: marginCallAmount > 0
+            || riskLevel.contains("danger")
+            || riskLevel.contains("margin_call"),
+        shortRiskDisclosureAccepted: nil
     )
 
     let positionsJSON = try cli.json(["positions"], name: "持仓")
@@ -1136,6 +1552,42 @@ private struct LongbridgeHostMain {
                     additionalSymbols: credentials?.symbols ?? []
                 ))
                 FileHandle.standardOutput.write(data)
+            case "trade-readiness":
+                let request = try JSONDecoder().decode(
+                    BrokerTradeReadinessRequest.self,
+                    from: inputData
+                )
+                FileHandle.standardOutput.write(try encoder.encode(
+                    longbridgeTradeReadiness(
+                        cli,
+                        accountId: request.accountId,
+                        order: request.order
+                    )
+                ))
+            case "place-order":
+                let request = try JSONDecoder().decode(
+                    BrokerPlaceOrderRequest.self,
+                    from: inputData
+                )
+                FileHandle.standardOutput.write(try encoder.encode(
+                    placeLongbridgeOrder(cli, request: request)
+                ))
+            case "cancel-order":
+                let request = try JSONDecoder().decode(
+                    BrokerCancelOrderRequest.self,
+                    from: inputData
+                )
+                FileHandle.standardOutput.write(try encoder.encode(
+                    cancelLongbridgeOrder(cli, request: request)
+                ))
+            case "find-order-by-intent":
+                let request = try JSONDecoder().decode(
+                    BrokerFindOrderRequest.self,
+                    from: inputData
+                )
+                FileHandle.standardOutput.write(try encoder.encode(
+                    findLongbridgeOrder(cli, request: request)
+                ))
             default:
                 throw HostError.commandFailed("未知 Host 命令")
             }

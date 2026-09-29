@@ -1539,6 +1539,10 @@ Longbridge 的交易所级 `market-status` 只表示常规交易时段是否开�
 
 * Phase 2 已完成 Worker 三角色路由、单票信号、候选池、组合裁决和桌面影子调度；尚未完成待确认订单生成、BrokerHost 下单及自动执行。
 * 自动交易会话接口只建立 90 秒服务端授权租约；在 Phase 4 本地硬风控、心跳、休眠/断网熔断验收前，客户端不得调用真实交易。
+* Phase 4 使用 Provider 独立硬门禁、用户级自动提交偏好、设备交易租约和 90 秒自动交易会话。订单由 Worker 使用独立 Ed25519 密钥签名，Gateway 只通过受认证的 `/v1/trading/order-intent-keys` 发布对应公钥；macOS 必须在 claim 前校验用户、设备、券商连接、账户哈希、标的池、配置、风险策略、会话和签名。
+* 人工确认与自动提交共享同一 `LiveOrderCoordinator`，统一执行本地行情/账户/同标的挂单复核、claim、submission、BrokerHost 提交和结果回传。提交响应不确定时只按 `cf:<intentId>` 查单，禁止再次提交。
+* `ManagedOrderSupervisor` 每 5 秒处理系统订单撤单 action，并镜像服务端过期、成交超时、价格漂移、行情时效、交易时段、账户风险、租约和连接门禁。安全撤单覆盖人工确认及自动提交的系统订单；外部券商订单只能阻断新单和提示，不得自动撤销。
+* Futu 下单业务语义保留 `OPEN_SHORT/COVER_SHORT`，当前 SDK 请求侧使用 `Buy/Sell`，回执侧兼容 `SellShort/BuyBack`；Longbridge 通过打包的官方 CLI，凭据仅经受限临时 stdin 文件和环境变量传递。两端都必须先证明 REAL 账户、保证金、风险声明、券源和最大可交易数量。
 * Worker 已产生阶段化 NDJSON；Gateway 当前仍为幂等回放而在受控请求上限内缓冲完整事件流，尚未向桌面端逐事件透传。
 * 本次仅完成自动化与本机构建验证；未在具备 PostgreSQL、Ark 配置和真实 Futu 账户的完整环境执行端到端影子运行，不能把该项视为实盘验收。
 * 本地 PostgreSQL 已应用 migration 002，Gateway `:4310`、Worker `:4311` 与最新客户端已重启并通过健康检查；这只证明服务就绪，不替代登录后的影子业务验收。

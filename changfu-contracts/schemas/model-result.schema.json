@@ -16,7 +16,8 @@
     "dataGaps",
     "exitCondition",
     "sourceValidUntil",
-    "orderIntent"
+    "orderIntent",
+    "proposedOrder"
   ],
   "properties": {
     "schemaVersion": { "const": "1.0" },
@@ -52,6 +53,27 @@
       "oneOf": [
         { "type": "null" },
         { "$ref": "signed-order-intent.schema.json" }
+      ]
+    },
+    "proposedOrder": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["symbol", "action", "quantity", "limitPrice"],
+          "properties": {
+            "symbol": { "type": "string", "minLength": 1, "maxLength": 32 },
+            "action": {
+              "enum": ["BUY", "BUY_TO_COVER", "SELL_TO_CLOSE", "SELL_SHORT"]
+            },
+            "quantity": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "limitPrice": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$"
+            }
+          }
+        }
       ]
     },
     "signal": {

@@ -1,19 +1,28 @@
 import ChangFuDomain
 import Foundation
 
+public protocol LongbridgeCredentialProviding: Sendable {
+    func longbridgeCredentials() throws -> LongbridgeCredentials?
+}
+
+extension SecureCredentialStore: LongbridgeCredentialProviding {}
+
 private struct LongbridgeSnapshotRequest: Encodable {
     let symbols: [String]
 }
 
 @MainActor
-public final class LongbridgeBrokerClient: BrokerInstrumentDiscoveryClient {
+public final class LongbridgeBrokerClient:
+    BrokerInstrumentDiscoveryClient,
+    LiveOrderBrokerClient
+{
     public private(set) var connectionState: LongbridgeConnectionState = .disconnected
     private let runner: BrokerHostRunner
-    private let credentialStore: SecureCredentialStore
+    private let credentialStore: any LongbridgeCredentialProviding
 
     public init(
         hostExecutableURL: URL? = nil,
-        credentialStore: SecureCredentialStore = SecureCredentialStore()
+        credentialStore: any LongbridgeCredentialProviding = SecureCredentialStore()
     ) {
         runner = BrokerHostRunner(executableURL: hostExecutableURL ?? Self.defaultHostURL())
         self.credentialStore = credentialStore
@@ -115,6 +124,46 @@ public final class LongbridgeBrokerClient: BrokerInstrumentDiscoveryClient {
             SellPutUnderlyingSnapshot.self,
             command: "sell-put-underlying",
             request: SellPutUnderlyingRequest(symbol: symbol)
+        )
+    }
+
+    public func tradeReadiness(
+        _ request: BrokerTradeReadinessRequest
+    ) async throws -> BrokerTradeReadiness {
+        try await decode(
+            BrokerTradeReadiness.self,
+            command: "trade-readiness",
+            request: request
+        )
+    }
+
+    public func placeOrder(
+        _ request: BrokerPlaceOrderRequest
+    ) async throws -> BrokerOrderReceipt {
+        try await decode(
+            BrokerOrderReceipt.self,
+            command: "place-order",
+            request: request
+        )
+    }
+
+    public func cancelOrder(
+        _ request: BrokerCancelOrderRequest
+    ) async throws -> BrokerOrderReceipt {
+        try await decode(
+            BrokerOrderReceipt.self,
+            command: "cancel-order",
+            request: request
+        )
+    }
+
+    public func findOrder(
+        _ request: BrokerFindOrderRequest
+    ) async throws -> BrokerOrderReceipt? {
+        try await decode(
+            BrokerOrderReceipt?.self,
+            command: "find-order-by-intent",
+            request: request
         )
     }
 

@@ -154,6 +154,85 @@ public final class FutuNativeBroker {
         }
     }
 
+    public func tradeReadiness(
+        _ request: BrokerTradeReadinessRequest
+    ) throws -> BrokerTradeReadiness {
+        try probe()
+        let order = request.order
+        return try decodeDiscoveryResponse {
+            changfu_futu_trade_readiness_json(
+                client,
+                request.accountId,
+                order.symbol,
+                order.side,
+                order.positionEffect,
+                order.orderType,
+                order.tradingSession,
+                order.timeInForce,
+                NSDecimalNumber(string: order.quantity).doubleValue,
+                NSDecimalNumber(string: order.limitPrice).doubleValue,
+                $0
+            )
+        }
+    }
+
+    public func placeOrder(
+        _ request: BrokerPlaceOrderRequest
+    ) throws -> BrokerOrderReceipt {
+        try probe()
+        let order = request.order
+        return try decodeDiscoveryResponse {
+            changfu_futu_place_order_json(
+                client,
+                request.intentId,
+                request.accountId,
+                order.symbol,
+                order.side,
+                order.positionEffect,
+                order.orderType,
+                order.tradingSession,
+                order.timeInForce,
+                NSDecimalNumber(string: order.quantity).doubleValue,
+                NSDecimalNumber(string: order.limitPrice).doubleValue,
+                $0
+            )
+        }
+    }
+
+    public func cancelOrder(
+        _ request: BrokerCancelOrderRequest
+    ) throws -> BrokerOrderReceipt {
+        try probe()
+        return try decodeDiscoveryResponse {
+            changfu_futu_cancel_order_json(
+                client,
+                request.intentId,
+                request.accountId,
+                request.brokerOrderId,
+                request.symbol,
+                $0
+            )
+        }
+    }
+
+    public func findOrder(
+        _ request: BrokerFindOrderRequest
+    ) throws -> BrokerOrderReceipt? {
+        try probe()
+        return try decodeDiscoveryResponse {
+            changfu_futu_find_order_by_intent_json(
+                client,
+                request.intentId,
+                request.accountId,
+                request.symbol,
+                request.side,
+                NSDecimalNumber(string: request.quantity).doubleValue,
+                NSDecimalNumber(string: request.limitPrice).doubleValue,
+                $0
+            )
+        }
+    }
+
     private func decodeDiscoveryResponse<Response: Decodable>(
         _ invoke: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> ChangFuFutuStatus
     ) throws -> Response {

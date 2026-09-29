@@ -789,12 +789,12 @@ private struct ResearchWorkspace: View {
 private struct TradingWorkspace: View {
     @Bindable var state: AppState
     @State private var isEvaluationDetailsPresented = false
+    @State private var tradeSheet: TradeSheetRoute?
 
     var body: some View {
         VStack(spacing: FutuTheme.sectionSpacing) {
             HStack(spacing: 10) {
-                StatusPill(text: "影子模式", color: FutuTheme.orange)
-                StatusPill(text: "真实下单关闭", color: FutuTheme.rose)
+                StatusPill(text: state.currentLiveTradingModeLabel, color: liveTradingColor)
                 StatusPill(text: state.currentConnectionLabel, color: connectionColor)
                 StatusPill(
                     text: state.currentTradingConfiguration.map { "配置 v\($0.version)" } ?? "未配置",
@@ -803,6 +803,14 @@ private struct TradingWorkspace: View {
                         : FutuTheme.loss
                 )
                 Spacer()
+                Button {
+                    tradeSheet = .settings
+                } label: {
+                    Image(systemName: "gearshape")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .help("交易设置")
                 Button {
                     isEvaluationDetailsPresented = true
                 } label: {
@@ -867,6 +875,24 @@ private struct TradingWorkspace: View {
             }
             HStack(alignment: .top, spacing: FutuTheme.sectionSpacing) {
                 WorkbenchPanel(
+                    "待确认订单",
+                    subtitle: "服务端签名意图，确认前不会提交券商",
+                    systemImage: "checkmark.seal",
+                    minimumHeight: 150
+                ) {
+                    pendingOrderRows
+                }
+                WorkbenchPanel(
+                    "系统挂单监管",
+                    subtitle: "仅监管并撤销长富系统订单",
+                    systemImage: "shield.checkered",
+                    minimumHeight: 150
+                ) {
+                    managedOrderRows
+                }
+            }
+            HStack(alignment: .top, spacing: FutuTheme.sectionSpacing) {
+                WorkbenchPanel(
                     "影子信号",
                     subtitle: "服务端权威配置生成的最近信号",
                     systemImage: "waveform.path.ecg",
@@ -897,6 +923,111 @@ private struct TradingWorkspace: View {
         .sheet(isPresented: $isEvaluationDetailsPresented) {
             QuantEvaluationDetailsSheet(state: state)
         }
+        .sheet(item: $tradeSheet) { route in
+            switch route {
+            case .settings:
+                LiveTradingSettingsSheet(state: state)
+            case .pending(let intentId):
+                if let order = state.currentPendingLiveOrders.first(where: {
+                    $0.intentId == intentId
+                }) {
+                    PendingLiveOrderSheet(state: state, order: order)
+                }
+            case .managed(let intentId):
+                if let order = state.currentPendingLiveOrders.first(where: {
+                    $0.intentId == intentId
+                }) {
+                    ManagedLiveOrderSheet(state: state, order: order)
+                }
+            }
+        }
+    }
+
+    private var liveTradingColor: Color {
+        guard state.currentLiveExecutionSetting?.hardGateEnabled == true else {
+            return FutuTheme.rose
+        }
+        return state.isCurrentAutoSubmitEnabled ? FutuTheme.loss : FutuTheme.orange
+    }
+
+    @ViewBuilder
+    private var pendingOrderRows: some View {
+        let orders = state.currentPendingLiveOrders.filter {
+            $0.state == "PENDING_CONFIRMATION" && $0.submissionMode == "MANUAL_CONFIRM"
+        }
+        if orders.isEmpty {
+            DataUnavailableView(text: "当前没有待人工确认的系统订单")
+                .frame(minHeight: 84, alignment: .top)
+        } else {
+            liveOrderList(orders, managed: false)
+        }
+    }
+
+    @ViewBuilder
+    private var managedOrderRows: some View {
+        let orders = state.currentPendingLiveOrders.filter { $0.state != "PENDING_CONFIRMATION" }
+        if orders.isEmpty {
+            DataUnavailableView(text: "当前没有系统托管挂单")
+                .frame(minHeight: 84, alignment: .top)
+        } else {
+            liveOrderList(orders, managed: true)
+        }
+    }
+
+    private func liveOrderList(
+        _ orders: [PendingLiveOrder],
+        managed: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            liveOrderRow(
+                symbol: "标的",
+                direction: "方向",
+                quantity: "数量",
+                price: "限价",
+                status: managed ? "监管状态" : "状态",
+                header: true
+            )
+            ForEach(Array(orders.prefix(8).enumerated()), id: \.element.intentId) {
+                index,
+                order in
+                if index > 0 { DashedDivider() }
+                Button {
+                    tradeSheet = managed
+                        ? .managed(order.intentId)
+                        : .pending(order.intentId)
+                } label: {
+                    liveOrderRow(
+                        symbol: order.symbol,
+                        direction: liveOrderDirection(order),
+                        quantity: order.order.quantity,
+                        price: order.order.limitPrice,
+                        status: managed ? liveOrderStateLabel(order.state) : "待确认",
+                        header: false
+                    )
+                }
+                .buttonStyle(.plain)
+                .background(index.isMultiple(of: 2) ? Color.clear : FutuTheme.surfaceMuted)
+            }
+        }
+    }
+
+    private func liveOrderRow(
+        symbol: String,
+        direction: String,
+        quantity: String,
+        price: String,
+        status: String,
+        header: Bool
+    ) -> some View {
+        HStack(spacing: 8) {
+            fixedCell(symbol, width: nil, alignment: .leading, header: header)
+            fixedCell(direction, width: 72, alignment: .center, header: header)
+            fixedCell(quantity, width: 62, alignment: .trailing, header: header)
+            fixedCell(price, width: 80, alignment: .trailing, header: header)
+            fixedCell(status, width: 82, alignment: .trailing, header: header)
+        }
+        .frame(minHeight: header ? 30 : 38)
+        .contentShape(Rectangle())
     }
 
     private var evaluationActiveCount: Int {
@@ -1180,6 +1311,246 @@ private struct TradingWorkspace: View {
 
     private var connectionColor: Color {
         state.isCurrentBrokerConnected ? FutuTheme.loss : FutuTheme.rose
+    }
+}
+
+private enum TradeSheetRoute: Identifiable {
+    case settings
+    case pending(String)
+    case managed(String)
+
+    var id: String {
+        switch self {
+        case .settings: "settings"
+        case .pending(let intentId): "pending-\(intentId)"
+        case .managed(let intentId): "managed-\(intentId)"
+        }
+    }
+}
+
+private struct LiveTradingSettingsSheet: View {
+    @Bindable var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var autoSubmitEnabled = false
+    @State private var didLoad = false
+    @State private var isSaving = false
+    @State private var showEnableConfirmation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("交易设置")
+                        .font(FutuTheme.panelTitle)
+                    Text("\(state.platform.title) · \(state.currentAccount?.environment ?? "账户未知")")
+                        .font(FutuTheme.pageSubtitle)
+                        .foregroundStyle(FutuTheme.inkMuted)
+                }
+                Spacer()
+                Button("完成") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 12) {
+                settingRow("后台硬门禁", state.currentLiveExecutionSetting?.hardGateEnabled == true
+                    ? "已开启" : "已关闭")
+                settingRow("交易租约", state.currentTradingLease == nil ? "未持有" : "已持有")
+                settingRow("自动交易会话", state.currentLiveTradingSession == nil
+                    ? "未激活" : "已激活")
+                settingRow("券商连接", state.currentConnectionLabel)
+            }
+            Divider()
+            Toggle("自动提交真实订单", isOn: $autoSubmitEnabled)
+                .toggleStyle(.switch)
+                .disabled(isSaving || state.currentLiveExecutionSetting == nil)
+                .onChange(of: autoSubmitEnabled) { _, enabled in
+                    guard didLoad else { return }
+                    if enabled {
+                        showEnableConfirmation = true
+                    } else {
+                        updateAutoSubmit(false)
+                    }
+                }
+            if let message = state.currentLiveTradingStatusMessage {
+                Text(message)
+                    .font(FutuTheme.metricNote)
+                    .foregroundStyle(FutuTheme.inkMuted)
+            }
+            Spacer()
+        }
+        .padding(24)
+        .frame(width: 520, height: 360)
+        .onAppear {
+            autoSubmitEnabled = state.isCurrentAutoSubmitEnabled
+            didLoad = true
+        }
+        .alert("确认启用自动提交", isPresented: $showEnableConfirmation) {
+            Button("取消", role: .cancel) {
+                autoSubmitEnabled = false
+            }
+            Button("确认启用", role: .destructive) {
+                updateAutoSubmit(true)
+            }
+        } message: {
+            Text(
+                "\(state.platform.title) 模型订单将不再逐笔确认。"
+                    + "仍受 60 秒意图、90 秒会话、15 bps 滑点和本地硬风控限制。"
+            )
+        }
+    }
+
+    private func settingRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(FutuTheme.inkMuted)
+                .frame(width: 120, alignment: .leading)
+            Text(value)
+                .foregroundStyle(FutuTheme.ink)
+        }
+        .font(FutuTheme.tableCell)
+    }
+
+    private func updateAutoSubmit(_ enabled: Bool) {
+        isSaving = true
+        Task {
+            let saved = await state.setCurrentAutoSubmitEnabled(enabled)
+            autoSubmitEnabled = saved ? enabled : state.isCurrentAutoSubmitEnabled
+            isSaving = false
+        }
+    }
+}
+
+private struct PendingLiveOrderSheet: View {
+    @Bindable var state: AppState
+    let order: PendingLiveOrder
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        LiveOrderDetailBody(
+            title: "确认真实订单",
+            order: order,
+            status: "等待人工确认"
+        ) {
+            Button("拒绝", role: .cancel) {
+                Task {
+                    await state.rejectPendingLiveOrder(order.intentId)
+                    dismiss()
+                }
+            }
+            Button("确认并提交", role: .destructive) {
+                Task {
+                    await state.confirmPendingLiveOrder(order.intentId)
+                    dismiss()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct ManagedLiveOrderSheet: View {
+    @Bindable var state: AppState
+    let order: PendingLiveOrder
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        LiveOrderDetailBody(
+            title: "系统挂单监管",
+            order: order,
+            status: liveOrderStateLabel(order.state)
+        ) {
+            Button("关闭") { dismiss() }
+            Button("撤销剩余订单", role: .destructive) {
+                Task {
+                    await state.requestCancelManagedOrder(order.intentId)
+                    dismiss()
+                }
+            }
+            .disabled(["CANCEL_REQUESTED", "CANCEL_PENDING", "CANCEL_UNCERTAIN"]
+                .contains(order.state))
+        }
+    }
+}
+
+private struct LiveOrderDetailBody<Actions: View>: View {
+    let title: String
+    let order: PendingLiveOrder
+    let status: String
+    @ViewBuilder let actions: Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title)
+                .font(FutuTheme.panelTitle)
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
+                detailRow("券商", order.provider)
+                detailRow("标的", order.symbol)
+                detailRow("方向", liveOrderDirection(order))
+                detailRow("数量", order.order.quantity)
+                detailRow("限价", "\(order.order.limitPrice) \(order.order.currency)")
+                detailRow("有效期", order.expiresAt)
+                detailRow("状态", status)
+                detailRow("券商订单号", order.brokerOrderId ?? "尚未生成")
+                detailRow("预计名义金额", estimatedNotional)
+                detailRow("费用", "以券商最终回执为准")
+                detailRow("主要风险", "限价单仍可能成交；卖空可能产生无限损失")
+            }
+            if let reason = order.cancelReasonCode {
+                Text("撤单原因：\(reason)")
+                    .font(FutuTheme.metricNote)
+                    .foregroundStyle(FutuTheme.rose)
+            }
+            Spacer()
+            HStack {
+                Spacer()
+                actions
+            }
+        }
+        .padding(24)
+        .frame(width: 560, height: 440)
+    }
+
+    private var estimatedNotional: String {
+        guard let quantity = Decimal(string: order.order.quantity),
+              let price = Decimal(string: order.order.limitPrice) else {
+            return "不可计算"
+        }
+        return "\(quantity * price) \(order.order.currency)"
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(FutuTheme.inkMuted)
+                .frame(width: 120, alignment: .leading)
+            Text(value)
+                .foregroundStyle(FutuTheme.ink)
+                .textSelection(.enabled)
+        }
+        .font(FutuTheme.tableCell)
+    }
+}
+
+private func liveOrderDirection(_ order: PendingLiveOrder) -> String {
+    switch order.positionEffect {
+    case "OPEN_SHORT", "ADD_SHORT": "卖空"
+    case "COVER_SHORT": "买入平空"
+    case "REDUCE_LONG": "平仓卖出"
+    default: order.side == "BUY" ? "买入" : "卖出"
+    }
+}
+
+private func liveOrderStateLabel(_ state: String) -> String {
+    switch state {
+    case "CLAIMED": "已认领"
+    case "SUBMITTING": "提交中"
+    case "SUBMITTED", "TRACKING": "监管中"
+    case "PARTIALLY_FILLED": "部分成交"
+    case "CANCEL_REQUESTED": "待撤"
+    case "CANCEL_PENDING": "撤单中"
+    case "CANCEL_UNCERTAIN", "UNKNOWN": "状态不确定"
+    default: state
     }
 }
 

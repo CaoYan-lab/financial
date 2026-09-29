@@ -47,6 +47,13 @@ the database separately as `changfu_runtime` and `changfu_admin_runtime`, and
 removes the migrator. It then publishes Worker, Gateway, and Admin and finishes
 with Worker, public API, and Admin readiness checks.
 
+When Admin has not been provisioned, a live-trading-only core release uses
+`scripts/release-live-trading-core.sh vNN-gitsha`. It requires both
+`CHANGFU_CONFIRM_RELEASE=YES` and `CHANGFU_CONFIRM_LIVE_TRADING=YES`, preserves
+the existing function environments, creates or reuses a deploy-host-only
+Ed25519 order-intent key pair, enables both Provider hard gates, and publishes
+only Worker then Gateway. It never creates or modifies Admin resources.
+
 ## Production resources
 
 The initial production deployment completed on 2026-09-28:

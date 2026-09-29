@@ -132,6 +132,29 @@ public struct SaveTradingConfigurationRequest: Codable, Equatable, Sendable {
             riskPolicyId: riskPolicy.id
         )
     }
+
+    public static func updating(
+        _ configuration: TradingConfiguration,
+        confirmationMode: String
+    ) -> Self {
+        Self(
+            expectedVersion: configuration.version,
+            catalogVersion: configuration.catalogVersion,
+            executionMode: configuration.executionMode,
+            confirmationMode: confirmationMode,
+            models: configuration.models,
+            strategyId: configuration.strategyId,
+            singlePromptId: configuration.singlePromptId,
+            portfolioPromptId: configuration.portfolioPromptId,
+            managedOrderPromptId: configuration.managedOrderPromptId,
+            scanIntervalSeconds: configuration.scanIntervalSeconds,
+            portfolioReviewIntervalSeconds: configuration.portfolioReviewIntervalSeconds,
+            candidateTtlSeconds: configuration.candidateTtlSeconds,
+            maxConcurrency: configuration.maxConcurrency,
+            disableUsOvernightEvaluation: configuration.disableUsOvernightEvaluation,
+            riskPolicyId: configuration.riskPolicyId
+        )
+    }
 }
 
 public enum TradingConfigurationError: LocalizedError, Sendable {

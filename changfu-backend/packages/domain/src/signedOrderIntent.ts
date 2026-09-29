@@ -21,6 +21,8 @@ export type OrderSpec = {
     | 'ADD_SHORT'
     | 'COVER_SHORT'
   orderType: 'MARKETABLE_LIMIT'
+  tradingSession: 'RTH'
+  timeInForce: 'DAY'
   quantity: string
   limitPrice: string
   currency: string

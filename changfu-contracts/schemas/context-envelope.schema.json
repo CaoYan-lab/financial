@@ -275,7 +275,10 @@
         "environment": { "enum": ["SIMULATE", "REAL"] },
         "totalAssets": { "$ref": "#/$defs/money" },
         "cash": { "$ref": "#/$defs/money" },
-        "buyingPower": { "$ref": "#/$defs/money" }
+        "buyingPower": { "$ref": "#/$defs/money" },
+        "marginAccount": { "type": ["boolean", "null"] },
+        "marginCallActive": { "type": ["boolean", "null"] },
+        "shortRiskDisclosureAccepted": { "type": ["boolean", "null"] }
       }
     },
     "position": {
@@ -314,7 +317,12 @@
         "lastPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
         "bidPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
         "askPrice": { "type": ["string", "null"], "pattern": "^[0-9]+(\\.[0-9]+)?$" },
-        "lotSize": { "type": "integer", "minimum": 1 }
+        "lotSize": { "type": ["integer", "null"], "minimum": 1 },
+        "shortable": { "type": ["boolean", "null"] },
+        "maxShortQuantity": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        }
       }
     },
     "minuteBar": {

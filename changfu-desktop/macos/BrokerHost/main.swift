@@ -60,6 +60,26 @@ struct BrokerHostMain {
                 writeStandardOutput(try encoder.encode(
                     broker.loadMarketIntelligence(symbols: request.symbols)
                 ))
+            case "trade-readiness":
+                let request = try decodeInput(BrokerTradeReadinessRequest.self)
+                writeStandardOutput(try encoder.encode(
+                    broker.tradeReadiness(request)
+                ))
+            case "place-order":
+                let request = try decodeInput(BrokerPlaceOrderRequest.self)
+                writeStandardOutput(try encoder.encode(
+                    broker.placeOrder(request)
+                ))
+            case "cancel-order":
+                let request = try decodeInput(BrokerCancelOrderRequest.self)
+                writeStandardOutput(try encoder.encode(
+                    broker.cancelOrder(request)
+                ))
+            case "find-order-by-intent":
+                let request = try decodeInput(BrokerFindOrderRequest.self)
+                writeStandardOutput(try encoder.encode(
+                    broker.findOrder(request)
+                ))
             case "snapshot":
                 let request = try decodeOptionalInput(BrokerSnapshotRequest.self)
                 let snapshot = try broker.loadSnapshot(

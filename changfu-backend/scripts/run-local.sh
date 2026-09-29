@@ -46,6 +46,26 @@ writeFileSync(
 NODE
 fi
 
+if [[ ! -s "${RUNTIME_DIR}/order-intent-private.pem" ]]; then
+  RUNTIME_DIR="${RUNTIME_DIR}" "${NODE_BIN}" --input-type=module - <<'NODE'
+import { generateKeyPairSync } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const { privateKey, publicKey } = generateKeyPairSync('ed25519')
+writeFileSync(
+  join(process.env.RUNTIME_DIR, 'order-intent-private.pem'),
+  privateKey.export({ type: 'pkcs8', format: 'pem' }),
+  { mode: 0o600 },
+)
+writeFileSync(
+  join(process.env.RUNTIME_DIR, 'order-intent-public.pem'),
+  publicKey.export({ type: 'spki', format: 'pem' }),
+  { mode: 0o600 },
+)
+NODE
+fi
+
 if [[ ! -s "${RUNTIME_DIR}/internal-token" ]]; then
   "${NODE_BIN}" -e \
     "process.stdout.write(require('node:crypto').randomBytes(48).toString('base64url'))" \
@@ -130,6 +150,11 @@ export CHANGFU_ARK_MODEL
 CHANGFU_ARK_MODEL="$(read_env_value ARK_MODEL)"
 export CHANGFU_ARK_ENDPOINT
 CHANGFU_ARK_ENDPOINT="$(read_env_value ARK_RESPONSES_URL)"
+export CHANGFU_ORDER_INTENT_PRIVATE_KEY_PEM
+CHANGFU_ORDER_INTENT_PRIVATE_KEY_PEM="$(cat "${RUNTIME_DIR}/order-intent-private.pem")"
+export CHANGFU_ORDER_INTENT_PUBLIC_KEY_PEM
+CHANGFU_ORDER_INTENT_PUBLIC_KEY_PEM="$(cat "${RUNTIME_DIR}/order-intent-public.pem")"
+export CHANGFU_ORDER_INTENT_KEY_ID=changfu-order-local-v1
 
 printf '[长富后台] 启动 Decision Worker，日志：%s\n' "${RUNTIME_DIR}/worker.log"
 launchctl submit \
@@ -143,6 +168,8 @@ launchctl submit \
   "CHANGFU_ARK_API_KEY=${CHANGFU_ARK_API_KEY}" \
   "CHANGFU_ARK_MODEL=${CHANGFU_ARK_MODEL}" \
   "CHANGFU_ARK_ENDPOINT=${CHANGFU_ARK_ENDPOINT}" \
+  "CHANGFU_ORDER_INTENT_PRIVATE_KEY_PEM=${CHANGFU_ORDER_INTENT_PRIVATE_KEY_PEM}" \
+  "CHANGFU_ORDER_INTENT_KEY_ID=${CHANGFU_ORDER_INTENT_KEY_ID}" \
   CHANGFU_DECISION_WORKER_HOST=127.0.0.1 \
   CHANGFU_DECISION_WORKER_PORT=4311 \
   "${NODE_BIN}" "${BACKEND_ROOT}/dist/apps/decision-worker/src/server.js"
@@ -166,6 +193,8 @@ launchctl submit \
   "CHANGFU_ACCESS_PRIVATE_KEY_PEM=${CHANGFU_ACCESS_PRIVATE_KEY_PEM}" \
   "CHANGFU_ACCESS_PUBLIC_KEY_PEM=${CHANGFU_ACCESS_PUBLIC_KEY_PEM}" \
   "CHANGFU_ACCESS_KEY_ID=${CHANGFU_ACCESS_KEY_ID}" \
+  "CHANGFU_ORDER_INTENT_PUBLIC_KEY_PEM=${CHANGFU_ORDER_INTENT_PUBLIC_KEY_PEM}" \
+  "CHANGFU_ORDER_INTENT_KEY_ID=${CHANGFU_ORDER_INTENT_KEY_ID}" \
   "CHANGFU_DECISION_WORKER_URL=${CHANGFU_DECISION_WORKER_URL}" \
   CHANGFU_GATEWAY_HOST=127.0.0.1 \
   CHANGFU_GATEWAY_PORT=4310 \

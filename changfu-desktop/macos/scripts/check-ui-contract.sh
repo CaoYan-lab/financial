@@ -124,6 +124,26 @@ do
   fi
 done
 
+for contract in \
+  '"交易设置"' \
+  '"自动提交真实订单"' \
+  '"待确认订单"' \
+  '"系统挂单监管"' \
+  '"确认真实订单"' \
+  '"撤销剩余订单"' \
+  'currentLiveTradingModeLabel'
+do
+  if ! rg -q "$contract" "$WORKSPACES" "$APP_STATE"; then
+    printf '%s\n' "UI 契约失败：真实交易工作台缺少 ${contract}" >&2
+    exit 1
+  fi
+done
+
+if rg -q '"真实下单关闭"' "$WORKSPACES"; then
+  printf '%s\n' "UI 契约失败：交易页不得继续显示固定真实下单关闭状态" >&2
+  exit 1
+fi
+
 if rg -q 'kind: "POLICY"|kind: event\.group\.rawValue' "$DECISION_CONTEXT"; then
   printf '%s\n' "UI 契约失败：市场情报证据类型必须映射到后端注册类型" >&2
   exit 1

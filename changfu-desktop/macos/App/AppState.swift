@@ -16,6 +16,7 @@ private enum AppInteractionError: LocalizedError {
     case longbridgeSellPutDataUnavailable(String)
     case providerPoolNotVerified
     case providerReportMismatch
+    case liveOrderValidationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ private enum AppInteractionError: LocalizedError {
             "标的池仅来自本地缓存，联网校验权益后才能发起研究"
         case .providerReportMismatch:
             "报告所属券商与当前平台不一致，已拒绝展示"
+        case .liveOrderValidationFailed(let reason):
+            "本地订单复核失败：\(reason)"
         }
     }
 }
@@ -91,6 +94,16 @@ private struct ShadowRuntimeState {
     var evaluationUpdatedAt: Date?
 }
 
+private struct LiveTradingRuntimeState {
+    var pendingOrders: [PendingLiveOrder] = []
+    var orderActions: [PendingOrderAction] = []
+    var lease: TradingLease?
+    var session: LiveTradingSession?
+    var statusMessage: String?
+    var lastReconciledAt: Date?
+    var isRefreshing = false
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -150,6 +163,8 @@ final class AppState {
     private(set) var serverResearchPool: ServerResearchPool?
     private(set) var tradingCatalogs: [String: TradingCatalog] = [:]
     private(set) var tradingConfigurations: [String: TradingConfiguration] = [:]
+    private(set) var liveExecutionSettings: [String: LiveExecutionSetting] = [:]
+    private var liveTradingRuntimeByConnection: [String: LiveTradingRuntimeState] = [:]
     private var shadowHistoryByConnection: [String: ShadowHistoryState] = [:]
     private var shadowRuntimeByConnection: [String: ShadowRuntimeState] = [:]
     private var shadowRuntimeFallbackStatus = "已停止"
@@ -227,11 +242,14 @@ final class AppState {
     private var startupTask: Task<Void, Never>?
     private var brokerRefreshTask: Task<Void, Never>?
     private var shadowTradingTasks: [String: Task<Void, Never>] = [:]
+    private var liveTradingTasks: [String: Task<Void, Never>] = [:]
     private var startupAdServerTime: Date?
     private var brokerConnectionId: String?
     private var longbridgeBrokerConnectionId: String?
     private var activeProviderPoolCacheNamespace: String?
     private var contextSequence = 0
+    private var liveOrderCoordinator: LiveOrderCoordinator
+    private var managedOrderSupervisor: ManagedOrderSupervisor
 
     init(
         broker: FutuBrokerClient = FutuBrokerClient(),
@@ -259,7 +277,10 @@ final class AppState {
         self.providerPoolCache = providerPoolCache
         cloudEnvironment = configuredCloud
         backendEnvironment = initialEnvironment
-        backend = BackendClient(baseURL: initialEnvironment.baseURL)
+        let backendClient = BackendClient(baseURL: initialEnvironment.baseURL)
+        backend = backendClient
+        liveOrderCoordinator = LiveOrderCoordinator(backend: backendClient)
+        managedOrderSupervisor = ManagedOrderSupervisor(backend: backendClient)
 
         if let raw = defaults.string(forKey: Keys.platform),
            let restored = TradingPlatform(rawValue: raw) {
@@ -377,6 +398,50 @@ final class AppState {
     var currentTradingConfiguration: TradingConfiguration? {
         guard let connectionId = currentBrokerConnectionId else { return nil }
         return tradingConfigurations[connectionId]
+    }
+
+    var currentLiveExecutionSetting: LiveExecutionSetting? {
+        liveExecutionSettings[currentProviderId]
+    }
+
+    var currentPendingLiveOrders: [PendingLiveOrder] {
+        guard let connectionId = currentBrokerConnectionId else { return [] }
+        return liveTradingRuntimeByConnection[connectionId]?.pendingOrders ?? []
+    }
+
+    var currentPendingOrderActions: [PendingOrderAction] {
+        guard let connectionId = currentBrokerConnectionId else { return [] }
+        return liveTradingRuntimeByConnection[connectionId]?.orderActions ?? []
+    }
+
+    var currentLiveTradingSession: LiveTradingSession? {
+        guard let connectionId = currentBrokerConnectionId else { return nil }
+        return liveTradingRuntimeByConnection[connectionId]?.session
+    }
+
+    var currentTradingLease: TradingLease? {
+        guard let connectionId = currentBrokerConnectionId else { return nil }
+        return liveTradingRuntimeByConnection[connectionId]?.lease
+    }
+
+    var currentLiveTradingStatusMessage: String? {
+        guard let connectionId = currentBrokerConnectionId else { return nil }
+        return liveTradingRuntimeByConnection[connectionId]?.statusMessage
+    }
+
+    var currentLiveTradingModeLabel: String {
+        guard let setting = currentLiveExecutionSetting else {
+            return "真实交易状态未知"
+        }
+        guard setting.hardGateEnabled else { return "真实交易后台关闭" }
+        if setting.autoSubmitEnabled {
+            return currentLiveTradingSession == nil ? "交易会话已失效" : "实盘自动提交"
+        }
+        return "实盘人工确认"
+    }
+
+    var isCurrentAutoSubmitEnabled: Bool {
+        currentLiveExecutionSetting?.autoSubmitEnabled == true
     }
 
     var shadowModelRuns: [ModelRunSummary] {
@@ -586,6 +651,7 @@ final class AppState {
     func logout() async {
         let environment = backendEnvironment
         let client = backend
+        await shutdownLiveTradingRuntime(reason: "用户已退出登录")
         let refreshToken = try? credentials.refreshToken(for: environment)
         if let refreshToken, !refreshToken.isEmpty {
             await client.logout(refreshToken: refreshToken)
@@ -637,6 +703,7 @@ final class AppState {
 
         let sourceEnvironment = backendEnvironment
         let sourceBackend = backend
+        await shutdownLiveTradingRuntime(reason: "后台环境已切换")
         cancelRuntimeTasks()
         let sourceRefreshToken = (try? credentials.refreshToken(for: sourceEnvironment)) ?? nil
         if let refreshToken = sourceRefreshToken, !refreshToken.isEmpty {
@@ -646,7 +713,10 @@ final class AppState {
         invalidateAuthentication(message: nil)
 
         backendEnvironment = environment
-        backend = BackendClient(baseURL: environment.baseURL)
+        let backendClient = BackendClient(baseURL: environment.baseURL)
+        backend = backendClient
+        liveOrderCoordinator = LiveOrderCoordinator(backend: backendClient)
+        managedOrderSupervisor = ManagedOrderSupervisor(backend: backendClient)
         guard environment.isDebug else {
             authenticationPhase = .signedOut(message: nil)
             return
@@ -657,6 +727,48 @@ final class AppState {
         } catch {
             authenticationPhase = .signedOut(
                 message: "本地后台未就绪，请启动 Gateway、Worker 与 PostgreSQL"
+            )
+        }
+    }
+
+    func shutdownLiveTradingRuntime(reason: String) async {
+        liveTradingTasks.values.forEach { $0.cancel() }
+        liveTradingTasks = [:]
+        guard let accessToken = authenticationSession?.accessToken else { return }
+        for (connectionId, runtime) in liveTradingRuntimeByConnection {
+            if let session = runtime.session {
+                _ = try? await backend.deactivateLiveTradingSession(
+                    sessionId: session.sessionId,
+                    accessToken: accessToken
+                )
+            }
+            var updated = runtime
+            updated.session = nil
+            updated.statusMessage = reason
+            liveTradingRuntimeByConnection[connectionId] = updated
+        }
+    }
+
+    func resumeLiveTradingRuntime() async {
+        guard authenticationPhase == .signedIn,
+              let accessToken = authenticationSession?.accessToken else { return }
+        if let brokerConnectionId {
+            await refreshLiveTradingState(
+                connectionId: brokerConnectionId,
+                provider: "FUTU",
+                accessToken: accessToken
+            )
+            startLiveTradingSupervisor(connectionId: brokerConnectionId, provider: "FUTU")
+        }
+        if let longbridgeBrokerConnectionId {
+            await refreshLiveTradingState(
+                connectionId: longbridgeBrokerConnectionId,
+                provider: "LONGBRIDGE",
+                accessToken: accessToken
+            )
+            startLiveTradingSupervisor(
+                connectionId: longbridgeBrokerConnectionId,
+                provider: "LONGBRIDGE"
             )
         }
     }
@@ -717,6 +829,8 @@ final class AppState {
         brokerRefreshTask = nil
         shadowTradingTasks.values.forEach { $0.cancel() }
         shadowTradingTasks = [:]
+        liveTradingTasks.values.forEach { $0.cancel() }
+        liveTradingTasks = [:]
     }
 
     private func invalidateAuthentication(message: String?) {
@@ -794,6 +908,8 @@ final class AppState {
         serverResearchPool = nil
         tradingCatalogs = [:]
         tradingConfigurations = [:]
+        liveExecutionSettings = [:]
+        liveTradingRuntimeByConnection = [:]
         shadowHistoryByConnection = [:]
         shadowRuntimeByConnection = [:]
         shadowRuntimeFallbackStatus = "已停止"
@@ -808,6 +924,7 @@ final class AppState {
 
     private func startAuthenticatedServices() async {
         await refreshSubscriptionCenter()
+        await refreshLiveExecutionSettings()
         async let pools: Void = refreshProviderPools()
         if sellPutAccessMessage == nil {
             async let sellPut: Void = refreshSellPutResearch()
@@ -2317,7 +2434,17 @@ final class AppState {
                         accessToken: accessToken
                     )
             }
+            liveExecutionSettings[provider] = try await backend.liveExecutionSetting(
+                provider: provider,
+                accessToken: accessToken
+            )
             await refreshShadowHistory(connectionId: connectionId, accessToken: accessToken)
+            await refreshLiveTradingState(
+                connectionId: connectionId,
+                provider: provider,
+                accessToken: accessToken
+            )
+            startLiveTradingSupervisor(connectionId: connectionId, provider: provider)
         } catch {
             let message = "交易控制面加载失败：\(error.localizedDescription)"
             if connectionId == longbridgeBrokerConnectionId {
@@ -2326,6 +2453,701 @@ final class AppState {
                 statusMessage = message
             }
         }
+    }
+
+    func refreshLiveExecutionSettings() async {
+        guard let accessToken = authenticationSession?.accessToken else { return }
+        for provider in ["FUTU", "LONGBRIDGE"] {
+            do {
+                liveExecutionSettings[provider] = try await backend.liveExecutionSetting(
+                    provider: provider,
+                    accessToken: accessToken
+                )
+            } catch {
+                liveExecutionSettings.removeValue(forKey: provider)
+            }
+        }
+    }
+
+    func setCurrentAutoSubmitEnabled(_ enabled: Bool) async -> Bool {
+        guard let accessToken = authenticationSession?.accessToken,
+              let connectionId = currentBrokerConnectionId,
+              let account = currentAccount,
+              let currentConfig = tradingConfigurations[connectionId] else {
+            setLiveTradingStatus("真实交易控制面尚未就绪")
+            return false
+        }
+        let provider = currentProviderId
+        let currentSetting: LiveExecutionSetting
+        do {
+            currentSetting = try await backend.liveExecutionSetting(
+                provider: provider,
+                accessToken: accessToken
+            )
+            liveExecutionSettings[provider] = currentSetting
+        } catch {
+            setLiveTradingStatus("真实交易设置读取失败：\(error.localizedDescription)")
+            return false
+        }
+        guard account.environment == "REAL" else {
+            setLiveTradingStatus("仅 REAL 账户可启用真实交易")
+            return false
+        }
+        if enabled {
+            guard currentSetting.hardGateEnabled, currentSetting.blockers.isEmpty else {
+                setLiveTradingStatus(
+                    "真实交易门禁未满足：\(currentSetting.blockers.first ?? "后台门禁关闭")"
+                )
+                return false
+            }
+            guard isCurrentBrokerConnected else {
+                setLiveTradingStatus("券商连接不可用")
+                return false
+            }
+        }
+        do {
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            let mode = enabled ? "AUTO_EXECUTE_PREFERENCE" : "MANUAL_CONFIRM"
+            let savedConfig: TradingConfiguration
+            if currentConfig.confirmationMode == mode {
+                savedConfig = currentConfig
+            } else {
+                savedConfig = try await backend.saveTradingConfiguration(
+                    brokerConnectionId: connectionId,
+                    input: .updating(currentConfig, confirmationMode: mode),
+                    accessToken: accessToken
+                )
+                tradingConfigurations[connectionId] = savedConfig
+            }
+            let setting = try await backend.updateLiveExecutionSetting(
+                provider: provider,
+                input: UpdateLiveExecutionSettingRequest(
+                    autoSubmitEnabled: enabled,
+                    expectedVersion: currentSetting.version
+                ),
+                accessToken: accessToken
+            )
+            liveExecutionSettings[provider] = setting
+            if enabled {
+                let lease = try await backend.acquireTradingLease(
+                    TradingLeaseRequest(
+                        deviceId: identity.deviceId,
+                        brokerConnectionId: connectionId
+                    ),
+                    accessToken: accessToken
+                )
+                let disclosure = [
+                    provider,
+                    account.accountId,
+                    String(savedConfig.version),
+                    savedConfig.riskPolicyId,
+                    "AUTO_EXECUTE",
+                    "60s-intent",
+                    "90s-session",
+                    "15bps"
+                ].joined(separator: "|")
+                let appSessionId = UUID().uuidString.lowercased()
+                let session = try await backend.activateLiveTradingSession(
+                    ActivateLiveTradingSessionRequest(
+                        brokerConnectionId: connectionId,
+                        provider: provider,
+                        deviceId: identity.deviceId,
+                        configVersion: savedConfig.version,
+                        riskPolicyVersion: savedConfig.riskPolicyId,
+                        confirmationDigest: Self.sha256(disclosure),
+                        appSessionId: appSessionId
+                    ),
+                    accessToken: accessToken
+                )
+                var runtime = liveTradingRuntimeByConnection[connectionId]
+                    ?? LiveTradingRuntimeState()
+                runtime.lease = lease
+                runtime.session = session
+                runtime.statusMessage = "自动提交会话已启用"
+                liveTradingRuntimeByConnection[connectionId] = runtime
+            } else {
+                if let session = liveTradingRuntimeByConnection[connectionId]?.session {
+                    _ = try? await backend.deactivateLiveTradingSession(
+                        sessionId: session.sessionId,
+                        accessToken: accessToken
+                    )
+                }
+                var runtime = liveTradingRuntimeByConnection[connectionId]
+                    ?? LiveTradingRuntimeState()
+                runtime.session = nil
+                runtime.statusMessage = "已切换为逐笔人工确认"
+                liveTradingRuntimeByConnection[connectionId] = runtime
+            }
+            return true
+        } catch {
+            setLiveTradingStatus("真实交易设置失败：\(error.localizedDescription)")
+            await refreshLiveExecutionSettings()
+            return false
+        }
+    }
+
+    func confirmPendingLiveOrder(_ intentId: String) async {
+        guard let pending = currentPendingLiveOrders.first(where: { $0.intentId == intentId }) else {
+            setLiveTradingStatus("待确认订单已失效")
+            return
+        }
+        await executeLiveOrder(pending)
+    }
+
+    func rejectPendingLiveOrder(_ intentId: String) async {
+        guard let accessToken = authenticationSession?.accessToken,
+              let pending = currentPendingLiveOrders.first(where: { $0.intentId == intentId }) else {
+            return
+        }
+        do {
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            try await liveOrderCoordinator.reject(
+                pending: pending,
+                deviceId: identity.deviceId,
+                reasonCode: "USER_REJECTED",
+                accessToken: accessToken
+            )
+            setLiveTradingStatus("已拒绝 \(pending.symbol) 系统订单")
+            await refreshCurrentLiveTradingState()
+        } catch {
+            setLiveTradingStatus("拒绝订单失败：\(error.localizedDescription)")
+        }
+    }
+
+    func requestCancelManagedOrder(_ intentId: String) async {
+        guard let accessToken = authenticationSession?.accessToken,
+              let pending = currentPendingLiveOrders.first(where: { $0.intentId == intentId })
+        else { return }
+        do {
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            _ = try await ensureTradingLease(
+                connectionId: pending.brokerConnectionId,
+                deviceId: identity.deviceId,
+                accessToken: accessToken
+            )
+            _ = try await backend.requestPendingOrderCancel(
+                intentId: intentId,
+                input: PendingOrderDecisionRequest(
+                    deviceId: identity.deviceId,
+                    reasonCode: "USER_REQUESTED_CANCEL"
+                ),
+                accessToken: accessToken
+            )
+            await refreshCurrentLiveTradingState()
+        } catch {
+            setLiveTradingStatus("申请撤单失败：\(error.localizedDescription)")
+        }
+    }
+
+    func refreshCurrentLiveTradingState() async {
+        guard let connectionId = currentBrokerConnectionId,
+              let accessToken = authenticationSession?.accessToken else { return }
+        await refreshLiveTradingState(
+            connectionId: connectionId,
+            provider: currentProviderId,
+            accessToken: accessToken
+        )
+    }
+
+    private func startLiveTradingSupervisor(connectionId: String, provider: String) {
+        liveTradingTasks[connectionId]?.cancel()
+        liveTradingTasks[connectionId] = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self,
+                      let accessToken = self.authenticationSession?.accessToken else { return }
+                await self.refreshLiveTradingState(
+                    connectionId: connectionId,
+                    provider: provider,
+                    accessToken: accessToken
+                )
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func refreshLiveTradingState(
+        connectionId: String,
+        provider: String,
+        accessToken: String
+    ) async {
+        var runtime = liveTradingRuntimeByConnection[connectionId] ?? LiveTradingRuntimeState()
+        guard !runtime.isRefreshing else { return }
+        runtime.isRefreshing = true
+        liveTradingRuntimeByConnection[connectionId] = runtime
+        defer {
+            var latest = liveTradingRuntimeByConnection[connectionId] ?? LiveTradingRuntimeState()
+            latest.isRefreshing = false
+            liveTradingRuntimeByConnection[connectionId] = latest
+        }
+        do {
+            async let pending = backend.pendingLiveOrders(
+                brokerConnectionId: connectionId,
+                accessToken: accessToken
+            )
+            async let actions = backend.pendingOrderActions(
+                brokerConnectionId: connectionId,
+                accessToken: accessToken
+            )
+            async let session = backend.currentLiveTradingSession(
+                brokerConnectionId: connectionId,
+                accessToken: accessToken
+            )
+            let values = try await (pending, actions, session)
+            var latest = liveTradingRuntimeByConnection[connectionId]
+                ?? LiveTradingRuntimeState()
+            latest.pendingOrders = values.0
+            latest.orderActions = values.1
+            latest.session = values.2
+            latest.lastReconciledAt = Date()
+            latest.statusMessage = nil
+            liveTradingRuntimeByConnection[connectionId] = latest
+
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            let requiresLease = values.2 != nil
+                || !values.1.isEmpty
+                || values.0.contains(where: Self.isManagedOrder)
+            if requiresLease {
+                _ = try await ensureTradingLease(
+                    connectionId: connectionId,
+                    deviceId: identity.deviceId,
+                    accessToken: accessToken
+                )
+                if provider == "LONGBRIDGE" {
+                    await refreshLongbridgeData()
+                } else {
+                    await refreshBrokerData()
+                }
+            }
+            guard let account = accountForProvider(provider) else { return }
+            if !values.1.isEmpty {
+                await processManagedActions(
+                    values.1,
+                    orders: values.0,
+                    provider: provider,
+                    accountId: account.accountId,
+                    deviceId: identity.deviceId,
+                    accessToken: accessToken
+                )
+                return
+            }
+            let requestedSafetyCancel = await requestSafetyCancellations(
+                orders: values.0,
+                provider: provider,
+                connectionId: connectionId,
+                account: account,
+                deviceId: identity.deviceId,
+                accessToken: accessToken
+            )
+            if requestedSafetyCancel { return }
+            for order in values.0 where order.state == "SUBMITTING" {
+                await reconcileSubmittingOrder(order, accessToken: accessToken)
+            }
+            for order in values.0 where
+                order.state == "CLAIMED"
+                    && order.claimExpiresAt.map({ Self.secondsRemaining($0) <= 0 }) == true {
+                try? await liveOrderCoordinator.reject(
+                    pending: order,
+                    deviceId: identity.deviceId,
+                    reasonCode: "CLAIM_EXPIRED",
+                    accessToken: accessToken
+                )
+            }
+            if let session = values.2,
+               provider == currentProviderId,
+               liveExecutionSettings[provider]?.autoSubmitEnabled == true {
+                try await renewTradingRuntimeIfNeeded(
+                    session: session,
+                    connectionId: connectionId,
+                    deviceId: identity.deviceId,
+                    accessToken: accessToken
+                )
+                for order in values.0 where
+                    order.submissionMode == "AUTO_EXECUTE"
+                        && order.state == "PENDING_CONFIRMATION" {
+                    await executeLiveOrder(order)
+                }
+            }
+        } catch {
+            setLiveTradingStatus(
+                "系统挂单监管异常：\(error.localizedDescription)",
+                connectionId: connectionId
+            )
+        }
+    }
+
+    private func executeLiveOrder(_ pending: PendingLiveOrder) async {
+        guard let accessToken = authenticationSession?.accessToken else {
+            setLiveTradingStatus("订单执行上下文不完整")
+            return
+        }
+        isTradingCriticalFlowActive = true
+        defer { isTradingCriticalFlowActive = false }
+        do {
+            if pending.provider == "LONGBRIDGE" {
+                await refreshLongbridgeData()
+            } else {
+                await refreshBrokerData()
+            }
+            guard let account = accountForProvider(pending.provider) else {
+                throw AppInteractionError.liveOrderValidationFailed("账户快照不可用")
+            }
+            try revalidateLiveOrder(pending, account: account)
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            _ = try await ensureTradingLease(
+                connectionId: pending.brokerConnectionId,
+                deviceId: identity.deviceId,
+                accessToken: accessToken
+            )
+            let outcome = try await liveOrderCoordinator.execute(
+                pending: pending,
+                context: try liveOrderContext(
+                    for: pending,
+                    account: account,
+                    identity: identity,
+                    accessToken: accessToken
+                ),
+                broker: brokerForProvider(pending.provider),
+                accessToken: accessToken
+            )
+            setLiveTradingStatus(
+                outcome.message,
+                connectionId: pending.brokerConnectionId
+            )
+        } catch {
+            setLiveTradingStatus(
+                "订单未提交：\(error.localizedDescription)",
+                connectionId: pending.brokerConnectionId
+            )
+        }
+        await refreshLiveTradingState(
+            connectionId: pending.brokerConnectionId,
+            provider: pending.provider,
+            accessToken: accessToken
+        )
+    }
+
+    private func revalidateLiveOrder(
+        _ pending: PendingLiveOrder,
+        account: AccountSummary
+    ) throws {
+        guard account.environment == "REAL" else {
+            throw AppInteractionError.liveOrderValidationFailed("当前不是 REAL 账户")
+        }
+        let sourceAt = pending.provider == "LONGBRIDGE"
+            ? longbridgeLastUpdatedAt
+            : brokerLastUpdatedAt
+        let maxAge = Double(min(
+            pending.clientRevalidation.quoteMaxAgeMs,
+            pending.clientRevalidation.accountMaxAgeMs
+        )) / 1_000
+        guard let sourceAt, Date().timeIntervalSince(sourceAt) <= maxAge else {
+            throw AppInteractionError.liveOrderValidationFailed("账户或行情快照已过期")
+        }
+        let quotes = pending.provider == "LONGBRIDGE" ? longbridgeQuotes : self.quotes
+        let normalized = BrokerSymbolNormalizer.normalize(pending.order.symbol)
+        guard let quote = quotes.first(where: {
+            BrokerSymbolNormalizer.normalize($0.symbol) == normalized
+        }) else {
+            throw AppInteractionError.liveOrderValidationFailed("标的实时行情不可用")
+        }
+        let reference = pending.order.side == "BUY" ? quote.askPrice : quote.bidPrice
+        guard let reference, reference > 0,
+              let limit = Decimal(string: pending.order.limitPrice),
+              limit > 0 else {
+            throw AppInteractionError.liveOrderValidationFailed("买卖盘或限价不可用")
+        }
+        let driftBps = abs(
+            NSDecimalNumber(decimal: (limit - reference) / reference * 10_000).doubleValue
+        )
+        guard driftBps <= Double(pending.order.maxSlippageBps) else {
+            throw AppInteractionError.liveOrderValidationFailed("限价偏离当前买卖盘超过允许滑点")
+        }
+        let openOrders = pending.provider == "LONGBRIDGE"
+            ? longbridgeOpenOrders
+            : self.openOrders
+        let conflictingExternalOrder = openOrders.contains {
+            BrokerSymbolNormalizer.normalize($0.symbol) == normalized
+                && $0.orderId != pending.brokerOrderId
+        }
+        guard !conflictingExternalOrder else {
+            throw AppInteractionError.liveOrderValidationFailed("存在同标的外部挂单，已阻断新订单")
+        }
+    }
+
+    private func reconcileSubmittingOrder(
+        _ pending: PendingLiveOrder,
+        accessToken: String
+    ) async {
+        guard let account = accountForProvider(pending.provider) else { return }
+        do {
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
+            let outcome = try await liveOrderCoordinator.reconcileSubmitting(
+                pending: pending,
+                context: try liveOrderContext(
+                    for: pending,
+                    account: account,
+                    identity: identity,
+                    accessToken: accessToken
+                ),
+                broker: brokerForProvider(pending.provider),
+                accessToken: accessToken
+            )
+            setLiveTradingStatus(
+                outcome.message,
+                connectionId: pending.brokerConnectionId
+            )
+        } catch {
+            setLiveTradingStatus(
+                "提交中订单对账失败：\(error.localizedDescription)",
+                connectionId: pending.brokerConnectionId
+            )
+        }
+    }
+
+    private func liveOrderContext(
+        for pending: PendingLiveOrder,
+        account: AccountSummary,
+        identity: DeviceIdentity,
+        accessToken: String
+    ) throws -> LiveOrderExecutionContext {
+        guard let pool = providerPools[pending.provider],
+              let config = tradingConfigurations[pending.brokerConnectionId] else {
+            throw LiveOrderCoordinatorError.submissionIntentMismatch
+        }
+        return LiveOrderExecutionContext(
+            userId: try Self.accessTokenIdentity(accessToken).userId,
+            deviceId: identity.deviceId,
+            brokerConnectionId: pending.brokerConnectionId,
+            provider: pending.provider,
+            accountId: account.accountId,
+            accountIdHash: Self.sha256(account.accountId),
+            poolVersion: pool.version,
+            configVersion: config.version,
+            riskPolicyVersion: config.riskPolicyId,
+            sessionId: pending.sessionId
+        )
+    }
+
+    private func processManagedActions(
+        _ actions: [PendingOrderAction],
+        orders: [PendingLiveOrder],
+        provider: String,
+        accountId: String,
+        deviceId: String,
+        accessToken: String
+    ) async {
+        await managedOrderSupervisor.process(
+            actions: actions,
+            orders: orders,
+            deviceId: deviceId,
+            accountId: accountId,
+            broker: brokerForProvider(provider),
+            accessToken: accessToken
+        )
+    }
+
+    private func requestSafetyCancellations(
+        orders: [PendingLiveOrder],
+        provider: String,
+        connectionId: String,
+        account: AccountSummary,
+        deviceId: String,
+        accessToken: String
+    ) async -> Bool {
+        let managed = orders.filter {
+            ["SUBMITTED", "TRACKING", "PARTIALLY_FILLED"].contains($0.state)
+        }
+        guard !managed.isEmpty else { return false }
+        let quotes = provider == "LONGBRIDGE" ? longbridgeQuotes : self.quotes
+        let sourceAt = provider == "LONGBRIDGE" ? longbridgeLastUpdatedAt : brokerLastUpdatedAt
+        let market = provider == "LONGBRIDGE" ? longbridgeMarket : self.market
+        let leaseValid = liveTradingRuntimeByConnection[connectionId]?.lease.map {
+            Self.secondsRemaining($0.expiresAt) > 0
+        } ?? false
+        var requested = false
+        for order in managed {
+            let normalized = BrokerSymbolNormalizer.normalize(order.order.symbol)
+            let quote = quotes.first {
+                BrokerSymbolNormalizer.normalize($0.symbol) == normalized
+            }
+            let reference = order.order.side == "BUY" ? quote?.askPrice : quote?.bidPrice
+            let receipt = try? await brokerForProvider(provider).findOrder(
+                BrokerFindOrderRequest(
+                    intentId: order.intentId,
+                    accountId: account.accountId,
+                    symbol: order.order.symbol,
+                    side: order.order.side,
+                    quantity: order.order.quantity,
+                    limitPrice: order.order.limitPrice,
+                    submittedAfter: order.issuedAt
+                )
+            )
+            guard let signalValidUntil = Self.isoDate(order.signalValidUntil),
+                  let intentExpiresAt = Self.isoDate(order.expiresAt),
+                  let submittedAt = order.submittedAt.flatMap(Self.isoDate),
+                  let limitPrice = Decimal(string: order.order.limitPrice) else {
+                continue
+            }
+            let marketState = (quote?.marketState ?? market?.state)?.uppercased() ?? ""
+            let marketOpen = [
+                "REGULAR", "RTH", "TRADING", "NORMAL", "MORNING", "AFTERNOON",
+                "盘中", "交易中"
+            ].contains(marketState)
+            let reason = ManagedOrderSafetyPolicy.cancellationReason(
+                ManagedOrderSafetyInput(
+                    now: Date(),
+                    signalValidUntil: signalValidUntil,
+                    intentExpiresAt: intentExpiresAt,
+                    submittedAt: submittedAt,
+                    orderType: order.order.orderType,
+                    limitPrice: limitPrice,
+                    latestReferencePrice: reference,
+                    marketDataFresh: sourceAt.map {
+                        Date().timeIntervalSince($0)
+                            <= Double(order.clientRevalidation.quoteMaxAgeMs) / 1_000
+                    } ?? false,
+                    marketSessionOpen: marketOpen,
+                    securityHalted: false,
+                    brokerMarketable: receipt != nil,
+                    accountRiskValid: account.marginCallActive != true,
+                    leaseValid: leaseValid,
+                    connectionActive: isBrokerConnected(provider),
+                    filledQuantity: receipt?.filledQuantity ?? 0,
+                    lastFilledQuantity: receipt?.filledQuantity ?? 0,
+                    lastFillProgressAt: receipt.flatMap { Self.isoDate($0.updatedAt) }
+                )
+            )
+            guard let reason else { continue }
+            do {
+                _ = try await backend.requestPendingOrderCancel(
+                    intentId: order.intentId,
+                    input: PendingOrderDecisionRequest(
+                        deviceId: deviceId,
+                        reasonCode: reason
+                    ),
+                    accessToken: accessToken
+                )
+                requested = true
+            } catch {
+                setLiveTradingStatus(
+                    "安全撤单请求失败：\(error.localizedDescription)",
+                    connectionId: connectionId
+                )
+            }
+        }
+        return requested
+    }
+
+    private func ensureTradingLease(
+        connectionId: String,
+        deviceId: String,
+        accessToken: String
+    ) async throws -> TradingLease {
+        let request = TradingLeaseRequest(
+            deviceId: deviceId,
+            brokerConnectionId: connectionId
+        )
+        let existing = liveTradingRuntimeByConnection[connectionId]?.lease
+        let lease: TradingLease
+        if let existing, Self.secondsRemaining(existing.expiresAt) > 35 {
+            return existing
+        } else if existing != nil {
+            lease = try await backend.renewTradingLease(request, accessToken: accessToken)
+        } else {
+            lease = try await backend.acquireTradingLease(request, accessToken: accessToken)
+        }
+        var runtime = liveTradingRuntimeByConnection[connectionId] ?? LiveTradingRuntimeState()
+        runtime.lease = lease
+        liveTradingRuntimeByConnection[connectionId] = runtime
+        return lease
+    }
+
+    private func renewTradingRuntimeIfNeeded(
+        session: LiveTradingSession,
+        connectionId: String,
+        deviceId: String,
+        accessToken: String
+    ) async throws {
+        _ = try await ensureTradingLease(
+            connectionId: connectionId,
+            deviceId: deviceId,
+            accessToken: accessToken
+        )
+        guard Self.secondsRemaining(session.expiresAt) <= 35 else { return }
+        let renewed = try await backend.renewLiveTradingSession(
+            sessionId: session.sessionId,
+            accessToken: accessToken
+        )
+        var runtime = liveTradingRuntimeByConnection[connectionId] ?? LiveTradingRuntimeState()
+        runtime.session = renewed
+        liveTradingRuntimeByConnection[connectionId] = runtime
+    }
+
+    private func brokerForProvider(_ provider: String) -> any LiveOrderBrokerClient {
+        provider == "LONGBRIDGE" ? longbridgeBroker : broker
+    }
+
+    private func accountForProvider(_ provider: String) -> AccountSummary? {
+        provider == "LONGBRIDGE" ? longbridgeAccount : account
+    }
+
+    private func isBrokerConnected(_ provider: String) -> Bool {
+        provider == "LONGBRIDGE"
+            ? longbridgeBroker.connectionState == .connected
+            : broker.connectionState == .connected
+    }
+
+    private func setLiveTradingStatus(_ message: String, connectionId: String? = nil) {
+        guard let target = connectionId ?? currentBrokerConnectionId else { return }
+        var runtime = liveTradingRuntimeByConnection[target] ?? LiveTradingRuntimeState()
+        runtime.statusMessage = message
+        liveTradingRuntimeByConnection[target] = runtime
+    }
+
+    private static func isManagedOrder(_ order: PendingLiveOrder) -> Bool {
+        [
+            "CLAIMED", "SUBMITTED", "TRACKING", "PARTIALLY_FILLED", "CANCEL_REQUESTED",
+            "CANCEL_PENDING", "CANCEL_UNCERTAIN", "UNKNOWN"
+        ].contains(order.state)
+    }
+
+    private static func secondsRemaining(_ value: String) -> TimeInterval {
+        isoDate(value)?.timeIntervalSinceNow ?? 0
+    }
+
+    private static func isoDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
+            ?? ISO8601DateFormatter().date(from: value)
+    }
+
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func accessTokenIdentity(
+        _ token: String
+    ) throws -> (userId: String, deviceId: String) {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else {
+            throw LiveOrderCoordinatorError.tokenClaimsInvalid
+        }
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        if payload.count % 4 != 0 {
+            payload.append(String(repeating: "=", count: 4 - payload.count % 4))
+        }
+        guard let data = Data(base64Encoded: payload),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let userId = object["sub"] as? String,
+              let deviceId = object["device_id"] as? String else {
+            throw LiveOrderCoordinatorError.tokenClaimsInvalid
+        }
+        return (userId, deviceId)
     }
 
     func enableShadowTrading() async {
@@ -2917,13 +3739,17 @@ final class AppState {
             }
         ) : marketIntelligence
         let positionValues = snapshotPositions.map { position in
-            JSONValue.object([
+            let market = position.symbol.hasPrefix("HK.") ? "HK" : "US"
+            let side = position.quantity < 0 ? "SHORT" : "LONG"
+            let absoluteQuantity = abs(position.quantity)
+            return JSONValue.object([
                 "symbol": .string(position.symbol),
-                "name": .string(position.name),
-                "quantity": .string(position.quantity.description),
+                "market": .string(market),
+                "side": .string(side),
+                "quantity": .string(absoluteQuantity.description),
+                "availableQuantity": .string(absoluteQuantity.description),
                 "costPrice": position.costPrice.map { .string($0.description) } ?? .null,
                 "lastPrice": position.lastPrice.map { .string($0.description) } ?? .null,
-                "todayProfit": position.todayProfit.map { .string($0.description) } ?? .null,
                 "currency": .string(position.currency)
             ])
         }
@@ -2932,27 +3758,18 @@ final class AppState {
         }.map { quote in
             JSONValue.object([
                 "symbol": .string(quote.symbol),
-                "name": .string(quote.name),
+                "market": .string(quote.symbol.hasPrefix("HK.") ? "HK" : "US"),
+                "sourceAt": .string(quote.updateTime ?? ISO8601DateFormatter().string(
+                    from: snapshotSourceAt ?? Date()
+                )),
                 "lastPrice": .string(quote.lastPrice.description),
-                "openPrice": quote.openPrice.map { .string($0.description) } ?? .null,
-                "highPrice": quote.highPrice.map { .string($0.description) } ?? .null,
-                "lowPrice": quote.lowPrice.map { .string($0.description) } ?? .null,
-                "previousClose": quote.previousClose.map {
+                "bidPrice": quote.bidPrice.map { .string($0.description) } ?? .null,
+                "askPrice": quote.askPrice.map { .string($0.description) } ?? .null,
+                "lotSize": quote.lotSize.map { .number(Decimal($0)) } ?? .null,
+                "shortable": quote.shortable.map(JSONValue.bool) ?? .null,
+                "maxShortQuantity": quote.maxShortQuantity.map {
                     .string($0.description)
-                } ?? .null,
-                "volume": quote.volume.map { .string($0.description) } ?? .null,
-                "turnover": quote.turnover.map { .string($0.description) } ?? .null,
-                "updateTime": quote.updateTime.map(JSONValue.string) ?? .null,
-                "preMarketPrice": quote.preMarketPrice.map {
-                    .string($0.description)
-                } ?? .null,
-                "afterHoursPrice": quote.afterHoursPrice.map {
-                    .string($0.description)
-                } ?? .null,
-                "overnightPrice": quote.overnightPrice.map {
-                    .string($0.description)
-                } ?? .null,
-                "marketState": quote.marketState.map(JSONValue.string) ?? .null
+                } ?? .null
             ])
         }
         let barValues = snapshotMinuteBars.filter { bar in
@@ -3010,8 +3827,7 @@ final class AppState {
             guard gap == depthLimitedGap, let requestedSymbolSet else { return true }
             return !requestedSymbolSet.isSubset(of: depthLoadedSymbols)
         }
-        return ContextSnapshot(
-            account: [
+        var accountValue: [String: JSONValue] = [
                 "accountIdHash": .string(accountHash),
                 "broker": .string(provider),
                 "environment": .string(account.environment),
@@ -3027,11 +3843,20 @@ final class AppState {
                     "value": .string(account.buyingPower.description),
                     "currency": .string(account.currency)
                 ])
-            ],
+            ]
+        accountValue["marginAccount"] = account.marginAccount.map(JSONValue.bool) ?? .null
+        accountValue["marginCallActive"] = account.marginCallActive.map(JSONValue.bool) ?? .null
+        accountValue["shortRiskDisclosureAccepted"] =
+            account.shortRiskDisclosureAccepted.map(JSONValue.bool) ?? .null
+        return ContextSnapshot(
+            account: accountValue,
             positions: positionValues,
             marketSessions: [.object([
                 "market": .string(market.name),
-                "state": .string(market.state)
+                "state": .string(market.state),
+                "sourceAt": .string(ISO8601DateFormatter().string(
+                    from: snapshotSourceAt ?? Date()
+                ))
             ])],
             quotes: quoteValues,
             minuteBars: barValues,

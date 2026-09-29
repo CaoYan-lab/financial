@@ -297,6 +297,240 @@ public actor BackendClient {
         )
     }
 
+    public func orderIntentVerificationKeys(
+        accessToken: String
+    ) async throws -> OrderIntentVerificationKeys {
+        try await authenticatedGET(
+            path: "/v1/trading/order-intent-keys",
+            query: [],
+            accessToken: accessToken
+        )
+    }
+
+    public func acquireTradingLease(
+        _ input: TradingLeaseRequest,
+        accessToken: String
+    ) async throws -> TradingLease {
+        try await authenticatedMutation(
+            path: "/v1/trading-lease/acquire",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func renewTradingLease(
+        _ input: TradingLeaseRequest,
+        accessToken: String
+    ) async throws -> TradingLease {
+        try await authenticatedMutation(
+            path: "/v1/trading-lease/renew",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func liveExecutionSetting(
+        provider: String,
+        accessToken: String
+    ) async throws -> LiveExecutionSetting {
+        try await authenticatedGET(
+            path: "/v1/trading/execution-settings",
+            query: [URLQueryItem(name: "provider", value: provider)],
+            accessToken: accessToken
+        )
+    }
+
+    public func updateLiveExecutionSetting(
+        provider: String,
+        input: UpdateLiveExecutionSettingRequest,
+        accessToken: String
+    ) async throws -> LiveExecutionSetting {
+        try await authenticatedMutation(
+            path: "/v1/trading/execution-settings/\(provider)",
+            method: "PUT",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func pendingLiveOrders(
+        brokerConnectionId: String,
+        accessToken: String
+    ) async throws -> [PendingLiveOrder] {
+        let response: ItemList<PendingLiveOrder> = try await authenticatedGET(
+            path: "/v1/pending-orders",
+            query: [URLQueryItem(name: "brokerConnectionId", value: brokerConnectionId)],
+            accessToken: accessToken
+        )
+        return response.items
+    }
+
+    public func claimPendingOrder(
+        intentId: String,
+        input: ClaimPendingOrderRequest,
+        accessToken: String
+    ) async throws -> LiveOrderClaim {
+        try await authenticatedMutation(
+            path: "/v1/pending-orders/\(intentId)/claim",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func beginOrderSubmission(
+        intentId: String,
+        input: BeginOrderSubmissionRequest,
+        accessToken: String
+    ) async throws -> LiveOrderSubmission {
+        try await authenticatedMutation(
+            path: "/v1/pending-orders/\(intentId)/submissions",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [201],
+            accessToken: accessToken
+        )
+    }
+
+    public func recordOrderExecutionResult(
+        executionId: String,
+        input: RecordOrderExecutionResultRequest,
+        accessToken: String
+    ) async throws -> LiveOperationRecorded {
+        try await authenticatedMutation(
+            path: "/v1/order-executions/\(executionId)/result",
+            method: "PUT",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func rejectPendingOrder(
+        intentId: String,
+        input: PendingOrderDecisionRequest,
+        accessToken: String
+    ) async throws -> LiveOrderRejected {
+        try await authenticatedMutation(
+            path: "/v1/pending-orders/\(intentId)/reject",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func requestPendingOrderCancel(
+        intentId: String,
+        input: PendingOrderDecisionRequest,
+        accessToken: String
+    ) async throws -> LiveOrderActionCreated {
+        try await authenticatedMutation(
+            path: "/v1/pending-orders/\(intentId)/cancel-request",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [202],
+            accessToken: accessToken
+        )
+    }
+
+    public func pendingOrderActions(
+        brokerConnectionId: String,
+        accessToken: String
+    ) async throws -> [PendingOrderAction] {
+        let response: ItemList<PendingOrderAction> = try await authenticatedGET(
+            path: "/v1/order-actions",
+            query: [URLQueryItem(name: "brokerConnectionId", value: brokerConnectionId)],
+            accessToken: accessToken
+        )
+        return response.items
+    }
+
+    public func claimOrderAction(
+        actionId: String,
+        input: ClaimOrderActionRequest,
+        accessToken: String
+    ) async throws -> LiveOrderClaim {
+        try await authenticatedMutation(
+            path: "/v1/order-actions/\(actionId)/claim",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func recordOrderActionResult(
+        actionId: String,
+        input: RecordOrderActionResultRequest,
+        accessToken: String
+    ) async throws -> LiveOperationRecorded {
+        try await authenticatedMutation(
+            path: "/v1/order-actions/\(actionId)/result",
+            method: "PUT",
+            body: input,
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func activateLiveTradingSession(
+        _ input: ActivateLiveTradingSessionRequest,
+        accessToken: String
+    ) async throws -> LiveTradingSession {
+        try await authenticatedMutation(
+            path: "/v1/trading-sessions/activate",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [201],
+            accessToken: accessToken
+        )
+    }
+
+    public func renewLiveTradingSession(
+        sessionId: String,
+        accessToken: String
+    ) async throws -> LiveTradingSession {
+        try await authenticatedMutation(
+            path: "/v1/trading-sessions/\(sessionId)/renew",
+            method: "POST",
+            body: EmptyRequest(),
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func deactivateLiveTradingSession(
+        sessionId: String,
+        accessToken: String
+    ) async throws -> LiveTradingSessionDeactivated {
+        try await authenticatedMutation(
+            path: "/v1/trading-sessions/\(sessionId)/deactivate",
+            method: "POST",
+            body: EmptyRequest(),
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func currentLiveTradingSession(
+        brokerConnectionId: String,
+        accessToken: String
+    ) async throws -> LiveTradingSession? {
+        let response: CurrentLiveTradingSession = try await authenticatedGET(
+            path: "/v1/trading-sessions/current",
+            query: [URLQueryItem(name: "brokerConnectionId", value: brokerConnectionId)],
+            accessToken: accessToken
+        )
+        return response.session
+    }
+
     public func researchPool(accessToken: String) async throws -> ServerResearchPool {
         try await authenticatedGET(
             path: "/v1/research/pool",

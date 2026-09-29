@@ -359,6 +359,62 @@ test('单票卖出动作按当前持仓区分平仓卖出和卖空', () => {
   assert.equal(coverResult.signal?.intent, 'BUY_TO_COVER')
 })
 
+test('订单建议只接受与信号和持仓语义一致的正整数限价参数', () => {
+  const now = new Date('2026-09-17T02:00:00.000Z')
+  const context = validEnvelope(now)
+  const base = {
+    responseType: 'SIGNAL',
+    summary: '趋势确认。',
+    evidence: [{ id: 'quote', kind: 'QUOTE', summary: '价格有效', sourceAt: null }],
+    signal: { symbol: 'US.TEST', action: 'BUY', confidence: 0.72 },
+  }
+  const accepted = normalizeModelResult({
+    ...base,
+    proposedOrder: {
+      symbol: 'US.TEST',
+      action: 'BUY',
+      quantity: '2',
+      limitPrice: '100.25',
+    },
+  }, context, resolvedAuthority)
+  assert.deepEqual(accepted.proposedOrder, {
+    symbol: 'US.TEST',
+    action: 'BUY',
+    quantity: '2',
+    limitPrice: '100.25',
+  })
+
+  for (const proposedOrder of [
+    { symbol: 'US.OTHER', action: 'BUY', quantity: '2', limitPrice: '100.25' },
+    { symbol: 'US.TEST', action: 'SELL_SHORT', quantity: '2', limitPrice: '100.25' },
+    { symbol: 'US.TEST', action: 'BUY', quantity: '1.5', limitPrice: '100.25' },
+    { symbol: 'US.TEST', action: 'BUY', quantity: '2', limitPrice: '0' },
+  ]) {
+    assert.equal(normalizeModelResult({
+      ...base,
+      proposedOrder,
+    }, context, resolvedAuthority).proposedOrder, null)
+  }
+})
+
+test('HOLD 不得携带订单建议', () => {
+  const now = new Date('2026-09-17T02:00:00.000Z')
+  const normalized = normalizeModelResult({
+    responseType: 'HOLD',
+    summary: '继续观察。',
+    evidence: [{ id: 'quote', kind: 'QUOTE', summary: '价格有效', sourceAt: null }],
+    signal: { symbol: 'US.TEST', action: 'HOLD', confidence: 0.4 },
+    proposedOrder: {
+      symbol: 'US.TEST',
+      action: 'BUY',
+      quantity: '1',
+      limitPrice: '100',
+    },
+  }, validEnvelope(now), resolvedAuthority)
+
+  assert.equal(normalized.proposedOrder, null)
+})
+
 test('决策上下文限定证据目录并过滤尚未发生的未来开盘缺口', () => {
   const now = new Date('2026-09-17T02:00:00.000Z')
   const context: ContextEnvelope = {

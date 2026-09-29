@@ -98,9 +98,14 @@ export type OrderIntentState =
   | 'CLAIMED'
   | 'SUBMITTING'
   | 'SUBMITTED'
+  | 'TRACKING'
   | 'PARTIALLY_FILLED'
-  | 'FILLED'
   | 'CANCEL_REQUESTED'
+  | 'CANCEL_PENDING'
+  | 'CANCEL_UNCERTAIN'
+  | 'UNKNOWN'
+  | 'SUPERSEDED'
+  | 'FILLED'
   | 'CANCELLED'
   | 'REJECTED'
   | 'FAILED'
@@ -112,8 +117,13 @@ export type OrderIntentEvent =
   | 'ACKNOWLEDGE'
   | 'PARTIAL_FILL'
   | 'FILL'
+  | 'TRACK'
   | 'REQUEST_CANCEL'
+  | 'CANCEL_PENDING'
+  | 'CANCEL_UNCERTAIN'
   | 'CANCEL'
+  | 'MARK_UNKNOWN'
+  | 'SUPERSEDE'
   | 'REJECT'
   | 'FAIL'
   | 'EXPIRE'
@@ -131,6 +141,12 @@ export type ModelRunResult = {
   exitCondition: string | null
   sourceValidUntil: string | null
   orderIntent: Record<string, unknown> | null
+  proposedOrder?: {
+    symbol: string
+    action: 'BUY' | 'BUY_TO_COVER' | 'SELL_TO_CLOSE' | 'SELL_SHORT'
+    quantity: string
+    limitPrice: string
+  } | null
   signal?: {
     symbol: string
     action: 'BUY' | 'SELL' | 'HOLD'

@@ -470,12 +470,17 @@ export class PostgresControlPlaneRepository {
     userId: string
     deviceId: string
     brokerConnectionId: string
+    provider: BrokerProvider
+    hardGateEnabled: boolean
     configVersion: number
     riskPolicyVersion: string
     confirmationDigest: string
     appSessionId: string
     now?: Date
   }): Promise<unknown> {
+    if (!input.hardGateEnabled) {
+      throw new ControlPlaneConflictError('PROVIDER_HARD_GATE_DISABLED')
+    }
     const now = input.now ?? new Date()
     const expiresAt = new Date(now.getTime() + 90_000)
     const client = await this.pool.connect()
@@ -503,8 +508,31 @@ export class PostgresControlPlaneRepository {
          SELECT $1::uuid, c.broker_connection_id, c.user_id, $3::uuid, $4::uuid,
                 'AUTO_EXECUTE', 'ACTIVE', $5, $6, $7, $8::timestamptz
            FROM changfu.trading_configs c
+           JOIN changfu.broker_connections connection
+             ON connection.broker_connection_id = c.broker_connection_id
+           JOIN changfu.user_provider_execution_settings setting
+             ON setting.user_id = c.user_id AND setting.provider = c.provider
           WHERE c.broker_connection_id = $2::uuid AND c.user_id = $9::bigint
-            AND c.version = $5 AND c.confirmation_mode = 'AUTO_EXECUTE_PREFERENCE'
+            AND c.version = $5
+            AND c.provider = $10
+            AND c.confirmation_mode = 'AUTO_EXECUTE_PREFERENCE'
+            AND setting.auto_submit_enabled = true
+            AND connection.user_id = c.user_id
+            AND connection.broker = c.provider
+            AND connection.environment = 'REAL'
+            AND connection.status = 'ACTIVE'
+            AND EXISTS (
+              SELECT 1
+                FROM changfu.subscription_broker_slots slot
+                JOIN changfu.user_subscriptions subscription
+                  ON subscription.subscription_id = slot.subscription_id
+               WHERE slot.user_id = c.user_id
+                 AND slot.provider_id = c.provider
+                 AND slot.status = 'ACTIVE'
+                 AND subscription.status = 'ACTIVE'
+                 AND subscription.starts_at <= $8::timestamptz
+                 AND subscription.expires_at > $8::timestamptz
+            )
          RETURNING session_id`,
         [
           randomUUID(),
@@ -516,6 +544,7 @@ export class PostgresControlPlaneRepository {
           input.confirmationDigest,
           expiresAt,
           input.userId,
+          input.provider,
         ],
       )
       const session = result.rows[0]

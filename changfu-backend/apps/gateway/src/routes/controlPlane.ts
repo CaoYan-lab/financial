@@ -15,6 +15,10 @@ import {
   PostgresControlPlaneRepository,
   type TradingConfigData,
 } from '../../../../packages/persistence/src/postgresControlPlaneRepository.js'
+import {
+  PostgresLiveTradingRepository,
+  type ProviderGate,
+} from '../../../../packages/persistence/src/postgresLiveTradingRepository.js'
 
 const maxControlBodyBytes = 128 * 1024
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -28,6 +32,11 @@ type Context = {
   deviceId: string
   pool: Pool
   catalog: TradingCatalog
+  liveTradingGates: Readonly<Record<'FUTU' | 'LONGBRIDGE', boolean>>
+  orderIntentSigningKeys: ReadonlyArray<{
+    keyId: string
+    publicKey: string
+  }>
 }
 
 function requiredText(value: unknown, maxLength = 128): string | null {
@@ -156,9 +165,253 @@ export async function seedTradingCatalog(pool: Pool, catalog: TradingCatalog): P
 export async function handleControlPlaneRoute(context: Context): Promise<boolean> {
   const { request, response, url, requestId, userId, deviceId, catalog } = context
   const repository = new PostgresControlPlaneRepository(context.pool)
+  const liveTrading = new PostgresLiveTradingRepository(context.pool)
+  const providerGate = (provider: unknown): ProviderGate | null => {
+    if (provider !== 'FUTU' && provider !== 'LONGBRIDGE') return null
+    return {
+      provider,
+      hardGateEnabled: context.liveTradingGates[provider],
+    }
+  }
 
+  if (request.method === 'GET' && url.pathname === '/v1/trading/order-intent-keys') {
+    if (context.orderIntentSigningKeys.length === 0) {
+      sendProblem(response, 503, 'ORDER_INTENT_SIGNING_KEYS_UNAVAILABLE', requestId)
+      return true
+    }
+    sendJson(response, 200, { keys: context.orderIntentSigningKeys })
+    return true
+  }
   if (request.method === 'GET' && url.pathname === '/v1/broker-connections') {
     sendJson(response, 200, { items: await repository.listBrokerConnections(userId) })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/trading/execution-settings') {
+    const gate = providerGate(url.searchParams.get('provider'))
+    if (!gate) {
+      sendProblem(response, 400, 'PROVIDER_INVALID', requestId)
+      return true
+    }
+    sendJson(response, 200, await liveTrading.getExecutionSetting(userId, gate))
+    return true
+  }
+  const executionSettingPut = url.pathname.match(
+    /^\/v1\/trading\/execution-settings\/(?<provider>FUTU|LONGBRIDGE)$/i,
+  )
+  if (request.method === 'PUT' && executionSettingPut?.groups?.provider) {
+    const gate = providerGate(executionSettingPut.groups.provider.toUpperCase())
+    await idempotentJson(
+      context,
+      `trading-execution-settings:${gate!.provider}`,
+      async body => {
+        if (
+          typeof body.autoSubmitEnabled !== 'boolean'
+          || !Number.isInteger(body.expectedVersion)
+          || Number(body.expectedVersion) < 0
+        ) {
+          return { status: 400, body: { code: 'EXECUTION_SETTING_INVALID', requestId } }
+        }
+        return {
+          status: 200,
+          body: await liveTrading.updateExecutionSetting({
+            userId,
+            gate: gate!,
+            autoSubmitEnabled: body.autoSubmitEnabled,
+            expectedVersion: Number(body.expectedVersion),
+          }),
+        }
+      },
+    )
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/pending-orders') {
+    const brokerConnectionId = url.searchParams.get('brokerConnectionId')
+    if (!brokerConnectionId || !uuidPattern.test(brokerConnectionId)) {
+      sendProblem(response, 400, 'BROKER_CONNECTION_INVALID', requestId)
+      return true
+    }
+    sendJson(response, 200, {
+      items: await liveTrading.listPendingOrders(userId, deviceId, brokerConnectionId),
+    })
+    return true
+  }
+  const pendingAction = url.pathname.match(
+    /^\/v1\/pending-orders\/(?<id>[0-9a-f-]+)\/(?<action>claim|submissions|reject|cancel-request)$/i,
+  )
+  if (request.method === 'POST' && pendingAction?.groups?.id && pendingAction.groups.action) {
+    await idempotentJson(
+      context,
+      `pending-orders:${pendingAction.groups.action}:${pendingAction.groups.id}`,
+      async body => {
+        if (body.deviceId !== deviceId) {
+          return { status: 403, body: { code: 'DEVICE_MISMATCH', requestId } }
+        }
+        const intentId = pendingAction.groups!.id!
+        if (pendingAction.groups!.action === 'claim') {
+          const gate = providerGate(body.provider)
+          if (!gate || !Number.isInteger(body.expectedVersion)) {
+            return { status: 400, body: { code: 'ORDER_CLAIM_INVALID', requestId } }
+          }
+          return {
+            status: 200,
+            body: await liveTrading.claimOrder({
+              intentId,
+              userId,
+              deviceId,
+              expectedVersion: Number(body.expectedVersion),
+              gate,
+            }),
+          }
+        }
+        if (pendingAction.groups!.action === 'submissions') {
+          const gate = providerGate(body.provider)
+          const claimToken = requiredText(body.claimToken, 128)
+          const brokerRequestHash = requiredText(body.brokerRequestHash, 64)
+          const idempotencyKey = request.headers['idempotency-key']!.toString()
+          if (
+            !gate
+            || !claimToken
+            || !brokerRequestHash
+            || !/^[a-f0-9]{64}$/.test(brokerRequestHash)
+          ) {
+            return { status: 400, body: { code: 'ORDER_SUBMISSION_INVALID', requestId } }
+          }
+          return {
+            status: 201,
+            body: await liveTrading.beginSubmission({
+              intentId,
+              userId,
+              deviceId,
+              claimToken,
+              idempotencyKey,
+              brokerRequestHash,
+              gate,
+            }),
+          }
+        }
+        const reasonCode = requiredText(body.reasonCode, 100)
+        if (!reasonCode) {
+          return { status: 400, body: { code: 'ORDER_ACTION_INVALID', requestId } }
+        }
+        if (pendingAction.groups!.action === 'reject') {
+          await liveTrading.rejectOrder({ intentId, userId, deviceId, reasonCode })
+          return { status: 200, body: { rejected: true } }
+        }
+        return {
+          status: 202,
+          body: await liveTrading.requestCancel({
+            intentId,
+            userId,
+            deviceId,
+            reasonCode,
+            idempotencyKey: request.headers['idempotency-key']!.toString(),
+          }),
+        }
+      },
+    )
+    return true
+  }
+  const executionResult = url.pathname.match(
+    /^\/v1\/order-executions\/(?<id>[0-9a-f-]+)\/result$/i,
+  )
+  if (request.method === 'PUT' && executionResult?.groups?.id) {
+    await idempotentJson(
+      context,
+      `order-executions:result:${executionResult.groups.id}`,
+      async body => {
+        if (
+          body.deviceId !== deviceId
+          || (body.status !== 'SUBMITTED' && body.status !== 'FAILED' && body.status !== 'UNKNOWN')
+          || (body.brokerOrderId !== undefined && typeof body.brokerOrderId !== 'string')
+          || (body.resultCode !== undefined && typeof body.resultCode !== 'string')
+        ) {
+          return { status: 400, body: { code: 'EXECUTION_RESULT_INVALID', requestId } }
+        }
+        await liveTrading.recordExecutionResult({
+          executionId: executionResult.groups!.id!,
+          userId,
+          deviceId,
+          status: body.status,
+          ...(typeof body.brokerOrderId === 'string'
+            ? { brokerOrderId: body.brokerOrderId }
+            : {}),
+          ...(typeof body.resultCode === 'string'
+            ? { resultCode: body.resultCode }
+            : {}),
+          responseSummary: body.responseSummary,
+        })
+        return { status: 200, body: { recorded: true } }
+      },
+    )
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/order-actions') {
+    const brokerConnectionId = url.searchParams.get('brokerConnectionId')
+    if (!brokerConnectionId || !uuidPattern.test(brokerConnectionId)) {
+      sendProblem(response, 400, 'BROKER_CONNECTION_INVALID', requestId)
+      return true
+    }
+    sendJson(response, 200, {
+      items: await liveTrading.listOrderActions(userId, deviceId, brokerConnectionId),
+    })
+    return true
+  }
+  const orderAction = url.pathname.match(
+    /^\/v1\/order-actions\/(?<id>[0-9a-f-]+)\/(?<action>claim|result)$/i,
+  )
+  if (
+    (request.method === 'POST' || request.method === 'PUT')
+    && orderAction?.groups?.id
+    && orderAction.groups.action
+  ) {
+    await idempotentJson(
+      context,
+      `order-actions:${orderAction.groups.action}:${orderAction.groups.id}`,
+      async body => {
+        if (body.deviceId !== deviceId) {
+          return { status: 403, body: { code: 'DEVICE_MISMATCH', requestId } }
+        }
+        if (orderAction.groups!.action === 'claim') {
+          if (!Number.isInteger(body.expectedVersion)) {
+            return { status: 400, body: { code: 'ORDER_ACTION_CLAIM_INVALID', requestId } }
+          }
+          return {
+            status: 200,
+            body: await liveTrading.claimOrderAction({
+              actionId: orderAction.groups!.id!,
+              userId,
+              deviceId,
+              expectedVersion: Number(body.expectedVersion),
+            }),
+          }
+        }
+        const claimToken = requiredText(body.claimToken, 128)
+        const statuses = [
+          'CANCELLED',
+          'CANCEL_PENDING',
+          'CANCEL_UNCERTAIN',
+          'FILLED',
+          'FAILED',
+        ]
+        if (!claimToken || typeof body.status !== 'string' || !statuses.includes(body.status)) {
+          return { status: 400, body: { code: 'ORDER_ACTION_RESULT_INVALID', requestId } }
+        }
+        await liveTrading.recordOrderActionResult({
+          actionId: orderAction.groups!.id!,
+          userId,
+          deviceId,
+          claimToken,
+          status: body.status as
+            | 'CANCELLED'
+            | 'CANCEL_PENDING'
+            | 'CANCEL_UNCERTAIN'
+            | 'FILLED'
+            | 'FAILED',
+          resultSummary: body.resultSummary,
+        })
+        return { status: 200, body: { recorded: true } }
+      },
+    )
     return true
   }
   if (request.method === 'POST' && url.pathname === '/v1/broker-connections') {
@@ -312,8 +565,10 @@ export async function handleControlPlaneRoute(context: Context): Promise<boolean
       const riskPolicyVersion = requiredText(body.riskPolicyVersion, 64)
       const confirmationDigest = requiredText(body.confirmationDigest, 64)
       const appSessionId = requiredText(body.appSessionId, 64)
+      const gate = providerGate(body.provider)
       if (
         !brokerConnectionId || !uuidPattern.test(brokerConnectionId)
+        || !gate
         || body.deviceId !== deviceId
         || !Number.isInteger(body.configVersion) || Number(body.configVersion) < 1
         || !riskPolicyVersion || !confirmationDigest
@@ -326,6 +581,8 @@ export async function handleControlPlaneRoute(context: Context): Promise<boolean
           userId,
           deviceId,
           brokerConnectionId,
+          provider: gate.provider,
+          hardGateEnabled: gate.hardGateEnabled,
           configVersion: Number(body.configVersion),
           riskPolicyVersion,
           confirmationDigest,

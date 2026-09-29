@@ -69,6 +69,22 @@ test('量化控制面迁移支持双券商且不持久化提示词或凭据', as
   }
 })
 
+test('真实交易迁移提供 Provider 设置、单标的唯一约束和撤单任务', async () => {
+  const sql = await readFile(
+    resolve(root, 'migrations/013_live_trading_execution.sql'),
+    'utf8',
+  )
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS changfu\.user_provider_execution_settings \(/)
+  assert.match(sql, /PRIMARY KEY \(user_id, provider\)/)
+  assert.match(sql, /auto_submit_enabled boolean NOT NULL DEFAULT false/)
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS changfu_pending_orders_active_symbol_idx/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS changfu\.order_actions \(/)
+  assert.match(sql, /'CANCEL_UNCERTAIN'/)
+  for (const forbidden of ['trade_password', 'api_secret', 'access_token', 'private_key']) {
+    assert.equal(sql.toLowerCase().includes(forbidden), false)
+  }
+})
+
 test('订阅迁移按 Provider 隔离标的池并只保存脱敏支付元数据', async () => {
   const sql = await readFile(
     resolve(root, 'migrations/003_subscriptions_provider_pools.sql'),

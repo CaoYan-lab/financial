@@ -98,6 +98,9 @@ public struct AccountSummary: Codable, Equatable, Sendable {
     public let unrealizedProfit: Decimal?
     public let realizedProfit: Decimal?
     public let currency: String
+    public let marginAccount: Bool?
+    public let marginCallActive: Bool?
+    public let shortRiskDisclosureAccepted: Bool?
 
     public init(
         accountId: String,
@@ -107,7 +110,10 @@ public struct AccountSummary: Codable, Equatable, Sendable {
         buyingPower: Decimal,
         unrealizedProfit: Decimal? = nil,
         realizedProfit: Decimal? = nil,
-        currency: String
+        currency: String,
+        marginAccount: Bool? = nil,
+        marginCallActive: Bool? = nil,
+        shortRiskDisclosureAccepted: Bool? = nil
     ) {
         self.accountId = accountId
         self.environment = environment
@@ -117,6 +123,9 @@ public struct AccountSummary: Codable, Equatable, Sendable {
         self.unrealizedProfit = unrealizedProfit
         self.realizedProfit = realizedProfit
         self.currency = currency
+        self.marginAccount = marginAccount
+        self.marginCallActive = marginCallActive
+        self.shortRiskDisclosureAccepted = shortRiskDisclosureAccepted
     }
 
     public var totalProfit: Decimal? {
@@ -185,6 +194,11 @@ public struct QuoteSummary: Codable, Identifiable, Equatable, Sendable {
     public let overnightPrice: Decimal?
     public let marketState: String?
     public let marketStateValue: Int?
+    public let bidPrice: Decimal?
+    public let askPrice: Decimal?
+    public let lotSize: Int?
+    public let shortable: Bool?
+    public let maxShortQuantity: Decimal?
 
     public init(
         symbol: String,
@@ -201,7 +215,12 @@ public struct QuoteSummary: Codable, Identifiable, Equatable, Sendable {
         afterHoursPrice: Decimal? = nil,
         overnightPrice: Decimal? = nil,
         marketState: String? = nil,
-        marketStateValue: Int? = nil
+        marketStateValue: Int? = nil,
+        bidPrice: Decimal? = nil,
+        askPrice: Decimal? = nil,
+        lotSize: Int? = nil,
+        shortable: Bool? = nil,
+        maxShortQuantity: Decimal? = nil
     ) {
         self.symbol = symbol
         self.name = name
@@ -218,6 +237,11 @@ public struct QuoteSummary: Codable, Identifiable, Equatable, Sendable {
         self.overnightPrice = overnightPrice
         self.marketState = marketState
         self.marketStateValue = marketStateValue
+        self.bidPrice = bidPrice
+        self.askPrice = askPrice
+        self.lotSize = lotSize
+        self.shortable = shortable
+        self.maxShortQuantity = maxShortQuantity
     }
 }
 

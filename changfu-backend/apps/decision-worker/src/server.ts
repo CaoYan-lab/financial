@@ -4,6 +4,10 @@ import { existsSync } from 'node:fs'
 import { Pool } from 'pg'
 import { fileURLToPath } from 'node:url'
 import { MAX_ENVELOPE_BYTES } from '../../../packages/domain/src/contextEnvelope.js'
+import {
+  liveTradingGateDigest,
+  readLiveTradingGates,
+} from '../../../packages/domain/src/liveTradingGates.js'
 import type { ContextEnvelope, ModelRunResult } from '../../../packages/domain/src/contracts.js'
 import { loadTradingCatalog } from '../../../packages/catalog/src/tradingCatalog.js'
 import { safeLogger } from '../../../packages/observability/src/safeLogger.js'
@@ -40,6 +44,12 @@ const arkApiKey = process.env.CHANGFU_ARK_API_KEY ?? ''
 const arkModel = process.env.CHANGFU_ARK_MODEL ?? ''
 const arkEndpoint = process.env.CHANGFU_ARK_ENDPOINT ?? 'https://ark.cn-beijing.volces.com/api/v3/responses'
 const modelCredentialKey = process.env.CHANGFU_MODEL_CREDENTIAL_KEY ?? ''
+const orderIntentPrivateKeyPem = process.env.CHANGFU_ORDER_INTENT_PRIVATE_KEY_PEM
+  ?.replaceAll('\\n', '\n') ?? ''
+const orderIntentKeyId = process.env.CHANGFU_ORDER_INTENT_KEY_ID ?? ''
+const liveTradingGates = readLiveTradingGates()
+const liveTradingGateHash = liveTradingGateDigest(liveTradingGates)
+const liveOrderSigningConfigured = Boolean(orderIntentPrivateKeyPem && orderIntentKeyId)
 const maxBodyBytes = MAX_ENVELOPE_BYTES + 128 * 1024
 const maxModelResponseBytes = 4 * 1024 * 1024
 const configuredModelTimeoutMs = Number(process.env.CHANGFU_MODEL_REQUEST_TIMEOUT_MS ?? 300_000)
@@ -114,7 +124,12 @@ function researchSystemPrompt(
       ? [
           '本请求只判断一个授权标的，必须返回 signal，',
           '格式为 {"symbol":"授权标的","action":"BUY|SELL|HOLD","confidence":0到1}。',
-          '候选模式由服务端生成候选记录，不得生成 ID 或订单。',
+          '非 HOLD 时还必须返回 proposedOrder，格式为',
+          '{"symbol":"授权标的","action":"BUY|BUY_TO_COVER|SELL_TO_CLOSE|SELL_SHORT",',
+          '"quantity":"正整数字符串","limitPrice":"正数定点字符串"}；',
+          '动作必须与 signal 和当前直接正股/ETF 持仓一致。',
+          '不得生成账户、券商、环境、订单类型、有效期、ID、签名或真实订单状态；',
+          '这些字段和最终执行权限只由服务端生成。',
         ].join('')
       : authority.role === 'PORTFOLIO_REVIEW'
         ? '返回 portfolioReview；必须对输入中的每个候选恰好分类一次，不得新增候选或修改交易参数。'
@@ -128,7 +143,7 @@ function researchSystemPrompt(
       'gapCatalog 中仅 BLOCKING 强制 HOLD；DEGRADING 只降低置信度，INFORMATIONAL 只披露且不得单独否决趋势信号。',
       'requiredContext 决定本策略硬前置，optionalContext 缺失不得升级为 BLOCKING。次交易日开盘和跳空属于 NOT_YET_OCCURRED，不是采集失败，不得写入 dataGaps。',
       'signal.confidence 表示模型对当前方向判断的置信度，范围 0 到 1；无法给出有效评分时应返回 HOLD 且仍需给出数值 0。',
-      '当前阶段禁止 ORDER_DRAFT，禁止声称已下单、已撤单或已改变券商状态。',
+      '模型不得返回 ORDER_DRAFT 或 orderIntent，禁止声称已下单、已撤单或已改变券商状态。',
       `授权券商：${authority.provider}；授权标的：${authority.requestedSymbols.join('、')}。`,
       outputInstruction,
       authority.prompt.body,
@@ -528,7 +543,11 @@ const server = createServer(async (request, response) => {
       pool
       && internalToken
       && (activeOfficial || environmentOfficialConfig())
-      && modelCredentialKey,
+      && modelCredentialKey
+      && (
+        (!liveTradingGates.FUTU && !liveTradingGates.LONGBRIDGE)
+        || liveOrderSigningConfigured
+      ),
     )
     const database = pool
       ? await pool.query('SELECT 1').then(() => true, () => false)
@@ -539,6 +558,9 @@ const server = createServer(async (request, response) => {
       version: '0.1.0',
       configured,
       database,
+      liveTradingGates,
+      liveTradingGateHash,
+      liveOrderSigningConfigured,
     })
     return
   }
@@ -636,8 +658,11 @@ const server = createServer(async (request, response) => {
       ),
       safeLogger,
       new PostgresDeviceAuthorizer(pool),
-      new PostgresTradingDecisionAuthority(pool, tradingCatalog),
-      new PostgresTradingOutcomeRepository(pool),
+      new PostgresTradingDecisionAuthority(pool, tradingCatalog, liveTradingGates),
+      new PostgresTradingOutcomeRepository(pool, liveOrderSigningConfigured ? {
+        privateKeyPem: orderIntentPrivateKeyPem,
+        keyId: orderIntentKeyId,
+      } : null),
     )
     response.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',

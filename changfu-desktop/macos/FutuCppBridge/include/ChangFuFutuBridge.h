@@ -79,6 +79,55 @@ ChangFuFutuStatus changfu_futu_market_intelligence_json(
     char **json
 );
 
+ChangFuFutuStatus changfu_futu_trade_readiness_json(
+    ChangFuFutuClient *client,
+    const char *account_id,
+    const char *symbol,
+    const char *side,
+    const char *position_effect,
+    const char *order_type,
+    const char *trading_session,
+    const char *time_in_force,
+    double quantity,
+    double limit_price,
+    char **json
+);
+
+ChangFuFutuStatus changfu_futu_place_order_json(
+    ChangFuFutuClient *client,
+    const char *intent_id,
+    const char *account_id,
+    const char *symbol,
+    const char *side,
+    const char *position_effect,
+    const char *order_type,
+    const char *trading_session,
+    const char *time_in_force,
+    double quantity,
+    double limit_price,
+    char **json
+);
+
+ChangFuFutuStatus changfu_futu_cancel_order_json(
+    ChangFuFutuClient *client,
+    const char *intent_id,
+    const char *account_id,
+    const char *broker_order_id,
+    const char *symbol,
+    char **json
+);
+
+ChangFuFutuStatus changfu_futu_find_order_by_intent_json(
+    ChangFuFutuClient *client,
+    const char *intent_id,
+    const char *account_id,
+    const char *symbol,
+    const char *side,
+    double quantity,
+    double limit_price,
+    char **json
+);
+
 void changfu_futu_free_string(char *value);
 const char *changfu_futu_last_error(const ChangFuFutuClient *client);
 
