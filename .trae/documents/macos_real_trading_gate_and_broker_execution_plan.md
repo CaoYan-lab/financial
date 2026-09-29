@@ -595,5 +595,17 @@ macOS：
 - [x] 同一 intent 在重试、超时、重复点击和进程重启下最多生成一个券商订单。
 - [ ] 订单与回执完整落入 AIDAP，Provider/connection/user 全部匹配。
 - [x] 自动化覆盖率门禁通过，普通 CI 零真实下单。
-- [ ] Futu 与 Longbridge 的 AAPL 真实买入及卖空限价单均获得订单号并完成撤单，
+- [x] Futu 与 Longbridge 的 AAPL 真实买入及卖空限价单均获得订单号并完成撤单，
       或明确记录阻断/最终状态。
+
+### 2026-09-30 生产发布与实盘前置检查
+
+- 部署提交 `aa7e20cbc968` 已从 `ECS-0EJj-deploy` 发布；AIDAP migration 013、
+  Worker Revision 4 和 Gateway Revision 3 均完成，双 Provider 门禁为 `true`，
+  Gateway/Worker gate hash 一致，订单签名配置有效。
+- Futu REAL 买入 readiness 通过；卖空因账户处于保证金追缴或高风险状态被券商
+  门禁拒绝。
+- Longbridge REAL 买入 readiness 通过；卖空因最大可卖空数量为 0、无法确认券源
+  被券商门禁拒绝。
+- 因双券商卖空前置条件未全部通过，本轮未提交任何真实订单，也未产生需要撤销的
+  券商订单号或 AIDAP execution/event。待账户风险和券源恢复后重新执行四单验收。
