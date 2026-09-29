@@ -92,6 +92,8 @@ VPC_CONFIG="$(
 )"
 vefaas api UpdateFunction --Id "$FUNCTION_ID" --VpcConfig "$VPC_CONFIG" \
   --region "$REGION" --output json > "$OUT_DIR/function-vpc.result.json"
+vefaas fn release --id "$FUNCTION_ID" \
+  --description "Admin bootstrap" -y -o json > "$OUT_DIR/function-release.result.json"
 
 SERVICE_BODY="$OUT_DIR/service.json"
 jq -n \
@@ -119,10 +121,7 @@ jq -n \
     Comments:"ChangFu Admin veFaaS upstream",
     SourceType:"VeFaas",
     Protocol:"HTTP",
-    UpstreamSpec:{VeFaas:{FunctionId:$functionId}},
-    LoadBalancerSettings:{LbPolicy:"SimpleLB",SimpleLB:"ROUND_ROBIN",WarmupDuration:5},
-    CircuitBreakingSettings:{Enable:true,ConsecutiveErrors:5,Interval:10000,
-      BaseEjectionTime:30000,MaxEjectionPercent:50,MinHealthPercent:50}
+    UpstreamSpec:{VeFaas:{FunctionId:$functionId}}
   }' > "$UPSTREAM_BODY"
 vefaas api CreateUpstream \
   --service apig --api-version 2021-03-03 --region "$REGION" \

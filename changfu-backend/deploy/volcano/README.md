@@ -31,7 +31,8 @@ IDs.
    mode, review `out/admin-bootstrap`, then set
    `CHANGFU_ADMIN_BOOTSTRAP_APPLY=YES`. The script creates only the Admin
    function, service, upstream, and route; it never recreates desktop or Worker
-   APIG resources.
+   APIG resources. Run the database migration first so the Admin runtime role
+   exists before the bootstrap script publishes its initial function revision.
 4. Run `scripts/configure-apig.sh` with its default dry-run behavior. Review the
    generated JSON, then explicitly set `CHANGFU_APIG_APPLY=YES`.
 5. Build and push immutable images with `scripts/build-and-push-image.sh vNN`.
