@@ -36,10 +36,16 @@ NAME="changfu-migrator-$(date +%s)"
 BODY="$(mktemp)"
 RESULT="$(mktemp)"
 FUNCTION_ID=""
+MIGRATION_SUCCEEDED=false
 
 cleanup() {
   rm -f "$BODY" "$RESULT"
   if [[ -n "$FUNCTION_ID" ]]; then
+    if [[ "$MIGRATION_SUCCEEDED" != "true"
+      && "${CHANGFU_KEEP_FAILED_MIGRATOR:-NO}" == "YES" ]]; then
+      echo "retaining failed migrator function for diagnostics: $FUNCTION_ID" >&2
+      return
+    fi
     vefaas api DeleteFunction --Id "$FUNCTION_ID" \
       --region "${VOLCENGINE_REGION:-cn-beijing}" --output json >/dev/null || true
   fi
@@ -149,4 +155,5 @@ jq -e '
   and .data.statusCode == 200
   and (.data.response | fromjson | .ok == true and .migration == "verified")
 ' "$RESULT" >/dev/null
+MIGRATION_SUCCEEDED=true
 echo "database migration and runtime-role verification passed"
