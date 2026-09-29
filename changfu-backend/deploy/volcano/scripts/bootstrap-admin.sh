@@ -155,6 +155,18 @@ ADMIN_ORIGIN="$(
     --jq ".data.services[] | select(.Id == \"$SERVICE_ID\") | .Domains[] | select(.Type == \"public\") | .Domain" \
     -r
 )"
+CURRENT_ENVS="$(
+  vefaas fn info --id "$FUNCTION_ID" -o json --jq '.data.Envs'
+)"
+UPDATED_ENVS="$(
+  jq -c --arg origin "$ADMIN_ORIGIN" '
+    map(select(.Key != "CHANGFU_ADMIN_ORIGIN"))
+    + [{Key:"CHANGFU_ADMIN_ORIGIN",Value:$origin}]
+  ' <<<"$CURRENT_ENVS"
+)"
+vefaas api UpdateFunction --Id "$FUNCTION_ID" --Envs "$UPDATED_ENVS" \
+  --region "$REGION" --output json > "$OUT_DIR/function-origin.result.json"
+
 jq -n \
   --arg functionId "$FUNCTION_ID" \
   --arg serviceId "$SERVICE_ID" \
