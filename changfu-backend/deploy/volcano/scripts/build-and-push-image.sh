@@ -21,12 +21,71 @@ if [[ ! "$RELEASE" =~ ^v[1-9][0-9]*$ ]]; then
   echo "release must match vNN" >&2
   exit 1
 fi
-for command in "$CONTAINER_CLI" jq ve npm; do
+for command in "$CONTAINER_CLI" jq ve npm node; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "missing command: $command" >&2
     exit 1
   }
 done
+
+registry_login() {
+  local auth_json=""
+  local credential_json=""
+  local username=""
+  local token=""
+  local auth_file="${VEFAAS_AUTH_FILE:-${VEFAAS_HOME:-$HOME}/.vefaas/auth.enc}"
+
+  auth_json="$(
+    ve cr GetAuthorizationToken --Registry "$REGISTRY" --output json 2>/dev/null
+  )" || auth_json=""
+
+  if [[ -z "$auth_json" && -r "$auth_file" ]]; then
+    credential_json="$(
+      VEFAAS_AUTH_FILE="$auth_file" node <<'NODE'
+const crypto = require('crypto')
+const fs = require('fs')
+
+const payload = JSON.parse(fs.readFileSync(process.env.VEFAAS_AUTH_FILE, 'utf8'))
+const key = crypto.pbkdf2Sync(
+  'vefaas-cli:credential-store:v1',
+  'vefaas-cli-salt-v1',
+  100_000,
+  32,
+  'sha256',
+)
+const decipher = crypto.createDecipheriv(
+  'aes-256-gcm',
+  key,
+  Buffer.from(payload.iv, 'base64'),
+  { authTagLength: 16 },
+)
+decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
+const credentials = JSON.parse(
+  Buffer.concat([
+    decipher.update(Buffer.from(payload.data, 'base64')),
+    decipher.final(),
+  ]).toString('utf8'),
+)
+process.stdout.write(JSON.stringify({ ak: credentials.ak, sk: credentials.sk }))
+NODE
+    )"
+    auth_json="$(
+      VOLCENGINE_ACCESS_KEY="$(jq -er '.ak' <<<"$credential_json")" \
+      VOLCENGINE_SECRET_KEY="$(jq -er '.sk' <<<"$credential_json")" \
+      VOLCENGINE_REGION="${VOLCENGINE_REGION:-cn-beijing}" \
+        ve cr GetAuthorizationToken --Registry "$REGISTRY" --output json
+    )"
+  fi
+
+  username="$(jq -er '.Result.Username' <<<"$auth_json")"
+  token="$(jq -er '.Result.AuthorizationToken // .Result.Token' <<<"$auth_json")"
+  printf '%s' "$token" |
+    "$CONTAINER_CLI" login \
+      --username "$username" \
+      --password-stdin \
+      "$REGISTRY_ENDPOINT" >/dev/null
+  unset auth_json credential_json username token
+}
 
 if git -C "$BACKEND_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   SHA="$(git -C "$BACKEND_ROOT" rev-parse --short=12 HEAD)"
@@ -76,15 +135,7 @@ npm run check
   -t "$MIGRATOR_IMAGE" \
   .
 
-AUTH_JSON="$(ve cr GetAuthorizationToken --Registry "$REGISTRY" --output json)"
-CR_USERNAME="$(jq -er '.Result.Username' <<<"$AUTH_JSON")"
-CR_TOKEN="$(jq -er '.Result.AuthorizationToken // .Result.Token' <<<"$AUTH_JSON")"
-printf '%s' "$CR_TOKEN" |
-  "$CONTAINER_CLI" login \
-    --username "$CR_USERNAME" \
-    --password-stdin \
-    "$REGISTRY_ENDPOINT" >/dev/null
-unset AUTH_JSON CR_TOKEN CR_USERNAME
+registry_login
 
 "$CONTAINER_CLI" push "$GATEWAY_IMAGE"
 "$CONTAINER_CLI" push "$WORKER_IMAGE"

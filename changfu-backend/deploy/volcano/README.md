@@ -27,6 +27,11 @@ IDs.
    `changfu-admin` must use `CHANGFU_ADMIN_DATABASE_URL`, not the Gateway or
    migration credential. Inject `CHANGFU_ADMIN_INITIAL_PASSWORD` only through a
    secret; it seeds `admin` once and never overwrites an existing account.
+   For the first Admin deployment, run `scripts/bootstrap-admin.sh` in dry-run
+   mode, review `out/admin-bootstrap`, then set
+   `CHANGFU_ADMIN_BOOTSTRAP_APPLY=YES`. The script creates only the Admin
+   function, service, upstream, and route; it never recreates desktop or Worker
+   APIG resources.
 4. Run `scripts/configure-apig.sh` with its default dry-run behavior. Review the
    generated JSON, then explicitly set `CHANGFU_APIG_APPLY=YES`.
 5. Build and push immutable images with `scripts/build-and-push-image.sh vNN`.
