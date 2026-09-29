@@ -428,10 +428,13 @@ function buildRiskInput(
     ? quote.sourceAt
     : typeof quote?.updateTime === 'string' ? quote.updateTime : null
   const quoteAt = quoteSourceAt ? Date.parse(quoteSourceAt) : Number.NaN
+  const capturedAt = Date.parse(context.capturedAt)
   return {
     order,
     instrumentType: authority.instrument?.instrumentType ?? 'UNKNOWN',
-    quoteFresh: Number.isFinite(quoteAt) && Date.now() - quoteAt <= 5_000,
+    quoteFresh: Number.isFinite(quoteAt)
+      && Number.isFinite(capturedAt)
+      && Math.abs(capturedAt - quoteAt) <= 5_000,
     marketOpen: session?.state === 'OPEN',
     hasOpenOrderConflict: hasExternalOpenOrder(context, order.symbol),
     availableBuyingPower: numeric(buyingPower?.value),

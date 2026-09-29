@@ -931,3 +931,33 @@ test('缺少行情对象时通过风险结果拒绝订单而非抛出异常', as
   assert.equal(persisted.orderIntent, null)
   assert.ok(persisted.risks.includes('LIVE_ORDER_RISK_QUOTE_STALE'))
 })
+
+test('模型耗时超过五秒时按上下文采集时点校验行情新鲜度', async () => {
+  const capturedAt = new Date(Date.now() - 120_000)
+  const fake = fakeOutcomePool(async sql => sql.includes(
+    'SELECT intent_id, device_id, state, order_spec',
+  )
+    ? { rows: [], rowCount: 0 }
+    : { rows: [], rowCount: 1 })
+  const delayedResult = {
+    ...result(capturedAt),
+    sourceValidUntil: new Date(Date.now() + 60_000).toISOString(),
+  }
+  const persisted = await new PostgresTradingOutcomeRepository(
+    fake.pool,
+    signingConfig(),
+  ).persist({
+    userId,
+    context: context(capturedAt),
+    authority: authority(),
+    result: delayedResult,
+  })
+
+  assert.equal(persisted.responseType, 'ORDER_DRAFT')
+  assert.notEqual(persisted.orderIntent, null)
+  assert.equal(
+    fake.calls.some(call => call.sql.includes('INSERT INTO changfu.pending_orders')),
+    true,
+  )
+  assert.equal(persisted.risks.includes('LIVE_ORDER_RISK_QUOTE_STALE'), false)
+})
