@@ -282,7 +282,7 @@ try {
   )
   const allowedCloudUserUpdates = roleKind === 'admin'
     ? new Set(['username', 'password_hash', 'last_login_at'])
-    : new Set(['last_login_at'])
+    : new Set(['password_hash', 'last_login_at'])
   for (const column of cloudUserColumns.rows) {
     const expected = allowedCloudUserUpdates.has(column.column_name)
     if (column.can_update !== expected) {

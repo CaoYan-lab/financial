@@ -173,6 +173,29 @@ test('管理端写操作幂等键使用独立增量迁移且不保存响应正�
   assert.equal(sql.includes('response_body'), false)
 })
 
+test('数据库权限验证与运行账号列级授权保持一致', async () => {
+  const grants = await readFile(
+    resolve(root, 'scripts/apply-runtime-grants.ts'),
+    'utf8',
+  )
+  const verifier = await readFile(
+    resolve(root, 'scripts/verify-database.ts'),
+    'utf8',
+  )
+  assert.match(
+    grants,
+    /GRANT UPDATE \(password_hash, last_login_at\) ON TABLE public\.cloud_users/,
+  )
+  assert.match(
+    verifier,
+    /new Set\(\['password_hash', 'last_login_at'\]\)/,
+  )
+  assert.match(
+    verifier,
+    /new Set\(\['username', 'password_hash', 'last_login_at'\]\)/,
+  )
+})
+
 test('模型运行审计只新增请求标的而不保存原始上下文', async () => {
   const sql = await readFile(
     resolve(root, 'migrations/005_model_run_requested_symbols.sql'),
