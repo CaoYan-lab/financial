@@ -1384,6 +1384,15 @@ private struct LiveTradingSettingsSheet: View {
             autoSubmitEnabled = state.isCurrentAutoSubmitEnabled
             didLoad = true
         }
+        .onChange(of: state.isCurrentAutoSubmitEnabled) { _, enabled in
+            guard !isSaving, !showEnableConfirmation else { return }
+            didLoad = false
+            autoSubmitEnabled = enabled
+            Task {
+                await Task.yield()
+                didLoad = true
+            }
+        }
         .alert("确认启用自动提交", isPresented: $showEnableConfirmation) {
             Button("取消", role: .cancel) {
                 autoSubmitEnabled = false

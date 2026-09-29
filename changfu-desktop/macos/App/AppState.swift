@@ -237,6 +237,7 @@ final class AppState {
     private let credentials: SecureCredentialStore
     private let providerPoolCache: ProviderPoolCache
     private let defaults: UserDefaults
+    private let autoSubmitPreferences: AutoSubmitPreferenceStore
     private var authenticationSession: AuthenticationSession?
     private var authenticationRefreshTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
@@ -248,6 +249,7 @@ final class AppState {
     private var longbridgeBrokerConnectionId: String?
     private var activeProviderPoolCacheNamespace: String?
     private var contextSequence = 0
+    private var futuSnapshotBlockedUntil: Date?
     private var liveOrderCoordinator: LiveOrderCoordinator
     private var managedOrderSupervisor: ManagedOrderSupervisor
 
@@ -273,6 +275,7 @@ final class AppState {
         self.longbridgeBroker = longbridgeBroker
             ?? LongbridgeBrokerClient(credentialStore: credentials)
         self.defaults = defaults
+        autoSubmitPreferences = AutoSubmitPreferenceStore(defaults: defaults)
         self.credentials = credentials
         self.providerPoolCache = providerPoolCache
         cloudEnvironment = configuredCloud
@@ -441,7 +444,18 @@ final class AppState {
     }
 
     var isCurrentAutoSubmitEnabled: Bool {
-        currentLiveExecutionSetting?.autoSubmitEnabled == true
+        if let setting = currentLiveExecutionSetting {
+            return setting.autoSubmitEnabled
+        }
+        guard let accessToken = authenticationSession?.accessToken else {
+            return false
+        }
+        return autoSubmitPreferences.value(
+            for: autoSubmitPreferenceScope(
+                accessToken: accessToken,
+                provider: currentProviderId
+            )
+        ) ?? false
     }
 
     var shadowModelRuns: [ModelRunSummary] {
@@ -861,6 +875,7 @@ final class AppState {
         brokerDataGaps = []
         isRefreshingBroker = false
         brokerLastUpdatedAt = nil
+        futuSnapshotBlockedUntil = nil
         marketIntelligence = nil
         isRefreshingMarketIntelligence = false
         marketIntelligenceStatusMessage = nil
@@ -2097,9 +2112,16 @@ final class AppState {
         }
     }
 
-    func refreshBrokerData() async {
+    func refreshBrokerData(force: Bool = false) async {
+        let now = Date()
         guard !isRefreshingBroker,
-              !sellPutRunState(for: "FUTU").isRunning else { return }
+              !sellPutRunState(for: "FUTU").isRunning,
+              LiveTradingBrokerRefreshPolicy.shouldRefreshSnapshot(
+                  lastUpdatedAt: brokerLastUpdatedAt,
+                  blockedUntil: futuSnapshotBlockedUntil,
+                  now: now,
+                  force: force
+              ) else { return }
         isRefreshingBroker = true
         defer { isRefreshingBroker = false }
         do {
@@ -2129,9 +2151,15 @@ final class AppState {
             historicalDeals = snapshot.historicalDeals
             brokerDataGaps = snapshot.dataGaps
             brokerLastUpdatedAt = Date()
+            futuSnapshotBlockedUntil = nil
             try await registerBrokerConnectionIfNeeded(snapshot.account)
             statusMessage = nil
         } catch {
+            if Self.isFutuRateLimitError(error) {
+                futuSnapshotBlockedUntil = Date().addingTimeInterval(
+                    LiveTradingBrokerRefreshPolicy.rateLimitBackoff
+                )
+            }
             statusMessage = error.localizedDescription
         }
     }
@@ -2434,10 +2462,12 @@ final class AppState {
                         accessToken: accessToken
                     )
             }
-            liveExecutionSettings[provider] = try await backend.liveExecutionSetting(
+            let setting = try await backend.liveExecutionSetting(
                 provider: provider,
                 accessToken: accessToken
             )
+            liveExecutionSettings[provider] = setting
+            saveAutoSubmitPreference(setting.autoSubmitEnabled, provider: provider)
             await refreshShadowHistory(connectionId: connectionId, accessToken: accessToken)
             await refreshLiveTradingState(
                 connectionId: connectionId,
@@ -2463,8 +2493,11 @@ final class AppState {
                     provider: provider,
                     accessToken: accessToken
                 )
+                if let setting = liveExecutionSettings[provider] {
+                    saveAutoSubmitPreference(setting.autoSubmitEnabled, provider: provider)
+                }
             } catch {
-                liveExecutionSettings.removeValue(forKey: provider)
+                continue
             }
         }
     }
@@ -2485,6 +2518,7 @@ final class AppState {
                 accessToken: accessToken
             )
             liveExecutionSettings[provider] = currentSetting
+            saveAutoSubmitPreference(currentSetting.autoSubmitEnabled, provider: provider)
         } catch {
             setLiveTradingStatus("真实交易设置读取失败：\(error.localizedDescription)")
             return false
@@ -2528,43 +2562,50 @@ final class AppState {
                 accessToken: accessToken
             )
             liveExecutionSettings[provider] = setting
+            saveAutoSubmitPreference(setting.autoSubmitEnabled, provider: provider)
             if enabled {
-                let lease = try await backend.acquireTradingLease(
-                    TradingLeaseRequest(
-                        deviceId: identity.deviceId,
-                        brokerConnectionId: connectionId
-                    ),
-                    accessToken: accessToken
-                )
-                let disclosure = [
-                    provider,
-                    account.accountId,
-                    String(savedConfig.version),
-                    savedConfig.riskPolicyId,
-                    "AUTO_EXECUTE",
-                    "60s-intent",
-                    "90s-session",
-                    "15bps"
-                ].joined(separator: "|")
-                let appSessionId = UUID().uuidString.lowercased()
-                let session = try await backend.activateLiveTradingSession(
-                    ActivateLiveTradingSessionRequest(
-                        brokerConnectionId: connectionId,
-                        provider: provider,
-                        deviceId: identity.deviceId,
-                        configVersion: savedConfig.version,
-                        riskPolicyVersion: savedConfig.riskPolicyId,
-                        confirmationDigest: Self.sha256(disclosure),
-                        appSessionId: appSessionId
-                    ),
-                    accessToken: accessToken
-                )
-                var runtime = liveTradingRuntimeByConnection[connectionId]
-                    ?? LiveTradingRuntimeState()
-                runtime.lease = lease
-                runtime.session = session
-                runtime.statusMessage = "自动提交会话已启用"
-                liveTradingRuntimeByConnection[connectionId] = runtime
+                do {
+                    let lease = try await backend.acquireTradingLease(
+                        TradingLeaseRequest(
+                            deviceId: identity.deviceId,
+                            brokerConnectionId: connectionId
+                        ),
+                        accessToken: accessToken
+                    )
+                    let disclosure = [
+                        provider,
+                        account.accountId,
+                        String(savedConfig.version),
+                        savedConfig.riskPolicyId,
+                        "AUTO_EXECUTE",
+                        "60s-intent",
+                        "90s-session",
+                        "15bps"
+                    ].joined(separator: "|")
+                    let appSessionId = UUID().uuidString.lowercased()
+                    let session = try await backend.activateLiveTradingSession(
+                        ActivateLiveTradingSessionRequest(
+                            brokerConnectionId: connectionId,
+                            provider: provider,
+                            deviceId: identity.deviceId,
+                            configVersion: savedConfig.version,
+                            riskPolicyVersion: savedConfig.riskPolicyId,
+                            confirmationDigest: Self.sha256(disclosure),
+                            appSessionId: appSessionId
+                        ),
+                        accessToken: accessToken
+                    )
+                    var runtime = liveTradingRuntimeByConnection[connectionId]
+                        ?? LiveTradingRuntimeState()
+                    runtime.lease = lease
+                    runtime.session = session
+                    runtime.statusMessage = "自动提交会话已启用"
+                    liveTradingRuntimeByConnection[connectionId] = runtime
+                } catch {
+                    setLiveTradingStatus(
+                        "自动提交偏好已保存，会话启动失败：\(error.localizedDescription)"
+                    )
+                }
             } else {
                 if let session = liveTradingRuntimeByConnection[connectionId]?.session {
                     _ = try? await backend.deactivateLiveTradingSession(
@@ -2712,6 +2753,13 @@ final class AppState {
                     deviceId: identity.deviceId,
                     accessToken: accessToken
                 )
+            }
+            let requiresBrokerSnapshot =
+                LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
+                    hasPendingActions: !values.1.isEmpty,
+                    hasManagedOrders: values.0.contains(where: Self.isManagedOrder)
+                )
+            if requiresBrokerSnapshot {
                 if provider == "LONGBRIDGE" {
                     await refreshLongbridgeData()
                 } else {
@@ -2786,7 +2834,7 @@ final class AppState {
             if pending.provider == "LONGBRIDGE" {
                 await refreshLongbridgeData()
             } else {
-                await refreshBrokerData()
+                await refreshBrokerData(force: true)
             }
             guard let account = accountForProvider(pending.provider) else {
                 throw AppInteractionError.liveOrderValidationFailed("账户快照不可用")
@@ -3114,9 +3162,38 @@ final class AppState {
 
     private static func isManagedOrder(_ order: PendingLiveOrder) -> Bool {
         [
-            "CLAIMED", "SUBMITTED", "TRACKING", "PARTIALLY_FILLED", "CANCEL_REQUESTED",
-            "CANCEL_PENDING", "CANCEL_UNCERTAIN", "UNKNOWN"
+            "CLAIMED", "SUBMITTING", "SUBMITTED", "TRACKING", "PARTIALLY_FILLED",
+            "CANCEL_REQUESTED", "CANCEL_PENDING", "CANCEL_UNCERTAIN", "UNKNOWN"
         ].contains(order.state)
+    }
+
+    private static func isFutuRateLimitError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("high frequency")
+            || message.contains("maximum 10 times per 30 seconds")
+            || message.contains("限频")
+    }
+
+    private func autoSubmitPreferenceScope(
+        accessToken: String,
+        provider: String
+    ) -> AutoSubmitPreferenceScope {
+        AutoSubmitPreferenceScope(
+            backend: Self.sha256(backendEnvironment.baseURL.absoluteString),
+            user: providerPoolCacheNamespace(accessToken: accessToken),
+            provider: provider
+        )
+    }
+
+    private func saveAutoSubmitPreference(_ enabled: Bool, provider: String) {
+        guard let accessToken = authenticationSession?.accessToken else { return }
+        autoSubmitPreferences.set(
+            enabled,
+            for: autoSubmitPreferenceScope(
+                accessToken: accessToken,
+                provider: provider
+            )
+        )
     }
 
     private static func secondsRemaining(_ value: String) -> TimeInterval {

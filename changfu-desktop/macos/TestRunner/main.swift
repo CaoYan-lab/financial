@@ -26,6 +26,7 @@ struct ChangFuDesktopTests {
         }
         if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "live-order" {
             runOrderIntentTests(&suite)
+            runLiveTradingLocalStateTests(&suite)
             await runLiveOrderCoordinatorTests(&suite)
             suite.finish()
         }
@@ -35,6 +36,7 @@ struct ChangFuDesktopTests {
         runSubscriptionAndTradingModelTests(&suite)
         runContextEnvelopeTests(&suite)
         runOrderIntentTests(&suite)
+        runLiveTradingLocalStateTests(&suite)
         runAuthenticationTests(&suite)
         await runBackendClientTests(&suite)
         await runLiveOrderCoordinatorTests(&suite)
@@ -1420,6 +1422,80 @@ struct ChangFuDesktopTests {
             return ManagedOrderSafetyPolicy.cancellationReason(base) == nil
                 && ManagedOrderSafetyPolicy.cancellationReason(expired) == "SIGNAL_EXPIRED"
                 && ManagedOrderSafetyPolicy.cancellationReason(timedOut) == "FILL_TIMEOUT"
+        }
+    }
+
+    private static func runLiveTradingLocalStateTests(_ suite: inout TestSuite) {
+        let suiteName = "com.changfu.desktop.tests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            suite.fail("自动交易本地偏好测试初始化", detail: "无法创建隔离 UserDefaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AutoSubmitPreferenceStore(defaults: defaults)
+        let futuUserA = AutoSubmitPreferenceScope(
+            backend: "cloud-a",
+            user: "user-a",
+            provider: "FUTU"
+        )
+        let longbridgeUserA = AutoSubmitPreferenceScope(
+            backend: "cloud-a",
+            user: "user-a",
+            provider: "LONGBRIDGE"
+        )
+        let futuUserB = AutoSubmitPreferenceScope(
+            backend: "cloud-a",
+            user: "user-b",
+            provider: "FUTU"
+        )
+        let futuDebugUserA = AutoSubmitPreferenceScope(
+            backend: "debug",
+            user: "user-a",
+            provider: "FUTU"
+        )
+        store.set(true, for: futuUserA)
+        store.set(false, for: longbridgeUserA)
+
+        suite.test("自动交易偏好按后台、用户与券商隔离") {
+            store.value(for: futuUserA) == true
+                && store.value(for: longbridgeUserA) == false
+                && store.value(for: futuUserB) == nil
+                && store.value(for: futuDebugUserA) == nil
+        }
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        suite.test("Futu 快照刷新执行最小间隔与限频退避") {
+            !LiveTradingBrokerRefreshPolicy.shouldRefreshSnapshot(
+                lastUpdatedAt: now.addingTimeInterval(-5),
+                blockedUntil: nil,
+                now: now
+            )
+                && LiveTradingBrokerRefreshPolicy.shouldRefreshSnapshot(
+                    lastUpdatedAt: now.addingTimeInterval(-11),
+                    blockedUntil: nil,
+                    now: now
+                )
+                && !LiveTradingBrokerRefreshPolicy.shouldRefreshSnapshot(
+                    lastUpdatedAt: now.addingTimeInterval(-60),
+                    blockedUntil: now.addingTimeInterval(20),
+                    now: now,
+                    force: true
+                )
+        }
+
+        suite.test("仅自动交易会话存活时监管不刷新券商快照") {
+            !LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
+                hasPendingActions: false,
+                hasManagedOrders: false
+            )
+                && LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
+                    hasPendingActions: true,
+                    hasManagedOrders: false
+                )
+                && LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
+                    hasPendingActions: false,
+                    hasManagedOrders: true
+                )
         }
     }
 
