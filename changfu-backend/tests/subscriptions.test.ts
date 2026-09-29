@@ -210,7 +210,9 @@ test('订阅目录事务完整写入 Provider、套餐和九个价格', async ()
     loaded.providers.length,
   )
   assert.equal(
-    statements.filter(statement => statement.includes('subscription_plan_versions')).length,
+    statements.filter(statement => (
+      statement.startsWith('INSERT INTO changfu.subscription_plan_versions')
+    )).length,
     loaded.plans.length,
   )
   assert.equal(

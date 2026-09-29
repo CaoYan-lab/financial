@@ -1302,6 +1302,8 @@ Windows：
 5. **本轮作用域**：能力列表严格从发送瞬间的正文 mention 解析，不读取上轮状态和 UserDefaults。删除 mention 必须同步移除能力标签；发送后输入框清空，下一轮重新选择。
 6. **Tool Call 上下文**：本轮被 `@` 的能力共享当前对话标的集合，但各自携带独立类型、模型档位、提示词版本和工具策略；不得绕过标的池临时输入任意代码。
 7. **SELL PUT 执行与归档**：SELL PUT 研究不得新增左侧一级工作区或独立标的池入口；用户直接在研究页技能模块执行。系统自动同步在 NYSE/NASDAQ 交易的全球市值 Top30 专属标的池，每个标的保留独立请求与 `request_id`，并按 OpenD 期权链 30 秒最多 10 次的限制分批并发采集，禁止一次并发 30 条导致限流缺口；若外部页面占用频率窗口，受影响标的保持原 `request_id` 等待窗口后最多重试两次。报告复用 Web Prompt v3；模型超时或不可用时必须先落库并返回确定性审计报告，不能阻断其余标的数据缺口与候选结果。结果统一展示在“策略中心 → 报告”模块，数据库中的 `bigint` 版本号对桌面 API 必须序列化为整数。
+8. **SELL PUT 套餐门禁**：只有有效套餐且当前 Provider 占用有效券商槽位时才允许同步 Top30、修改专属池或创建报告。研究页按钮、`AppState` 启动函数和 Gateway 写接口必须分别校验并失败关闭；无套餐时不得先调用云端同步接口再以通用“服务不可用”收口。
+9. **券商代码规范化**：Futu 的市场前缀必须幂等，`US.US.NVDA`、`HK.HK.00700` 等历史脏值在客户端读取、Gateway 写入和数据库迁移层统一收敛为单一前缀，同时保留 `US.BRK.B` 等代码内部的点号。报价与分钟线关联前必须使用同一规范化口径。
 
 #### 签名上下文
 
@@ -1471,19 +1473,28 @@ Windows：
 | 账户资产、现金、购买力 | OpenD | CLI `assets` |
 | 持仓与成本 | OpenD | CLI `positions` |
 | 基本报价与昨收 | OpenD | CLI `quote` |
-| 盘前、盘后、夜盘价 | OpenD 快照 | CLI 扩展报价字段 |
-| 市场状态 | OpenD 市场状态 | CLI `market-status` |
+| 盘前、盘后、夜盘价 | OpenD 快照 | CLI 新旧扩展报价字段 |
+| 市场状态 | OpenD 市场状态 | CLI `market-status` 与有效扩展报价联合判定 |
 | 当前/历史订单 | OpenD | CLI `order` |
 | 当前/历史成交 | OpenD | CLI `order executions` |
 | 分钟线、逐笔、盘口 | 已接入 | 当前明确显示未接入 |
 | 下单、撤单、改单 | 当前 UI 关闭 | 禁止 |
 
+Longbridge 的交易所级 `market-status` 只表示常规交易时段是否开市，
+`Closed` 不得直接覆盖美股标的的盘前、盘后或夜盘状态。Host 必须兼容
+`pre_market_quote` / `post_market_quote` / `overnight_quote` 与
+`pre_market` / `post_market` / `overnight` 两组字段；证券状态 `Normal`
+只表示证券可正常交易，不得映射为“盘中”。当美股常规盘关闭时，Host
+按纽约时区和对应扩展报价时间戳判定当前会话，并统一输出“盘前”“盘后”
+或“夜盘”；过期扩展报价不得使周末或休市日误显示为交易中。顶栏市场状态、
+标的详情和量化评估门禁必须消费同一份归一化结果。
+
 ### 17.5 验收与测试
 
 * Longbridge 未安装、CLI 不可执行、未授权、授权过期、命令超时、非 JSON 输出和部分字段缺失均有确定错误状态，且不影响 Futu 已加载快照。
-* JSON 解析覆盖数字字符串、数字值、空值、字段别名、空数组和扩展时段报价；不可解析的关键金额不得静默变成 0。
+* JSON 解析覆盖数字字符串、数字值、空值、字段别名、空数组和新旧扩展时段报价；不可解析的关键金额不得静默变成 0。
 * 平台切换、并发刷新和定时刷新测试证明 Futu 与 Longbridge 状态互不污染。
-* 美股夜盘/盘前/盘中/盘后与港股会话状态分别验证，不允许跨市场继承。
+* 美股夜盘/盘前/盘中/盘后与港股会话状态分别验证，不允许跨市场继承；交易所返回 `Closed` 但美股扩展报价有效时，回归测试必须保留真实扩展会话。
 * 六工作区在常见窗口尺寸下与 Futu 模块顺序、高度和密度一致；授权空态不改变主布局。
 * 领域层行覆盖率保持 100%，Backend 覆盖率保持高于 90%；客户端、Host、UI 静态契约、打包和本地签名全部通过后才进入本地可用基线。
 
@@ -1567,7 +1578,9 @@ Windows：
 * Provider 管理器按 Futu/Longbridge 分区，分别展示容量、替换额度、池版本与冻结状态；同一经济标的在两家券商的原始代码分别存储和计数。
 * Futu 与 Longbridge Host 统一提供能力探测、证券搜索、期权到期日和期权链。桌面支持 STOCK、ETF、CALL、PUT；期权可加入研究池但不能进入交易决策。
 * Futu 与 Longbridge 统一支持代码、中文名和英文名模糊搜索。Futu 优先调用 `GetSearchQuote(3262)`；旧版 OpenD 缺少该协议时，通过 `GetStaticInfo(3202)` 拉取所选市场静态目录并在本地匹配代码/名称。若本地目录无结果，Host 仅访问固定 HTTPS 别名索引获取候选，再分别交由 Futu `GetStaticInfo(3202)` 或 Longbridge `static` 精确验证；未经券商确认的候选不得展示或入池。标准券商代码仍走精确直查，真实连接或授权错误不得被模糊搜索降级吞掉。
+* Longbridge CLI `static` 的有效响应可能不包含 `security_type`。此时 Host 必须使用别名索引的 `TypeUS`/名称分类，或用户精确限定的单一证券类型完成类型确认；不得在已由 Longbridge 精确验证代码、市场、名称和币种后，仅因 CLI 缺少该冗余字段把标的标记为不可添加。`TypeUS=5` 或名称含 ETF 按 ETF 处理，普通美股按 STOCK 处理。
 * 每次发起证券搜索及搜索失败时立即清空上一轮结果和时间戳，禁止错误状态继续展示旧标的。
+* 新建普通用户与历史 admin 测试用户必须经过同一端到端验收：套餐有效、Provider 槽位 ACTIVE、双券商连接与交易配置已初始化、空标的池可首次搜索并新增。已有池数据不能替代首次新增路径测试，禁止把历史预置状态误当成新用户功能正常。
 * 首次登录后并发读取订阅与 Provider 池。完整分页快照按用户 ID 哈希写入 macOS Application Support，目录权限 `0700`、文件权限 `0600`、原子写入；退出登录清除当前用户缓存。
 * 缓存命中先只读展示，再通过 ETag 在线校验。未完成在线 ACTIVE 校验时，新增、删除、研究请求和影子量化全部关闭，缓存不能授予权益。
 * 当前平台只使用对应 Provider 池生成 `/` 候选和模型上下文；Futu 与 Longbridge 池不得合并。`/全部` 超过 100 条时稳定拆成每批最多 100 条的独立模型请求，服务端仍逐批复核池版本和成员关系。
@@ -1580,7 +1593,7 @@ Windows：
 * 15 个 JSON Schema、2 个签名黄金样例、OpenAPI 隐私/幂等边界检查通过。
 * Swift 主程序构建、UI 契约和 74 项离线桌面测试通过；连接真实 OpenD 后共 80 项通过，额外覆盖握手、账户快照、行情一致性及 Futu 池标的优先行情加载。
 * LLVM 覆盖率按 `ChangFuDomain` 目标统计，329 个区域、134 个函数、958 行均为 100%，满足领域层 100% 门禁。
-* 当前机器 Longbridge 仍未授权；三种支付渠道未配置正式或沙箱商户凭据。以上验收不代表真实 Longbridge 搜索/期权链或微信、支付宝、抖音支付联调完成。
+* 当前机器已使用本地 Keychain 三字段凭据完成 Longbridge 真实证券静态信息与搜索联调；三种支付渠道仍未配置正式或沙箱商户凭据。支付验收不代表微信、支付宝、抖音支付联调完成。
 
 ## 二十、2026-09-19 旗舰版第三方模型 OpenAPI 接入
 
@@ -1744,6 +1757,8 @@ Futu 与 Longbridge 的 SELL PUT 标的池、报告历史、当前报告和详�
 
 SELL PUT 的加载状态、执行状态、完成数量、总数量和状态消息同样必须按 `provider_id` 独立保存。切换平台只读取当前 Provider 的运行态；Longbridge 运行时 Futu 不得显示“正在生成报告”，反之亦然。同一 Provider 禁止重复启动，Futu 与 Longbridge 可分别运行，后台任务始终写回其发起 Provider 的状态。
 
+每批开始时必须显示明确的起止序号，最后一批不得继续停留在“已采集 24/30”；30 个 observation 收齐后立即切换为“已采集 30/30，正在生成报告”。频率窗口等待必须传播任务取消，单标的采集预算为 180 秒，超时后写入带原 `request_id` 的不可用 observation，不得无限阻塞整批。
+
 Longbridge 正式采集前必须使用当前 App Key 对真实 Top30 标的完成正股报价、目标到期日、PUT 期权链和期权快照预检。`301604 no quote access` 等行情权限错误必须立即停止且不创建报告，并明确提示缺少美股或美股期权行情权限；连续 HTTP 500 在有限重试后停止，不得生成 30 条全不可用记录。桌面内部的 `US.AAPL` 等规范代码进入 Longbridge Host 后必须转换为 SDK 所需的 `AAPL.US` 格式，响应仍保留桌面规范代码。期权链静态合约信息必须分块查询，避免 `301607 request too many symbols`；任何失败都不得回退或混用 Futu 数据。
 
 ## 二十二、2026-09-28 veFaaS/APIG/RDS 部署与 Debug 环境切换
@@ -1764,8 +1779,10 @@ Upstream 为 `changfu-gateway-vefaas`，只匹配 `/v1`。首次发布使用 API
 Gateway 到 Worker 的现行协议为私网 HTTPS、内部 Bearer Token 和 NDJSON；
 mTLS/gRPC 仅为后续强化项。
 
-Gateway 请求超时为 360 秒，Gateway 到 Worker 和桌面模型/报告请求上限为 330 秒，
-Worker 模型调用上限为 300 秒。本节替代 21.1 中客户端 195 秒的旧值。Gateway
+Gateway 请求超时为 360 秒，Gateway 到 Worker 上限为 330 秒，桌面模型请求上限为
+330 秒，桌面 SELL PUT 报告请求上限为 360 秒，Worker 模型调用上限为 300 秒。
+桌面报告请求必须为 Gateway 的 Worker 降级和报告落库留出响应余量。本节替代 21.1
+中客户端 195 秒的旧值。Gateway
 `/v1/ready` 必须同时验证 PostgreSQL 与 Worker；Worker health 必须验证 PostgreSQL，
 但二者都不得返回连接地址、Secret 或上游错误正文。
 
@@ -1775,9 +1792,11 @@ Worker 模型调用上限为 300 秒。本节替代 21.1 中客户端 195 秒的
 `multiuser.user_profiles` 为唯一身份事实来源。AIDAP 创建的 `changfu_app`
 因被平台强制授予 `neon_superuser` 而不用于运行时；实际运行账号固定为数据库内
 最小权限登录角色 `changfu_runtime`：
-可读取身份表、只可更新 `public.cloud_users.last_login_at`，可对 `changfu` 业务表
-执行 DML，但无权修改 `public`、`multiuser` schema。RDS 只开放私网连接和 veFaaS
-子网白名单，禁止 `0.0.0.0/0`。
+可读取身份表，只可更新 `public.cloud_users.password_hash/last_login_at` 和
+`multiuser.user_profiles.must_change_password/sessions_valid_after/updated_at`，
+以支持桌面端首次强制改密；可对 `changfu` 业务表执行 DML，但无权修改
+`public`、`multiuser` schema。RDS 只开放私网连接和 veFaaS 子网白名单，禁止
+`0.0.0.0/0`。
 
 迁移由 `schema_migrations`、SHA-256 checksum 和 PostgreSQL advisory lock 管理，
 不得在函数启动时自动执行。发布只能从 `ECS-0EJj-deploy` 发起，镜像标签使用
@@ -1802,4 +1821,68 @@ Debug 状态不写入 UserDefaults。切换环境必须先取消认证刷新、�
 
 Cloud 与 Debug refresh token 分别使用 Keychain account
 `refresh-token.cloud`、`refresh-token.debug-local`。旧 `refresh-token` 仅允许一次
-迁移到 Cloud；设备身份、签名密钥、Longbridge 本地凭据和普通 UI 偏好跨环境共用。
+迁移到 Cloud；设备指纹、签名密钥、Longbridge 本地凭据和普通 UI 偏好跨环境共用。
+物理设备指纹和 Ed25519 签名密钥继续跨环境复用，但 `device_id` 必须按
+“后台环境 + 业务用户名”在 Keychain 中稳定隔离。登录成功后记录该环境的活动
+`device_id`，后续上下文签名必须使用同一 ID；这样同一台 Mac 切换业务账号时不会
+触发数据库设备归属冲突，也不会迁移或改写旧账号的历史设备记录。
+
+桌面登录与刷新响应必须返回服务端最终 `deviceId` 和 `mustChangePassword`。
+同一用户、同一设备指纹再次登录时复用既有设备记录。`mustChangePassword=true`
+时客户端必须停留在强制改密门禁，不启动订阅、券商、研究或交易服务；Gateway
+同时拒绝除 `POST /v1/auth/password` 外的业务 API。改密成功后撤销该用户全部
+refresh 会话，客户端清除本地令牌并要求使用新密码重新登录。
+首次强制改密不重复要求输入临时密码：管理员重置密码会推进
+`sessions_valid_after` 并撤销旧会话，Gateway 只允许重置后新签发的访问令牌执行
+改密，因此该令牌本身即为临时密码已验证的凭据。非首次的主动改密仍需校验当前密码。
+
+## 二十三、2026-09-28 独立 Web 管理端
+
+### 23.1 服务与身份边界
+
+长富管理端由独立 `changfu-admin` veFaaS Web Function 承载 React 静态页面和
+`/api/v1/admin/*` API。浏览器只通过同源 HTTPS API 访问数据，不直接连接
+PostgreSQL，也不复用桌面 Gateway 的 EdDSA Bearer Token。管理端使用独立
+`changfu_admin_runtime` 数据库角色；该角色只具备管理员身份、业务用户、套餐版本、
+人工订阅、槽位、审计和官方模型配置所需权限，不具备交易订单、信号、报告正文的
+写权限或任何 schema CREATE 权限。
+
+默认管理员用户名固定为 `admin`。仅当 `changfu_admin.admin_users` 为空时，Admin
+服务才读取 Secret `CHANGFU_ADMIN_INITIAL_PASSWORD` 并写入 scrypt 哈希；数据库
+已有管理员后不得覆盖密码。初始管理员必须首次改密。管理会话采用 HttpOnly、
+Secure、SameSite=Strict Cookie，数据库只保存 Token 和 CSRF Token 的 SHA-256
+哈希；所有写请求同时校验同源 Origin、CSRF 和 `Idempotency-Key`。
+
+### 23.2 管理能力与数据权威
+
+用户管理对 `public.cloud_users` 与 `multiuser.user_profiles` 执行同事务 CRUD。
+“删除用户”固定实现为停用并撤销会话，不物理删除历史数据，也不重置
+`liveTradingEnabled` 或 `autoSubmitEnabled`。
+
+套餐类型固定为 `LITE/PRO/FLAGSHIP`，PostgreSQL
+`subscription_plan_versions` 与 `subscription_prices` 是运行时权威源。
+`catalog.v1.json` 只用于空库初始化。活动版本不可原地修改；管理员必须复制为草稿、
+编辑并发布，历史订阅继续引用原版本。Gateway 每次请求读取当前活动目录，套餐发布
+后无需重启。
+
+人工授予、调整、冻结、恢复、取消订阅必须锁定用户和当前订阅，校验期望版本，并在
+同一事务写入订阅、槽位、`subscription_grants`、`subscription_events` 与管理员
+审计。套餐降级、缩短期限或移除 Provider 前必须明确确认影响。已用槽位只统计套餐
+额度内状态为 `ACTIVE` 的槽位；被冻结或超额保留的历史槽位不得计入使用量。
+
+### 23.3 长富Pro与部署
+
+全局长富Pro配置保存于 `changfu_admin.official_model_config_versions`，API Key 使用
+`CHANGFU_MODEL_CREDENTIAL_KEY` 执行 AES-256-GCM 加密，读取只返回末四位。草稿在
+固定最小探针测试成功后才可激活；激活会原子退役旧活动版本。Decision Worker 的
+普通模型运行和 SELL PUT 报告每次执行均读取当前活动版本，数据库尚无活动配置时
+才使用 `CHANGFU_ARK_*` 迁移期后备值。用户级第三方模型仍是旗舰版专属能力，与
+全局官方模型配置严格分离。
+
+云端拓扑因此扩展为 Gateway、Decision Worker、Admin 三个独立函数。Admin 使用
+独立 APIG service/upstream/root prefix route，不修改桌面 API 或 Worker 内部路由。
+构建产物使用同一不可变版本前缀下的 `-gateway`、`-worker`、`-admin`、`-migrator`
+四个镜像；APIG 脚本默认只生成 dry-run 文件。发布顺序为数据库迁移与两类运行账号
+权限验证、Worker、Gateway、Admin，最后分别验证 Worker health、Gateway ready、
+Admin ready 和管理页面 HTML。管理端上线前仍须人工创建独立函数和 APIG 资源并
+注入 Secret，本次实现不自动修改生产资源。

@@ -213,7 +213,7 @@ private struct FutuSymbolAliasSearch {
                 return nil
             }
             return FutuSymbolAlias(
-                providerSymbol: "\(market.rawValue).\(item.code)",
+                providerSymbol: BrokerSymbolNormalizer.prefixed(item.code, market: market),
                 displayName: item.name,
                 market: market
             )

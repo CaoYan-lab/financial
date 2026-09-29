@@ -7,6 +7,7 @@ import Observation
 enum AuthenticationPhase: Equatable {
     case checking
     case signedOut(message: String?)
+    case passwordChangeRequired(message: String?)
     case signedIn
 }
 
@@ -95,6 +96,7 @@ private struct ShadowRuntimeState {
 final class AppState {
     private(set) var authenticationPhase: AuthenticationPhase = .checking
     private(set) var isAuthenticating = false
+    private(set) var isChangingPassword = false
     private(set) var backendEnvironment: BackendEnvironment
     private(set) var isSwitchingBackendEnvironment = false
     var isDebugMode: Bool { backendEnvironment.isDebug }
@@ -489,6 +491,29 @@ final class AppState {
         sellPutRunState(for: currentProviderId).statusMessage
     }
 
+    var canStartSellPutReport: Bool {
+        sellPutAccessMessage == nil && !isSellPutRunning
+    }
+
+    var sellPutAccessMessage: String? {
+        if isSubscriptionLoading {
+            return "正在验证套餐权益"
+        }
+        if currentSubscription == nil, subscriptionStatusMessage != nil {
+            return "套餐权益暂不可验证，请刷新后重试"
+        }
+        guard let subscription = currentSubscription else {
+            return "请先在套餐中心配置有效套餐"
+        }
+        guard subscription.isActive() else {
+            return "当前套餐已失效，请先在套餐中心续费"
+        }
+        guard subscription.hasActiveSlot(for: currentProviderId) else {
+            return "当前套餐未绑定\(platform.title)，请先在套餐中心配置"
+        }
+        return nil
+    }
+
     private var currentBrokerConnectionId: String? {
         platform == .longbridge ? longbridgeBrokerConnectionId : brokerConnectionId
     }
@@ -520,7 +545,8 @@ final class AppState {
     }
 
     func login(username: String, password: String) async {
-        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUsername.isEmpty,
               !password.isEmpty else {
             authenticationPhase = .signedOut(message: "请输入用户名和密码")
             return
@@ -530,9 +556,12 @@ final class AppState {
         let environment = backendEnvironment
         let client = backend
         do {
-            let identity = try credentials.deviceIdentity()
+            let identity = try credentials.deviceIdentity(
+                for: environment,
+                username: normalizedUsername
+            )
             let tokens = try await client.login(DesktopLoginRequest(
-                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                username: normalizedUsername,
                 password: password,
                 deviceId: identity.deviceId,
                 deviceFingerprint: identity.fingerprint,
@@ -542,6 +571,10 @@ final class AppState {
                 publicKey: identity.publicKeyPEM
             ))
             guard environment == backendEnvironment else { return }
+            try credentials.activateDeviceIdentity(
+                tokens.deviceId ?? identity.deviceId,
+                for: environment
+            )
             try credentials.saveRefreshToken(tokens.refreshToken, for: environment)
             await acceptAuthenticatedSession(tokens, environment: environment)
         } catch {
@@ -558,6 +591,32 @@ final class AppState {
             await client.logout(refreshToken: refreshToken)
         }
         invalidateAuthentication(message: nil)
+    }
+
+    func changePassword(nextPassword: String) async {
+        guard let accessToken = authenticationSession?.accessToken else {
+            invalidateAuthentication(message: "登录状态已失效，请重新登录")
+            return
+        }
+        guard nextPassword.count >= 12,
+              nextPassword.rangeOfCharacter(from: .letters) != nil,
+              nextPassword.rangeOfCharacter(from: .decimalDigits) != nil else {
+            authenticationPhase = .passwordChangeRequired(
+                message: "新密码至少 12 位，并同时包含字母和数字"
+            )
+            return
+        }
+        isChangingPassword = true
+        defer { isChangingPassword = false }
+        do {
+            try await backend.changePassword(
+                nextPassword: nextPassword,
+                accessToken: accessToken
+            )
+            invalidateAuthentication(message: "密码修改成功，请使用新密码重新登录")
+        } catch {
+            authenticationPhase = .passwordChangeRequired(message: error.localizedDescription)
+        }
     }
 
     func enableDebugMode() async {
@@ -608,6 +667,11 @@ final class AppState {
     ) async {
         guard environment == backendEnvironment else { return }
         authenticationSession = tokens.session
+        if tokens.mustChangePassword == true {
+            authenticationPhase = .passwordChangeRequired(message: nil)
+            scheduleAuthenticationRefresh()
+            return
+        }
         authenticationPhase = .signedIn
         scheduleAuthenticationRefresh()
         await startAuthenticatedServices()
@@ -661,6 +725,7 @@ final class AppState {
         startupAd = nil
         authenticationSession = nil
         isAuthenticating = false
+        isChangingPassword = false
         isTradingCriticalFlowActive = false
         isSendingMessage = false
         statusMessage = nil
@@ -742,10 +807,14 @@ final class AppState {
     }
 
     private func startAuthenticatedServices() async {
-        async let subscription: Void = refreshSubscriptionCenter()
+        await refreshSubscriptionCenter()
         async let pools: Void = refreshProviderPools()
-        async let sellPut: Void = refreshSellPutResearch()
-        _ = await (subscription, pools, sellPut)
+        if sellPutAccessMessage == nil {
+            async let sellPut: Void = refreshSellPutResearch()
+            _ = await (pools, sellPut)
+        } else {
+            await pools
+        }
         await refreshCurrentBrokerData()
         scheduleBrokerRefresh()
         await loadStartupAdIfNeeded()
@@ -764,6 +833,7 @@ final class AppState {
             syncActiveResearchPool()
             subscriptionStatusMessage = nil
         } catch {
+            currentSubscription = nil
             subscriptionStatusMessage = error.localizedDescription
         }
         await refreshThirdPartyModelConfiguration()
@@ -1231,6 +1301,10 @@ final class AppState {
     func refreshSellPutResearch() async {
         guard let accessToken = authenticationSession?.accessToken else { return }
         let providerId = currentProviderId
+        guard sellPutAccessMessage == nil else {
+            updateSellPutRunState(providerId) { $0.statusMessage = nil }
+            return
+        }
         guard !sellPutRunState(for: providerId).isLoading else { return }
         updateSellPutRunState(providerId) { $0.isLoading = true }
         defer {
@@ -1269,6 +1343,14 @@ final class AppState {
         let providerId = currentProviderId
         guard let accessToken = authenticationSession?.accessToken,
               !sellPutRunState(for: providerId).isRunning else { return false }
+        guard let subscription = currentSubscription,
+              subscription.grantsResearchAccess(to: providerId) else {
+            updateSellPutRunState(providerId) {
+                $0.statusMessage = sellPutAccessMessage
+                    ?? "请先在套餐中心配置有效套餐"
+            }
+            return false
+        }
         updateSellPutRunState(providerId) {
             $0.isRunning = true
             $0.completedSymbols = 0
@@ -1323,6 +1405,10 @@ final class AppState {
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
+            updateSellPutRunState(providerId) {
+                $0.statusMessage =
+                    "正在采集 \(batchStart + 1)-\(batchEnd)/\(items.count)"
+            }
             let batchObservations = await withTaskGroup(
                 of: SellPutObservation.self,
                 returning: [SellPutObservation].self
@@ -1351,10 +1437,22 @@ final class AppState {
                     $0.statusMessage =
                         "已采集 \(observations.count)/\(items.count)，等待 \(source) 频率窗口"
                 }
-                try? await Task.sleep(for: .seconds(31))
+                do {
+                    try await Task.sleep(for: .seconds(31))
+                } catch {
+                    updateSellPutRunState(providerId) {
+                        $0.statusMessage = "SELL PUT 研究已取消"
+                    }
+                    return false
+                }
             }
         }
         observations.sort { $0.symbol < $1.symbol }
+        updateSellPutRunState(providerId) {
+            $0.completedSymbols = observations.count
+            $0.statusMessage =
+                "已采集 \(observations.count)/\(items.count)，正在生成报告"
+        }
 
         do {
             let report = try await backend.createSellPutReport(
@@ -1518,9 +1616,19 @@ final class AppState {
         _ item: SellPutPoolItem,
         providerId: String,
         requestId: String = UUID().uuidString.lowercased(),
-        rateLimitRetry: Int = 0
+        rateLimitRetry: Int = 0,
+        deadline: Date? = nil
     ) async -> SellPutObservation {
         let capturedAt = ISO8601DateFormatter().string(from: Date())
+        let collectionDeadline = deadline ?? Date().addingTimeInterval(180)
+        guard !Task.isCancelled, Date() < collectionDeadline else {
+            return Self.unavailableSellPutObservation(
+                item,
+                requestId: requestId,
+                capturedAt: capturedAt,
+                reason: Task.isCancelled ? "采集任务已取消" : "单标的采集超过 180 秒"
+            )
+        }
         do {
             let client: BrokerInstrumentDiscoveryClient
             if providerId == "LONGBRIDGE" {
@@ -1534,6 +1642,14 @@ final class AppState {
             let underlying = try await client.sellPutUnderlyingSnapshot(
                 symbol: item.symbol
             )
+            guard Date() < collectionDeadline else {
+                return Self.unavailableSellPutObservation(
+                    item,
+                    requestId: requestId,
+                    capturedAt: capturedAt,
+                    reason: "单标的采集超过 180 秒"
+                )
+            }
             let currentPrice = underlying.currentPrice
             let expiries = try await client.optionExpiries(for: item.symbol)
             guard let expiry = preferredSellPutExpiry(expiries.expiries) else {
@@ -1564,6 +1680,14 @@ final class AppState {
                 for: item.symbol,
                 expiryDate: expiry.expiryDate
             )
+            guard Date() < collectionDeadline else {
+                return Self.unavailableSellPutObservation(
+                    item,
+                    requestId: requestId,
+                    capturedAt: capturedAt,
+                    reason: "单标的采集超过 180 秒"
+                )
+            }
             let puts = chain.contracts
                 .filter { $0.optionType == .put && $0.addable }
                 .sorted {
@@ -1626,15 +1750,27 @@ final class AppState {
                 realizedVol30d: underlying.realizedVol30d
             )
         } catch {
-            if rateLimitRetry < 2
+            if !Task.isCancelled,
+               Date() < collectionDeadline,
+               rateLimitRetry < 2
                 && (Self.isBrokerRateLimit(error) || Self.isTransientBrokerError(error)) {
                 let delay = Self.isBrokerRateLimit(error) ? 31 : 2 * (rateLimitRetry + 1)
-                try? await Task.sleep(for: .seconds(delay))
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return Self.unavailableSellPutObservation(
+                        item,
+                        requestId: requestId,
+                        capturedAt: capturedAt,
+                        reason: "采集任务已取消"
+                    )
+                }
                 return await collectSellPutObservation(
                     item,
                     providerId: providerId,
                     requestId: requestId,
-                    rateLimitRetry: rateLimitRetry + 1
+                    rateLimitRetry: rateLimitRetry + 1,
+                    deadline: collectionDeadline
                 )
             }
             return Self.unavailableSellPutObservation(
@@ -2040,7 +2176,7 @@ final class AppState {
             if !conversationResearchSymbols.isEmpty, !providerPoolOnlineValidated {
                 throw AppInteractionError.providerPoolNotVerified
             }
-            let identity = try credentials.deviceIdentity()
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
             let selected = conversationResearchSymbols.sorted()
             let batches = ResearchBatching.conversationBatches(selected)
             let modelRoute = selectedConversationModelRoute
@@ -2320,7 +2456,7 @@ final class AppState {
         }
 
         do {
-            let identity = try credentials.deviceIdentity()
+            let identity = try credentials.deviceIdentity(for: backendEnvironment)
             let evaluationSymbols = evaluationItems.map(\.canonicalSymbol)
             guard let requestAccessToken = authenticationSession?.accessToken else {
                 throw BackendClientError.authenticationRejected
@@ -2578,11 +2714,15 @@ final class AppState {
     ) -> ShadowEvaluationItem {
         let providerQuotes = provider == "LONGBRIDGE" ? longbridgeQuotes : quotes
         let providerBars = provider == "LONGBRIDGE" ? longbridgeMinuteBars : minuteBars
+        let canonicalSymbol = BrokerSymbolNormalizer.normalize(item.canonicalSymbol)
+        let providerSymbol = BrokerSymbolNormalizer.normalize(item.providerSymbol)
         let quote = providerQuotes.first {
-            $0.symbol == item.canonicalSymbol || $0.symbol == item.providerSymbol
+            let symbol = BrokerSymbolNormalizer.normalize($0.symbol)
+            return symbol == canonicalSymbol || symbol == providerSymbol
         }
         let barCount = providerBars.filter {
-            $0.symbol == item.canonicalSymbol || $0.symbol == item.providerSymbol
+            let symbol = BrokerSymbolNormalizer.normalize($0.symbol)
+            return symbol == canonicalSymbol || symbol == providerSymbol
         }.count
         let fallbackMatches: Bool
         switch item.market {

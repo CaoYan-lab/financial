@@ -194,7 +194,11 @@ private func longbridgeSymbol(_ symbol: String) -> String {
 }
 
 private func providerMarket(for symbol: String) -> BrokerMarket? {
-    switch symbol.split(separator: ".").last?.uppercased() {
+    let parts = symbol.uppercased().split(separator: ".").map(String.init)
+    let knownMarkets = Set(["US", "HK", "SH", "SZ", "SG"])
+    let market = parts.first.flatMap { knownMarkets.contains($0) ? $0 : nil }
+        ?? parts.last.flatMap { knownMarkets.contains($0) ? $0 : nil }
+    switch market {
     case "US": return .us
     case "HK": return .hk
     case "SH", "SZ": return .cn
@@ -237,17 +241,18 @@ private func makeInstrument(
     record: JSONRecord,
     fallbackSymbol: String,
     displayName: String? = nil,
+    verifiedType: BrokerInstrumentType? = nil,
     request: BrokerInstrumentSearchRequest
 ) -> BrokerInstrument? {
-    let symbol = record.string("symbol", "code") ?? fallbackSymbol
+    let symbol = longbridgeSymbol(record.string("symbol", "code") ?? fallbackSymbol)
     guard let resultMarket = providerMarket(for: symbol),
           request.markets.contains(resultMarket) else { return nil }
-    let resolvedType = instrumentType(record)
-    let requestedFallback = request.instrumentTypes.count == 1
+    let requestedType = request.instrumentTypes.count == 1
         ? request.instrumentTypes[0]
-        : .stock
-    let type = resolvedType ?? requestedFallback
-    let addable = resolvedType != nil && request.instrumentTypes.contains(type)
+        : nil
+    let resolvedType = instrumentType(record) ?? verifiedType ?? requestedType
+    let type = resolvedType ?? .stock
+    let addable = resolvedType.map(request.instrumentTypes.contains) ?? false
     return BrokerInstrument(
         providerId: "LONGBRIDGE",
         providerSymbol: symbol,
@@ -275,15 +280,27 @@ private func searchInstruments(
         throw HostError.invalidRequest("证券搜索参数不合法")
     }
 
-    if let market = providerMarket(for: query) {
+    let exactSymbol = longbridgeSymbol(query)
+    if let market = providerMarket(for: exactSymbol) {
         guard request.markets.contains(market) else {
             throw HostError.invalidRequest("证券代码与所选市场不一致")
         }
-        let result = try cli.json(["static", query], name: "证券静态信息")
+        let aliasType = request.instrumentTypes.count == 1
+            ? request.instrumentTypes[0]
+            : try? await SymbolAliasSearch().exactInstrumentType(
+                providerSymbol: exactSymbol,
+                market: market
+            )
+        let result = try cli.json(["static", exactSymbol], name: "证券静态信息")
         let instruments = records(result, keys: ["data", "securities", "list"])
             .prefix(request.limit)
             .compactMap {
-                makeInstrument(record: $0, fallbackSymbol: query, request: request)
+                makeInstrument(
+                    record: $0,
+                    fallbackSymbol: exactSymbol,
+                    verifiedType: aliasType,
+                    request: request
+                )
             }
         return BrokerInstrumentSearchResponse(
             providerId: "LONGBRIDGE",
@@ -311,6 +328,7 @@ private func searchInstruments(
                 record: record,
                 fallbackSymbol: alias.providerSymbol,
                 displayName: alias.displayName,
+                verifiedType: alias.instrumentType,
                 request: request
             ), seen.insert(instrument.providerSymbol).inserted else { continue }
             instruments.append(instrument)
@@ -362,15 +380,30 @@ private struct SymbolAliasSearch {
             }
             return SymbolAlias(
                 providerSymbol: providerSymbol,
-                displayName: item.name
+                displayName: item.name,
+                instrumentType: item.instrumentType
             )
         }
+    }
+
+    func exactInstrumentType(
+        providerSymbol: String,
+        market: BrokerMarket
+    ) async throws -> BrokerInstrumentType? {
+        let parts = providerSymbol.split(separator: ".").map(String.init)
+        let code = parts.count > 1
+            ? parts.dropLast().joined(separator: ".")
+            : providerSymbol
+        return try await search(query: code, markets: [market], limit: 20)
+            .first { $0.providerSymbol == providerSymbol }?
+            .instrumentType
     }
 }
 
 private struct SymbolAlias: Sendable {
     let providerSymbol: String
     let displayName: String
+    let instrumentType: BrokerInstrumentType?
 }
 
 private struct SymbolAliasResponse: Decodable {
@@ -390,6 +423,21 @@ private struct SymbolAliasResponse: Decodable {
         let classify: String
         let securityTypeName: String
         let exchange: String
+        let typeUS: String?
+
+        var instrumentType: BrokerInstrumentType? {
+            if typeUS == "5"
+                || securityTypeName.uppercased().contains("ETF")
+                || name.uppercased().contains("ETF") {
+                return .etf
+            }
+            if typeUS == "1"
+                || classify == "UsStock"
+                || securityTypeName.contains("股") {
+                return .stock
+            }
+            return nil
+        }
 
         var market: BrokerMarket? {
             switch classify {
@@ -410,16 +458,22 @@ private struct SymbolAliasResponse: Decodable {
 
         var providerSymbol: String? {
             switch market {
-            case .us: "\(code).US"
-            case .hk: "\(Int(code).map(String.init) ?? code).HK"
+            case .us:
+                return longbridgeSymbol(BrokerSymbolNormalizer.prefixed(code, market: .us))
+            case .hk:
+                let normalized = BrokerSymbolNormalizer.prefixed(code, market: .hk)
+                let bareCode = normalized.dropFirst("HK.".count)
+                return "\(Int(bareCode).map(String.init) ?? String(bareCode)).HK"
             case .cn:
-                securityTypeName.contains("沪") ? "\(code).SH"
+                return securityTypeName.contains("沪") ? "\(code).SH"
                     : securityTypeName.contains("深") ? "\(code).SZ"
                     : ["2", "SH", "SSE"].contains(exchange.uppercased()) ? "\(code).SH"
                     : ["80", "SZ", "SZSE"].contains(exchange.uppercased()) ? "\(code).SZ"
                     : nil
-            case .sg: "\(code).SG"
-            case nil: nil
+            case .sg:
+                return longbridgeSymbol(BrokerSymbolNormalizer.prefixed(code, market: .sg))
+            case nil:
+                return nil
             }
         }
 
@@ -429,6 +483,7 @@ private struct SymbolAliasResponse: Decodable {
             case classify = "Classify"
             case securityTypeName = "SecurityTypeName"
             case exchange = "JYS"
+            case typeUS = "TypeUS"
         }
     }
 
@@ -605,15 +660,20 @@ private func sellPutUnderlyingSnapshot(
 
 private func normalizeSymbol(_ raw: String, market: String?) -> String {
     let knownMarkets = Set(["US", "HK", "SG", "SH", "SZ"])
-    let components = raw.split(separator: ".", maxSplits: 1).map(String.init)
-    if components.count == 2 {
-        if knownMarkets.contains(components[0].uppercased()) { return raw }
-        if knownMarkets.contains(components[1].uppercased()) {
-            return "\(components[1].uppercased()).\(components[0])"
+    let uppercased = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let components = uppercased.split(separator: ".").map(String.init)
+    if components.count >= 2 {
+        if let first = components.first, knownMarkets.contains(first) {
+            return BrokerSymbolNormalizer.normalize(uppercased)
+        }
+        if let last = components.last, knownMarkets.contains(last) {
+            return BrokerSymbolNormalizer.normalize(
+                "\(last).\(components.dropLast().joined(separator: "."))"
+            )
         }
     }
-    guard let market, !market.isEmpty else { return raw }
-    return "\(market.uppercased()).\(raw)"
+    guard let market, !market.isEmpty else { return uppercased }
+    return BrokerSymbolNormalizer.normalize("\(market.uppercased()).\(uppercased)")
 }
 
 private func marketName(for symbol: String) -> String {
@@ -634,6 +694,70 @@ private func sessionLabel(_ raw: String?) -> String {
     }
     if value.contains("close") { return "已收盘" }
     return raw?.isEmpty == false ? raw! : "状态未知"
+}
+
+private func quoteSessionLabel(_ raw: String?) -> String? {
+    let value = raw?.lowercased() ?? ""
+    guard !value.isEmpty, value != "normal" else { return nil }
+    let label = sessionLabel(raw)
+    return label == "状态未知" ? nil : label
+}
+
+private func timestamp(_ raw: String?) -> Date? {
+    guard let raw, !raw.isEmpty else { return nil }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+}
+
+private func activeUSExtendedSession(
+    record: JSONRecord,
+    now: Date = Date()
+) -> String? {
+    let calendar = Calendar(identifier: .gregorian)
+    guard let timeZone = TimeZone(identifier: "America/New_York") else { return nil }
+    let components = calendar.dateComponents(in: timeZone, from: now)
+    guard let hour = components.hour, let minute = components.minute else { return nil }
+    let minuteOfDay = hour * 60 + minute
+
+    let candidate: (record: JSONRecord?, label: String, maximumAge: TimeInterval)?
+    switch minuteOfDay {
+    case 0..<(4 * 60):
+        candidate = (
+            record.object("overnight_quote", "overnightQuote", "overnight"),
+            "夜盘",
+            8.25 * 60 * 60
+        )
+    case (4 * 60)..<(9 * 60 + 30):
+        candidate = (
+            record.object("pre_market_quote", "preMarketQuote", "pre_market", "preMarket"),
+            "盘前",
+            5.75 * 60 * 60
+        )
+    case (16 * 60)..<(20 * 60):
+        candidate = (
+            record.object("post_market_quote", "postMarketQuote", "post_market", "postMarket"),
+            "盘后",
+            4.25 * 60 * 60
+        )
+    case (20 * 60)..<(24 * 60):
+        candidate = (
+            record.object("overnight_quote", "overnightQuote", "overnight"),
+            "夜盘",
+            8.25 * 60 * 60
+        )
+    default:
+        candidate = nil
+    }
+    guard let candidate,
+          let updatedAt = timestamp(candidate.record?.string(
+              "timestamp",
+              "updated_at",
+              "update_time"
+          )) else { return nil }
+    let age = now.timeIntervalSince(updatedAt)
+    guard age >= -5 * 60, age <= candidate.maximumAge else { return nil }
+    return candidate.label
 }
 
 private func sideValue(_ raw: String?) -> Int {
@@ -721,9 +845,14 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
         guard let rawSymbol = record.string("symbol", "code"),
               let last = record.decimal("last_done", "last", "last_price") else { return nil }
         let symbol = normalizeSymbol(rawSymbol, market: record.string("market"))
-        let pre = record.object("pre_market_quote", "preMarketQuote")
-        let post = record.object("post_market_quote", "postMarketQuote")
-        let overnight = record.object("overnight_quote", "overnightQuote")
+        let pre = record.object("pre_market_quote", "preMarketQuote", "pre_market", "preMarket")
+        let post = record.object(
+            "post_market_quote",
+            "postMarketQuote",
+            "post_market",
+            "postMarket"
+        )
+        let overnight = record.object("overnight_quote", "overnightQuote", "overnight")
         return QuoteSummary(
             symbol: symbol,
             name: record.string("name") ?? symbol,
@@ -735,10 +864,14 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
             volume: record.decimal("volume"),
             turnover: record.decimal("turnover"),
             updateTime: record.string("timestamp", "updated_at", "update_time"),
-            preMarketPrice: pre?.decimal("last_done", "price"),
-            afterHoursPrice: post?.decimal("last_done", "price"),
-            overnightPrice: overnight?.decimal("last_done", "price"),
-            marketState: sessionLabel(record.string("trade_status", "market_status")),
+            preMarketPrice: pre?.decimal("last_done", "last", "price"),
+            afterHoursPrice: post?.decimal("last_done", "last", "price"),
+            overnightPrice: overnight?.decimal("last_done", "last", "price"),
+            marketState: quoteSessionLabel(
+                record.string("trade_status", "market_status", "status")
+            ) ?? (providerMarket(for: symbol) == .us
+                ? activeUSExtendedSession(record: record)
+                : nil),
             marketStateValue: nil
         )
     }
@@ -760,18 +893,30 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
     let marketJSON = try cli.json(["market-status"], name: "市场状态")
     let marketRecords = records(marketJSON, keys: ["data", "markets", "status"])
     let preferredMarket = symbols.first.map(marketName(for:)) ?? "美股"
-    let preferredCode = preferredMarket == "港股" ? "HK" : preferredMarket == "A 股" ? "SH" : "US"
-    let selectedMarket = marketRecords.first {
-        let code = $0.string("market", "region", "exchange")?.uppercased() ?? ""
-        return code.contains(preferredCode)
-    } ?? marketRecords.first
-    let marketState = sessionLabel(selectedMarket?.string("status", "trade_status", "state"))
-    let market = MarketSummary(name: preferredMarket, state: marketState, stateValue: 0)
+    let exchangeStateByMarket = marketRecords.reduce(into: [String: String]()) {
+        result,
+        record in
+        guard let code = record.string("market", "region", "exchange")?.uppercased()
+        else { return }
+        result[code] = sessionLabel(record.string("status", "trade_status", "state"))
+    }
 
     quotes = quotes.map { quote in
-        let state = marketName(for: quote.symbol) == preferredMarket
-            ? marketState
-            : quote.marketState
+        let market = providerMarket(for: quote.symbol)
+        let code: String?
+        switch market {
+        case .us: code = "US"
+        case .hk: code = "HK"
+        case .cn:
+            code = quote.symbol.hasPrefix("SZ.") ? "SZ" : "SH"
+        case .sg: code = "SG"
+        case nil: code = nil
+        }
+        let exchangeState = code.flatMap { exchangeStateByMarket[$0] }
+            ?? (market == .cn ? exchangeStateByMarket["CN"] : nil)
+        let state = market == .us && exchangeState != "盘中"
+            ? quote.marketState ?? exchangeState
+            : exchangeState ?? quote.marketState
         return QuoteSummary(
             symbol: quote.symbol,
             name: quote.name,
@@ -790,6 +935,21 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
             marketStateValue: nil
         )
     }
+    let preferredCode = preferredMarket == "港股"
+        ? "HK"
+        : preferredMarket == "A 股"
+            ? "CN"
+            : preferredMarket == "新加坡"
+                ? "SG"
+                : "US"
+    let exchangeMarketState = exchangeStateByMarket[preferredCode] ?? "状态未知"
+    let marketState = preferredMarket == "美股" && exchangeMarketState != "盘中"
+        ? quotes.first {
+            marketName(for: $0.symbol) == preferredMarket
+                && ["盘前", "盘后", "夜盘"].contains($0.marketState ?? "")
+        }?.marketState ?? exchangeMarketState
+        : exchangeMarketState
+    let market = MarketSummary(name: preferredMarket, state: marketState, stateValue: 0)
 
     let minuteBars = try cliSymbols.prefix(8).flatMap { cliSymbol in
         records(

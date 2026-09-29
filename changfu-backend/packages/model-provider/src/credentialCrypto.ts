@@ -25,6 +25,10 @@ export function credentialAad(userId: string, configId: string): Buffer {
   return Buffer.from(`changfu:model-provider:${userId}:${configId}:v1`, 'utf8')
 }
 
+export function officialCredentialAad(configVersionId: string): Buffer {
+  return Buffer.from(`changfu:official-model:${configVersionId}:v1`, 'utf8')
+}
+
 export function encryptCredential(
   plaintext: string,
   key: Buffer,

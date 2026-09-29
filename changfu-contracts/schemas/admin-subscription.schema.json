@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/admin-subscription.schema.json",
+  "title": "AdminManagedSubscription",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subscriptionId",
+    "planVersionId",
+    "planCode",
+    "planVersion",
+    "planDisplayName",
+    "billingPeriod",
+    "status",
+    "source",
+    "version",
+    "startsAt",
+    "expiresAt",
+    "usedSlots",
+    "totalSlots",
+    "slots",
+    "providerPools"
+  ],
+  "properties": {
+    "subscriptionId": { "type": "string", "format": "uuid" },
+    "planVersionId": { "type": "string", "format": "uuid" },
+    "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+    "planVersion": { "type": "integer", "minimum": 1 },
+    "planDisplayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+    "status": { "enum": ["ACTIVE", "FROZEN", "CANCELLED"] },
+    "source": { "enum": ["PAYMENT", "ADMIN_GRANT"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "startsAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "usedSlots": { "type": "integer", "minimum": 0 },
+    "totalSlots": { "type": "integer", "minimum": 1 },
+    "slots": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/slot" }
+    },
+    "providerPools": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/providerPool" }
+    }
+  },
+  "$defs": {
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId",
+        "slotOrdinal",
+        "providerId",
+        "status",
+        "boundAt",
+        "nextRebindAt",
+        "version"
+      ],
+      "properties": {
+        "slotId": { "type": "string", "format": "uuid" },
+        "slotOrdinal": { "type": "integer", "minimum": 1 },
+        "providerId": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Z][A-Z0-9_]{1,31}$"
+        },
+        "status": { "enum": ["ACTIVE", "FROZEN", "EMPTY"] },
+        "boundAt": { "type": ["string", "null"], "format": "date-time" },
+        "nextRebindAt": { "type": ["string", "null"], "format": "date-time" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "providerPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "status", "used", "capacity"],
+      "properties": {
+        "providerId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "status": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "used": { "type": "integer", "minimum": 0 },
+        "capacity": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "grantRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expectedVersion",
+        "reason",
+        "planVersionId",
+        "billingPeriod",
+        "startsAt",
+        "expiresAt",
+        "providerIds",
+        "confirmImpact"
+      ],
+      "properties": {
+        "expectedVersion": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 1000 },
+        "planVersionId": { "type": "string", "format": "uuid" },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "startsAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "providerIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }
+        },
+        "confirmImpact": { "type": "boolean" }
+      }
+    },
+    "statusRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectedVersion", "reason"],
+      "properties": {
+        "expectedVersion": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 1000 }
+      }
+    },
+    "slotUpdateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectedVersion", "reason", "providerIds", "confirmImpact"],
+      "properties": {
+        "expectedVersion": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 1000 },
+        "providerIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }
+        },
+        "confirmImpact": { "type": "boolean" }
+      }
+    }
+  }
+}

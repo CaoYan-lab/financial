@@ -753,7 +753,7 @@ private struct ResearchWorkspace: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(state.isSellPutRunning)
+                .disabled(!state.canStartSellPutReport)
 
                 if state.isSellPutRunning {
                     ProgressView(
@@ -762,7 +762,8 @@ private struct ResearchWorkspace: View {
                     )
                 }
                 Text(
-                    state.sellPutStatusMessage
+                    state.sellPutAccessMessage
+                        ?? state.sellPutStatusMessage
                         ?? "执行前自动同步当日全球市值 Top30 美股专属标的池"
                 )
                 .font(FutuTheme.metricNote)

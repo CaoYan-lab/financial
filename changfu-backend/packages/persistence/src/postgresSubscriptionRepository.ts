@@ -8,7 +8,6 @@ import {
   type BillingPeriod,
 } from '../../subscriptions/src/billingClock.js'
 import type {
-  SubscriptionCatalog,
   SubscriptionPlan,
   SubscriptionPrice,
 } from '../../subscriptions/src/catalog.js'
@@ -60,10 +59,7 @@ export class SubscriptionRepositoryError extends Error {
 }
 
 export class PostgresSubscriptionRepository {
-  constructor(
-    private readonly pool: Pool,
-    private readonly catalog: SubscriptionCatalog,
-  ) {}
+  constructor(private readonly pool: Pool) {}
 
   async getCurrent(userId: string, now = new Date()): Promise<unknown | null> {
     return this.transaction(async client => {
@@ -75,14 +71,14 @@ export class PostgresSubscriptionRepository {
 
   async createOrder(input: CreateSubscriptionOrderInput): Promise<unknown> {
     const now = input.now ?? new Date()
-    const targetPlan = this.plan(input.planVersionId)
-    const price = this.price(targetPlan, input.billingPeriod)
-    const providerIds = validateProviderSelections(input.providerIds, targetPlan.brokerSlotLimit)
-    this.assertProvidersAvailable(providerIds)
     return this.transaction(async client => {
+      const targetPlan = await this.plan(client, input.planVersionId, true)
+      const price = this.price(targetPlan, input.billingPeriod)
+      const providerIds = validateProviderSelections(input.providerIds, targetPlan.brokerSlotLimit)
+      await this.assertProvidersAvailable(client, providerIds)
       await this.materializeDueChange(client, input.userId, now)
       const current = await this.getSubscriptionRow(client, input.userId, true)
-      const currentPlan = current ? this.plan(current.plan_version_id) : null
+      const currentPlan = current ? await this.plan(client, current.plan_version_id) : null
       validateOrderType({
         orderType: input.orderType,
         targetPlan,
@@ -376,8 +372,8 @@ export class PostgresSubscriptionRepository {
       if (Number(current.version) !== input.expectedVersion) {
         throw new SubscriptionRepositoryError('SUBSCRIPTION_VERSION_CONFLICT')
       }
-      const currentPlan = this.plan(current.plan_version_id)
-      const targetPlan = this.plan(input.planVersionId)
+      const currentPlan = await this.plan(client, current.plan_version_id)
+      const targetPlan = await this.plan(client, input.planVersionId, true)
       const boundProviderIds = await this.boundProviderIds(client, current.subscription_id)
       validateScheduledChange({
         currentPlan,
@@ -436,8 +432,8 @@ export class PostgresSubscriptionRepository {
     now?: Date
   }): Promise<unknown> {
     const now = input.now ?? new Date()
-    this.assertProvidersAvailable([input.providerId])
     return this.transaction(async client => {
+      await this.assertProvidersAvailable(client, [input.providerId])
       const result = await client.query<{
         subscription_id: string
         provider_id: string | null
@@ -528,7 +524,7 @@ export class PostgresSubscriptionRepository {
     },
     now: Date,
   ): Promise<string> {
-    const plan = this.plan(order.plan_version_id)
+    const plan = await this.plan(client, order.plan_version_id)
     await this.materializeDueChange(client, order.user_id, now)
     const current = await this.getSubscriptionRow(client, order.user_id, true)
     if (
@@ -757,7 +753,7 @@ export class PostgresSubscriptionRepository {
       || !current.pending_effective_at
       || current.pending_effective_at.getTime() > now.getTime()
     ) return
-    const targetPlan = this.plan(current.pending_plan_version_id)
+    const targetPlan = await this.plan(client, current.pending_plan_version_id)
     const retained = await client.query<{
       provider_id: string
       slot_ordinal: number
@@ -1019,10 +1015,65 @@ export class PostgresSubscriptionRepository {
     return result.rows.map(row => row.provider_id)
   }
 
-  private plan(planVersionId: string): SubscriptionPlan {
-    const plan = this.catalog.plans.find(item => item.planVersionId === planVersionId)
-    if (!plan) throw new SubscriptionRepositoryError('PLAN_NOT_FOUND')
-    return plan
+  private async plan(
+    queryable: Queryable,
+    planVersionId: string,
+    requireActive = false,
+  ): Promise<SubscriptionPlan> {
+    const result = await queryable.query<{
+      plan_version_id: string
+      plan_code: SubscriptionPlan['planCode']
+      version: number
+      display_name: string
+      status: string
+      effective_from: Date
+      broker_slot_limit: number
+      pool_capacity_per_provider: number | null
+      monthly_replacement_limit: number | null
+      features: SubscriptionPlan['features']
+      prices: unknown
+    }>(
+      `SELECT p.plan_version_id, p.plan_code, p.version, p.display_name, p.status,
+              p.effective_from, p.broker_slot_limit, p.pool_capacity_per_provider,
+              p.monthly_replacement_limit, p.features,
+              COALESCE(jsonb_agg(jsonb_build_object(
+                'priceId', pr.price_id,
+                'billingPeriod', pr.billing_period,
+                'durationMonths', pr.duration_months,
+                'amountMinor', pr.amount_minor
+              ) ORDER BY pr.duration_months) FILTER (
+                WHERE pr.price_id IS NOT NULL
+              ), '[]'::jsonb) AS prices
+         FROM changfu.subscription_plan_versions p
+         LEFT JOIN changfu.subscription_prices pr
+           ON pr.plan_version_id = p.plan_version_id
+        WHERE p.plan_version_id = $1::uuid
+          AND (
+            $2::boolean = false
+            OR (
+              p.status = 'ACTIVE'
+              AND p.effective_from <= now()
+              AND (p.effective_until IS NULL OR p.effective_until > now())
+            )
+          )
+        GROUP BY p.plan_version_id`,
+      [planVersionId, requireActive],
+    )
+    const row = result.rows[0]
+    if (!row) throw new SubscriptionRepositoryError('PLAN_NOT_FOUND')
+    return {
+      planVersionId: row.plan_version_id,
+      planCode: row.plan_code,
+      version: row.version,
+      displayName: row.display_name,
+      status: 'ACTIVE',
+      effectiveFrom: row.effective_from.toISOString(),
+      brokerSlotLimit: row.broker_slot_limit,
+      poolCapacityPerProvider: row.pool_capacity_per_provider,
+      monthlyReplacementLimit: row.monthly_replacement_limit,
+      features: row.features,
+      prices: Array.isArray(row.prices) ? row.prices as SubscriptionPrice[] : [],
+    }
   }
 
   private price(plan: SubscriptionPlan, period: BillingPeriod): SubscriptionPrice {
@@ -1031,10 +1082,19 @@ export class PostgresSubscriptionRepository {
     return price
   }
 
-  private assertProvidersAvailable(providerIds: string[]): void {
-    if (providerIds.some(providerId => !this.catalog.providers.some(
-      provider => provider.providerId === providerId && provider.status === 'ACTIVE',
-    ))) throw new SubscriptionRepositoryError('PROVIDER_NOT_AVAILABLE')
+  private async assertProvidersAvailable(
+    queryable: Queryable,
+    providerIds: string[],
+  ): Promise<void> {
+    const result = await queryable.query(
+      `SELECT provider_id
+         FROM changfu.broker_provider_catalog
+        WHERE provider_id = ANY($1::varchar[]) AND status = 'ACTIVE'`,
+      [providerIds],
+    )
+    if (result.rowCount !== providerIds.length) {
+      throw new SubscriptionRepositoryError('PROVIDER_NOT_AVAILABLE')
+    }
   }
 
   private rowIsEffective(row: SubscriptionRow, now: Date): boolean {

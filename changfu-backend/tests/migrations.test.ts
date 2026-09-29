@@ -26,8 +26,8 @@ test('迁移文件按版本排序并包含元数据迁移', async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const migrations = await loadMigrations(resolve(root, 'migrations'))
   assert.equal(migrations[0]?.version, '000_migration_metadata')
-  assert.equal(migrations.at(-1)?.version, '009_sell_put_prompt_v3')
-  assert.equal(migrations.length, 10)
+  assert.equal(migrations.at(-1)?.version, '012_normalize_provider_pool_symbols')
+  assert.equal(migrations.length, 13)
   assert.ok(migrations.every(migration => /^[a-f0-9]{64}$/.test(migration.checksum)))
 })
 

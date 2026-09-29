@@ -57,6 +57,51 @@ public struct ProviderPoolItem: Codable, Equatable, Identifiable, Sendable {
     public let addedAt: String
 
     public var id: String { itemId }
+
+    private enum CodingKeys: String, CodingKey {
+        case itemId
+        case providerId
+        case providerSymbol
+        case canonicalSymbol
+        case displayName
+        case market
+        case instrumentType
+        case optionType
+        case underlyingSymbol
+        case expiryDate
+        case strikePrice
+        case currency
+        case contractMultiplier
+        case status
+        case addedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        itemId = try values.decode(String.self, forKey: .itemId)
+        providerId = try values.decode(String.self, forKey: .providerId)
+        market = try values.decode(BrokerMarket.self, forKey: .market)
+        providerSymbol = BrokerSymbolNormalizer.normalize(
+            try values.decode(String.self, forKey: .providerSymbol)
+        )
+        canonicalSymbol = BrokerSymbolNormalizer.normalize(
+            try values.decode(String.self, forKey: .canonicalSymbol)
+        )
+        displayName = try values.decode(String.self, forKey: .displayName)
+        instrumentType = try values.decode(BrokerInstrumentType.self, forKey: .instrumentType)
+        optionType = try values.decodeIfPresent(BrokerOptionType.self, forKey: .optionType)
+        underlyingSymbol = try values.decodeIfPresent(String.self, forKey: .underlyingSymbol)
+            .map(BrokerSymbolNormalizer.normalize)
+        expiryDate = try values.decodeIfPresent(String.self, forKey: .expiryDate)
+        strikePrice = try values.decodeIfPresent(String.self, forKey: .strikePrice)
+        currency = try values.decode(String.self, forKey: .currency)
+        contractMultiplier = try values.decodeIfPresent(
+            String.self,
+            forKey: .contractMultiplier
+        )
+        status = try values.decode(String.self, forKey: .status)
+        addedAt = try values.decode(String.self, forKey: .addedAt)
+    }
 }
 
 public struct ProviderPool: Codable, Equatable, Identifiable, Sendable {
@@ -120,8 +165,8 @@ public struct AddProviderPoolItemRequest: Encodable, Sendable {
     public let sourceVerifiedAt: String
 
     public init(instrument: BrokerInstrument, sourceVerifiedAt: String) {
-        providerSymbol = instrument.providerSymbol
-        canonicalSymbol = instrument.canonicalSymbol
+        providerSymbol = BrokerSymbolNormalizer.normalize(instrument.providerSymbol)
+        canonicalSymbol = BrokerSymbolNormalizer.normalize(instrument.canonicalSymbol)
         displayName = instrument.displayName
         market = instrument.market
         instrumentType = instrument.instrumentType
@@ -135,13 +180,13 @@ public struct AddProviderPoolItemRequest: Encodable, Sendable {
     }
 
     public init(contract: BrokerOptionContract, sourceVerifiedAt: String) {
-        providerSymbol = contract.providerSymbol
-        canonicalSymbol = contract.canonicalSymbol
+        providerSymbol = BrokerSymbolNormalizer.normalize(contract.providerSymbol)
+        canonicalSymbol = BrokerSymbolNormalizer.normalize(contract.canonicalSymbol)
         displayName = contract.displayName
         market = contract.market
         instrumentType = contract.instrumentType
         optionType = contract.optionType
-        underlyingSymbol = contract.underlyingSymbol
+        underlyingSymbol = BrokerSymbolNormalizer.normalize(contract.underlyingSymbol)
         expiryDate = contract.expiryDate
         strikePrice = contract.strikePrice
         currency = contract.currency

@@ -11,7 +11,12 @@ import {
 } from '../../../packages/subscriptions/src/catalog.js'
 import { MAX_ENVELOPE_BYTES } from '../../../packages/domain/src/contextEnvelope.js'
 import { verifyAccessToken, type AccessClaims } from '../../../packages/auth/src/accessToken.js'
-import { AuthService, LoginRejectedError, type DesktopLogin } from '../../../packages/auth/src/authService.js'
+import {
+  AuthService,
+  LoginRejectedError,
+  PasswordChangeError,
+  type DesktopLogin,
+} from '../../../packages/auth/src/authService.js'
 import { PostgresTradingLeaseRepository } from '../../../packages/persistence/src/postgresTradingLeaseRepository.js'
 import { PostgresOrderIntentRepository } from '../../../packages/persistence/src/postgresOrderIntentRepository.js'
 import {
@@ -23,6 +28,7 @@ import {
   seedTradingCatalog,
 } from './routes/controlPlane.js'
 import { PostgresSubscriptionRepository } from '../../../packages/persistence/src/postgresSubscriptionRepository.js'
+import { PostgresSubscriptionCatalogRepository } from '../../../packages/persistence/src/postgresSubscriptionCatalogRepository.js'
 import { PaymentService } from '../../../packages/payments/src/paymentService.js'
 import { createWechatPaymentProvider } from '../../../packages/payments/src/providers/wechat.js'
 import { createAlipayPaymentProvider } from '../../../packages/payments/src/providers/alipay.js'
@@ -66,7 +72,10 @@ const subscriptionCatalogPath = subscriptionCatalogPaths.find(existsSync)
 if (!subscriptionCatalogPath) throw new Error('SUBSCRIPTION_CATALOG_NOT_FOUND')
 const subscriptionCatalog = await loadSubscriptionCatalog(subscriptionCatalogPath)
 const subscriptionRepository = pool
-  ? new PostgresSubscriptionRepository(pool, subscriptionCatalog)
+  ? new PostgresSubscriptionRepository(pool)
+  : null
+const subscriptionCatalogRepository = pool
+  ? new PostgresSubscriptionCatalogRepository(pool)
   : null
 const paymentService = subscriptionRepository
   ? new PaymentService(subscriptionRepository, [
@@ -303,7 +312,7 @@ const server = createServer(async (request, response) => {
     })
   ) return
 
-  if (!accessPublicKeyPem || !pool) {
+  if (!accessPublicKeyPem || !pool || !authService) {
     problem(response, 503, 'SECURITY_CONFIG_MISSING', requestId)
     return
   }
@@ -314,6 +323,79 @@ const server = createServer(async (request, response) => {
   }
   const userId = claims.sub
   const deviceId = claims.device_id
+  let mustChangePassword: boolean
+  try {
+    const profile = await pool.query<{
+      active: boolean
+      must_change_password: boolean
+      sessions_valid_after: Date
+    }>(
+      `SELECT active, must_change_password, sessions_valid_after
+         FROM multiuser.user_profiles
+        WHERE user_id = $1::bigint`,
+      [userId],
+    )
+    const row = profile.rows[0]
+    if (!row?.active) {
+      problem(response, 401, 'AUTH_REQUIRED', requestId)
+      return
+    }
+    if (claims.iat < Math.floor(row.sessions_valid_after.getTime() / 1_000)) {
+      problem(response, 401, 'AUTH_REQUIRED', requestId)
+      return
+    }
+    mustChangePassword = row.must_change_password
+  } catch (error) {
+    safeLogger.error('gateway_user_profile_query_failed', {
+      requestId,
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    })
+    problem(response, 503, 'DATABASE_UNAVAILABLE', requestId)
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/auth/password') {
+    const key = idempotencyKey(request)
+    if (!key) {
+      problem(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', requestId)
+      return
+    }
+    try {
+      const body = await readJsonBody(request)
+      if (
+        (body.currentPassword !== undefined && typeof body.currentPassword !== 'string')
+        || typeof body.nextPassword !== 'string'
+      ) {
+        problem(response, 400, 'PASSWORD_REQUEST_INVALID', requestId)
+        return
+      }
+      await authService.changePassword({
+        userId,
+        deviceId,
+        nextPassword: body.nextPassword,
+        ...(typeof body.currentPassword === 'string'
+          ? { currentPassword: body.currentPassword }
+          : {}),
+      })
+      sendJson(response, 200, { changed: true })
+    } catch (error) {
+      if (error instanceof PasswordChangeError) {
+        problem(response, 400, error.code, requestId)
+      } else {
+        safeLogger.error('desktop_password_change_failed', {
+          requestId,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+        })
+        problem(response, 503, 'DATABASE_UNAVAILABLE', requestId)
+      }
+    }
+    return
+  }
+
+  if (mustChangePassword) {
+    problem(response, 428, 'PASSWORD_CHANGE_REQUIRED', requestId)
+    return
+  }
 
   if (request.method === 'GET' && url.pathname === '/v1/ads/active') {
     const placement = url.searchParams.get('placement')
@@ -386,25 +468,25 @@ const server = createServer(async (request, response) => {
       credentialKey: modelCredentialKey,
     })) return
 
-    if (paymentService && await handleSubscriptionRoute({
+    if (paymentService && subscriptionCatalogRepository && await handleSubscriptionRoute({
       request,
       response,
       url,
       requestId,
       userId,
       pool,
-      catalog: subscriptionCatalog,
+      catalogRepository: subscriptionCatalogRepository,
       paymentService,
     })) return
 
-    if (await handleProviderPoolRoute({
+    if (subscriptionCatalogRepository && await handleProviderPoolRoute({
       request,
       response,
       url,
       requestId,
       userId,
       pool,
-      catalog: subscriptionCatalog,
+      catalogRepository: subscriptionCatalogRepository,
     })) return
 
     if (await handleSellPutResearchRoute({

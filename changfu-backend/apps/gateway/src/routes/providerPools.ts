@@ -10,7 +10,9 @@ import {
   PostgresProviderPoolRepository,
   type ProviderPoolItemInput,
 } from '../../../../packages/persistence/src/postgresProviderPoolRepository.js'
-import type { SubscriptionCatalog } from '../../../../packages/subscriptions/src/catalog.js'
+import type {
+  PostgresSubscriptionCatalogRepository,
+} from '../../../../packages/persistence/src/postgresSubscriptionCatalogRepository.js'
 
 const maxBodyBytes = 128 * 1024
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -23,7 +25,15 @@ type Context = {
   requestId: string
   userId: string
   pool: Pool
-  catalog: SubscriptionCatalog
+  catalogRepository: PostgresSubscriptionCatalogRepository
+}
+
+export function normalizeProviderPoolSymbol(value: string): string {
+  let normalized = value.trim().toUpperCase()
+  while (/^(US|HK|CN|SG)\.\1\./.test(normalized)) {
+    normalized = normalized.replace(/^(US|HK|CN|SG)\.\1\./, '$1.')
+  }
+  return normalized
 }
 
 function sendEtagJson(
@@ -44,8 +54,8 @@ function parseItem(body: Record<string, unknown>): ProviderPoolItemInput | null 
   const nullableText = (value: unknown, max: number): string | null | undefined => (
     value === null ? null : typeof value === 'string' && value.length <= max ? value : undefined
   )
-  const providerSymbol = nullableText(body.providerSymbol, 128)
-  const canonicalSymbol = nullableText(body.canonicalSymbol, 128)
+  const rawProviderSymbol = nullableText(body.providerSymbol, 128)
+  const rawCanonicalSymbol = nullableText(body.canonicalSymbol, 128)
   const displayName = nullableText(body.displayName, 200)
   const underlyingSymbol = nullableText(body.underlyingSymbol, 128)
   const expiryDate = nullableText(body.expiryDate, 10)
@@ -53,7 +63,7 @@ function parseItem(body: Record<string, unknown>): ProviderPoolItemInput | null 
   const contractMultiplier = nullableText(body.contractMultiplier, 80)
   const sourceVerifiedAt = nullableText(body.sourceVerifiedAt, 40)
   if (
-    !providerSymbol || !canonicalSymbol || !displayName || !sourceVerifiedAt
+    !rawProviderSymbol || !rawCanonicalSymbol || !displayName || !sourceVerifiedAt
     || (body.market !== 'US' && body.market !== 'HK'
       && body.market !== 'CN' && body.market !== 'SG')
     || (body.instrumentType !== 'STOCK' && body.instrumentType !== 'ETF'
@@ -63,6 +73,8 @@ function parseItem(body: Record<string, unknown>): ProviderPoolItemInput | null 
     || strikePrice === undefined || contractMultiplier === undefined
     || typeof body.currency !== 'string'
   ) return null
+  const providerSymbol = normalizeProviderPoolSymbol(rawProviderSymbol)
+  const canonicalSymbol = normalizeProviderPoolSymbol(rawCanonicalSymbol)
   return {
     providerSymbol,
     canonicalSymbol,
@@ -70,7 +82,9 @@ function parseItem(body: Record<string, unknown>): ProviderPoolItemInput | null 
     market: body.market,
     instrumentType: body.instrumentType,
     optionType: body.optionType,
-    underlyingSymbol,
+    underlyingSymbol: underlyingSymbol === null
+      ? null
+      : normalizeProviderPoolSymbol(underlyingSymbol),
     expiryDate,
     strikePrice,
     currency: body.currency,
@@ -115,7 +129,11 @@ async function idempotentJson(
 
 export async function handleProviderPoolRoute(context: Context): Promise<boolean> {
   const { request, response, url, requestId, userId } = context
-  const repository = new PostgresProviderPoolRepository(context.pool, context.catalog)
+  if (!url.pathname.startsWith('/v1/research/pools')) return false
+  const repository = new PostgresProviderPoolRepository(
+    context.pool,
+    await context.catalogRepository.activeCatalog(),
+  )
 
   if (request.method === 'GET' && url.pathname === '/v1/research/pools') {
     const result = await repository.listPools(userId)

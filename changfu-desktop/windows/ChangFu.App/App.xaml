@@ -1,0 +1,11 @@
+<Application x:Class="ChangFu.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <SolidColorBrush x:Key="WorkspaceBackground" Color="#F4F5F7" />
+        <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#D9DCE1" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#68707D" />
+    </Application.Resources>
+</Application>

@@ -16,6 +16,14 @@ struct AuthenticationGateView: View {
                 ) { username, password in
                     await state.login(username: username, password: password)
                 }
+            case .passwordChangeRequired(let message):
+                PasswordChangeView(
+                    message: message,
+                    isSubmitting: state.isChangingPassword,
+                    reservesDebugBannerSpace: state.isDebugMode
+                ) { nextPassword in
+                    await state.changePassword(nextPassword: nextPassword)
+                }
             case .signedIn:
                 RootView(state: state)
             }
@@ -44,6 +52,153 @@ struct AuthenticationGateView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+private struct PasswordChangeView: View {
+    let message: String?
+    let isSubmitting: Bool
+    let reservesDebugBannerSpace: Bool
+    let submit: (String) async -> Void
+
+    @State private var nextPassword = ""
+    @State private var confirmation = ""
+    @State private var localMessage: String?
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case nextPassword
+        case confirmation
+    }
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Text("长富")
+                        .font(.system(size: 24, weight: .bold))
+                    Spacer()
+                    Text("首次登录安全设置")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, reservesDebugBannerSpace ? 188 : 28)
+                .padding(.trailing, 28)
+                .frame(height: 64)
+
+                Divider()
+
+                HStack {
+                    Spacer(minLength: 40)
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("修改初始密码")
+                                .font(.system(size: 28, weight: .semibold))
+                            Text("完成修改后，使用新密码重新登录")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        passwordField(
+                            title: "新密码",
+                            placeholder: "至少 12 位，包含字母和数字",
+                            text: $nextPassword,
+                            field: .nextPassword
+                        )
+                        passwordField(
+                            title: "确认新密码",
+                            placeholder: "请再次输入新密码",
+                            text: $confirmation,
+                            field: .confirmation
+                        )
+
+                        if let displayedMessage = localMessage ?? message,
+                           !displayedMessage.isEmpty {
+                            Label(displayedMessage, systemImage: "exclamationmark.circle")
+                                .font(.callout)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Button(action: changePassword) {
+                            HStack(spacing: 8) {
+                                if isSubmitting {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Text(isSubmitting ? "正在修改" : "修改密码")
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(
+                            isSubmitting
+                                || nextPassword.isEmpty
+                                || confirmation.isEmpty
+                        )
+                    }
+                    .frame(width: 360)
+                    Spacer(minLength: 40)
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(8)
+        }
+        .onAppear { focusedField = .nextPassword }
+    }
+
+    @ViewBuilder
+    private func passwordField(
+        title: String,
+        placeholder: String,
+        text: Binding<String>,
+        field: Field
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.callout.weight(.medium))
+            SecureField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .focused($focusedField, equals: field)
+                .onSubmit {
+                    switch field {
+                    case .nextPassword:
+                        focusedField = .confirmation
+                    case .confirmation:
+                        changePassword()
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 46)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor))
+                }
+        }
+    }
+
+    private func changePassword() {
+        guard !isSubmitting else { return }
+        guard nextPassword == confirmation else {
+            localMessage = "两次输入的新密码不一致"
+            return
+        }
+        localMessage = nil
+        let submittedNextPassword = nextPassword
+        nextPassword = ""
+        confirmation = ""
+        Task {
+            await submit(submittedNextPassword)
         }
     }
 }

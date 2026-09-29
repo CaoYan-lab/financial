@@ -210,7 +210,7 @@ veFaaS 建议配置：
 | Min 实例 | 1 | 1 |
 | Max 实例 | 4 | 4 |
 | 单实例并发 | 20 | 10 |
-| 请求超时 | 360 秒 | 330 秒 |
+| 请求超时 | veFaaS 360 秒；APIG 路由关闭额外超时 | veFaaS 330 秒；APIG 路由关闭额外超时 |
 | VPC | 现有 `fin-vpc` 双可用区子网 | 同左 |
 | 公网访问 | 关闭直接入口；由 APIG 暴露 | 关闭 |
 | TLS 日志 | 独立主题 | 独立主题 |
@@ -442,6 +442,9 @@ Worker：
   <https://www.volcengine.com/docs/6569/111770>
 - API Gateway 路由超时可关闭；开启后超时返回 504：
   <https://www.volcengine.com/docs/6569/135722>
+- 长富 APIG 路由统一关闭额外超时，由 veFaaS 与应用层超时负责截止。生产实测表明在当前
+  APIG/veFaaS 组合下显式 `Timeout` 会提前取消仍在执行的函数请求，表现为
+  `504 upstream request timeout` 和函数日志 `client canceled request`。
 - RDS PostgreSQL 实例需与调用方同地域/VPC，并配置子网：
   <https://docs.volcengine.com/docs/6438/79254>
 - RDS PostgreSQL 私网连接同样必须配置白名单，禁止使用 `0.0.0.0/0`：

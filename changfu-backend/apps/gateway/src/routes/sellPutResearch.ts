@@ -13,7 +13,6 @@ import { parseObject, readBody } from '../../../../packages/http/src/router.js'
 import { IdempotencyService, requestHash } from '../../../../packages/idempotency/src/idempotencyService.js'
 import {
   PostgresSellPutResearchRepository,
-  SellPutResearchError,
   type SellPutProvider,
 } from '../../../../packages/persistence/src/postgresSellPutResearchRepository.js'
 
@@ -31,6 +30,46 @@ type Context = {
   workerUrl: string
   internalToken: string
   signal: AbortSignal
+}
+
+export async function hasActiveSellPutEntitlement(
+  pool: Pick<Pool, 'query'>,
+  userId: string,
+  providerId: SellPutProvider,
+): Promise<boolean> {
+  const result = await pool.query<{ active: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM changfu.user_subscriptions subscription
+         JOIN changfu.subscription_broker_slots slot
+           ON slot.subscription_id = subscription.subscription_id
+          AND slot.user_id = subscription.user_id
+        WHERE subscription.user_id = $1::bigint
+          AND subscription.status = 'ACTIVE'
+          AND subscription.starts_at <= now()
+          AND subscription.expires_at > now()
+          AND slot.provider_id = $2
+          AND slot.status = 'ACTIVE'
+     ) AS active`,
+    [userId, providerId],
+  )
+  return result.rows[0]?.active === true
+}
+
+async function requireSellPutEntitlement(
+  context: Context,
+  providerId: SellPutProvider,
+): Promise<boolean> {
+  if (await hasActiveSellPutEntitlement(context.pool, context.userId, providerId)) {
+    return true
+  }
+  sendProblem(
+    context.response,
+    403,
+    'SELL_PUT_ENTITLEMENT_REQUIRED',
+    context.requestId,
+  )
+  return false
 }
 
 function provider(value: unknown): SellPutProvider | null {
@@ -210,6 +249,7 @@ export async function handleSellPutResearchRoute(context: Context): Promise<bool
   )
   if (request.method === 'POST' && syncPoolMatch?.groups?.provider) {
     const selectedProvider = syncPoolMatch.groups.provider as SellPutProvider
+    if (!await requireSellPutEntitlement(context, selectedProvider)) return true
     await idempotentJson(context, `sell-put:pool:sync-top30:${selectedProvider}`, async () => {
       const universe = await fetchSellPutTopThirty()
       return {
@@ -231,6 +271,8 @@ export async function handleSellPutResearchRoute(context: Context): Promise<bool
     /^\/v1\/sell-put\/pools\/(?<provider>FUTU|LONGBRIDGE)\/items$/,
   )
   if (request.method === 'POST' && addMatch?.groups?.provider) {
+    const selectedProvider = addMatch.groups.provider as SellPutProvider
+    if (!await requireSellPutEntitlement(context, selectedProvider)) return true
     await idempotentJson(context, `sell-put:pool:add:${addMatch.groups.provider}`, async body => {
       const normalizedSymbol = typeof body.symbol === 'string' ? body.symbol.trim().toUpperCase() : ''
       const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : ''
@@ -261,6 +303,8 @@ export async function handleSellPutResearchRoute(context: Context): Promise<bool
       sendProblem(response, 400, 'SELL_PUT_POOL_ITEM_INVALID', requestId)
       return true
     }
+    const selectedProvider = deleteMatch.groups.provider as SellPutProvider
+    if (!await requireSellPutEntitlement(context, selectedProvider)) return true
     await idempotentJson(
       context,
       `sell-put:pool:remove:${deleteMatch.groups.provider}:${deleteMatch.groups.item}`,
@@ -290,6 +334,12 @@ export async function handleSellPutResearchRoute(context: Context): Promise<bool
         || observations.some(item => item === null)
         || new Set(observations.map(item => item!.symbol)).size !== observations.length
       ) return { status: 400, body: { code: 'SELL_PUT_REPORT_INVALID', requestId } }
+      if (!await hasActiveSellPutEntitlement(context.pool, userId, selectedProvider)) {
+        return {
+          status: 403,
+          body: { code: 'SELL_PUT_ENTITLEMENT_REQUIRED', requestId },
+        }
+      }
       const typedObservations = observations as SellPutObservation[]
       if (typedObservations.length !== 30) {
         return { status: 400, body: { code: 'SELL_PUT_TOP30_REQUIRED', requestId } }

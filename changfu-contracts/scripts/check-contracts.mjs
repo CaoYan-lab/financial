@@ -7,6 +7,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const schemasDir = join(root, 'schemas')
 const fixturesDir = join(root, 'fixtures')
 const expectedSchemas = [
+  'admin-plan.schema.json',
+  'admin-subscription.schema.json',
+  'admin-user.schema.json',
   'broker-event.schema.json',
   'candidate-pool.schema.json',
   'context-envelope.schema.json',
@@ -14,6 +17,7 @@ const expectedSchemas = [
   'model-provider-config.schema.json',
   'model-result.schema.json',
   'model-run-event.schema.json',
+  'official-model-config.schema.json',
   'provider-research-pool.schema.json',
   'research-pool.schema.json',
   'signed-order-intent.schema.json',
@@ -100,4 +104,27 @@ assert(openapi.includes('Idempotency-Key'), 'OpenAPI 缺少幂等键')
 assert(!forbiddenPersistentFields.some(field => openapi.includes(field)), 'OpenAPI 暴露了禁止持久化字段')
 assert(!openapi.includes('apiKeyLastFour'), 'OpenAPI 不得使用可误解为密钥值的字段名')
 
-process.stdout.write(`长富协议检查通过：${schemaFiles.length} 个 Schema，2 个黄金样例。\n`)
+const adminOpenapi = await readFile(join(root, 'openapi', 'changfu-admin-v1.yaml'), 'utf8')
+for (const path of [
+  '/api/v1/admin/auth/login:',
+  '/api/v1/admin/users:',
+  '/api/v1/admin/users/{userId}/subscription:',
+  '/api/v1/admin/plans:',
+  '/api/v1/admin/official-model:',
+]) {
+  assert(adminOpenapi.includes(path), `Admin OpenAPI 缺少接口 ${path}`)
+}
+assert(adminOpenapi.includes('X-CSRF-Token'), 'Admin OpenAPI 缺少 CSRF 门禁')
+assert(adminOpenapi.includes('Idempotency-Key'), 'Admin OpenAPI 缺少幂等键')
+assert(adminOpenapi.includes('changfu_admin_session'), 'Admin OpenAPI 缺少会话 Cookie')
+for (const forbidden of [
+  'api_key_ciphertext',
+  'api_key_nonce',
+  'api_key_auth_tag',
+  'password_hash',
+  'session_token_hash',
+]) {
+  assert(!adminOpenapi.includes(forbidden), `Admin OpenAPI 暴露敏感字段 ${forbidden}`)
+}
+
+process.stdout.write(`长富协议检查通过：${schemaFiles.length} 个 Schema，2 个 OpenAPI 契约，2 个黄金样例。\n`)

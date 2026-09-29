@@ -13,6 +13,11 @@ struct ChangFuDesktopTests {
             suite.finish()
             return
         }
+        if ProcessInfo.processInfo.environment["CHANGFU_TEST_SCOPE"] == "longbridge" {
+            await runLongbridgeBrokerTests(&suite)
+            suite.finish()
+            return
+        }
         runWorkspaceTests(&suite)
         runMarketIntelligenceTests(&suite)
         runResearchProductTests(&suite)
@@ -376,6 +381,41 @@ struct ChangFuDesktopTests {
                 && ProviderPoolCacheSnapshot.empty.summaries.isEmpty
                 && ProviderPoolCacheSnapshot.empty.pools.isEmpty
         }
+        suite.test("Provider 标的代码幂等去除重复市场前缀") {
+            let itemData = Data("""
+            {"itemId":"item-1","providerId":"FUTU","providerSymbol":"US.US.NVDA",
+             "canonicalSymbol":"US.US.NVDA","displayName":"NVIDIA","market":"US",
+             "instrumentType":"STOCK","optionType":null,"underlyingSymbol":null,
+             "expiryDate":null,"strikePrice":null,"currency":"USD",
+             "contractMultiplier":null,"status":"ACTIVE",
+             "addedAt":"2026-09-29T00:00:00.000Z"}
+            """.utf8)
+            guard let item = try? JSONDecoder().decode(ProviderPoolItem.self, from: itemData) else {
+                return false
+            }
+            let instrument = BrokerInstrument(
+                providerId: "FUTU",
+                providerSymbol: "US.US.GOOG",
+                canonicalSymbol: "US.US.GOOG",
+                displayName: "Alphabet",
+                market: .us,
+                instrumentType: .stock,
+                currency: "USD",
+                addable: true,
+                unavailableReason: nil
+            )
+            let request = AddProviderPoolItemRequest(
+                instrument: instrument,
+                sourceVerifiedAt: "2026-09-29T00:00:00Z"
+            )
+            return item.providerSymbol == "US.NVDA"
+                && item.canonicalSymbol == "US.NVDA"
+                && request.providerSymbol == "US.GOOG"
+                && request.canonicalSymbol == "US.GOOG"
+                && BrokerSymbolNormalizer.prefixed("US.NVDA", market: .us) == "US.NVDA"
+                && BrokerSymbolNormalizer.prefixed("NVDA", market: .us) == "US.NVDA"
+                && BrokerSymbolNormalizer.normalize("US.BRK.B") == "US.BRK.B"
+        }
     }
 
     private static func runSubscriptionAndTradingModelTests(_ suite: inout TestSuite) {
@@ -407,7 +447,7 @@ struct ChangFuDesktopTests {
              "billingPeriod":"YEARLY","effectiveAt":"2026-10-19T00:00:00.000Z",
              "retainedProviderIds":["FUTU"]},
              "slots":[{"slotId":"slot-1","slotOrdinal":1,"providerId":"FUTU",
-             "status":"BOUND","boundAt":"2026-09-19T00:00:00.000Z",
+             "status":"ACTIVE","boundAt":"2026-09-19T00:00:00.000Z",
              "nextRebindAt":null,"version":1}]}}
             """.utf8)
             let orderData = Data("""
@@ -460,6 +500,17 @@ struct ChangFuDesktopTests {
                 && catalog.paymentChannels.first?.id == "WECHAT"
                 && current.subscription?.id == "subscription-1"
                 && current.subscription?.slots.first?.id == "slot-1"
+                && current.subscription?.grantsResearchAccess(
+                    to: "FUTU",
+                    at: Date(timeIntervalSince1970: 1_789_833_600)
+                ) == true
+                && current.subscription?.grantsResearchAccess(
+                    to: "LONGBRIDGE",
+                    at: Date(timeIntervalSince1970: 1_789_833_600)
+                ) == false
+                && current.subscription?.isActive(
+                    at: Date(timeIntervalSince1970: 1_792_425_600)
+                ) == false
                 && order.id == "order-1"
                 && order.displayPayableAmount == "¥29.00"
         }
@@ -1304,7 +1355,9 @@ struct ChangFuDesktopTests {
             accessToken: "access",
             accessExpiresAt: accessExpiry,
             refreshToken: "refresh",
-            refreshExpiresAt: refreshExpiry
+            refreshExpiresAt: refreshExpiry,
+            deviceId: "device-id",
+            mustChangePassword: true
         )
         suite.test("令牌对只向会话暴露访问令牌") {
             pair.session == AuthenticationSession(
@@ -1312,6 +1365,9 @@ struct ChangFuDesktopTests {
                 accessExpiresAt: accessExpiry,
                 refreshExpiresAt: refreshExpiry
             )
+        }
+        suite.test("令牌对携带服务端设备标识和首次改密门禁") {
+            pair.deviceId == "device-id" && pair.mustChangePassword == true
         }
         suite.test("登录请求字段编码完整") {
             let request = DesktopLoginRequest(
@@ -1347,6 +1403,27 @@ struct ChangFuDesktopTests {
                     == "refresh-token.debug-local"
                 && BackendEnvironment.debugLocal.isDebug
         }
+        suite.test("设备身份作用域按环境和业务用户隔离且规范化用户名") {
+            let debugAdmin = SecureCredentialStore.scopedDeviceAccount(
+                for: .debugLocal,
+                username: "admin"
+            )
+            let debugShock = SecureCredentialStore.scopedDeviceAccount(
+                for: .debugLocal,
+                username: "shockcao"
+            )
+            let debugShockAgain = SecureCredentialStore.scopedDeviceAccount(
+                for: .debugLocal,
+                username: " ShockCao "
+            )
+            let cloudShock = SecureCredentialStore.scopedDeviceAccount(
+                for: cloud,
+                username: "shockcao"
+            )
+            return debugAdmin != debugShock
+                && debugShock == debugShockAgain
+                && debugShock != cloudShock
+        }
         let credentialStore = SecureCredentialStore(
             service: "com.changfu.desktop.tests.\(UUID().uuidString)"
         )
@@ -1373,20 +1450,28 @@ struct ChangFuDesktopTests {
         )
         MockURLProtocol.configure([
             "/v1/auth/login": .http(200, tokenJSON),
+            "/v1/auth/password": .http(200, Data(#"{"changed":true}"#.utf8)),
             "/v1/auth/logout": .http(204, Data())
         ])
         do {
             let pair = try await client.login(loginRequest)
+            try await client.changePassword(
+                nextPassword: "replacement-password-2",
+                accessToken: pair.accessToken
+            )
             await client.logout(refreshToken: pair.refreshToken)
             let captured = MockURLProtocol.capturedRequests()
-            suite.test("登录与登出请求正确") {
+            suite.test("登录、首次改密与登出请求正确") {
                 pair.accessToken == "access-token"
+                    && pair.deviceId == "11111111-1111-4111-8111-111111111111"
+                    && pair.mustChangePassword == true
                     && captured.map(\.path).contains("/v1/auth/login")
+                    && captured.map(\.path).contains("/v1/auth/password")
                     && captured.map(\.path).contains("/v1/auth/logout")
                     && captured.allSatisfy { $0.method == "POST" }
             }
         } catch {
-            suite.fail("登录与登出请求正确", detail: error.localizedDescription)
+            suite.fail("登录、首次改密与登出请求正确", detail: error.localizedDescription)
         }
 
         MockURLProtocol.configure([
@@ -2217,13 +2302,29 @@ struct ChangFuDesktopTests {
                     printf '[{"symbol":"AAPL.US","name":"Apple","quantity":"10","cost_price":"180","currency":"USD","market":"US"},{"symbol":"700.HK","name":"腾讯控股","quantity":20,"cost_price":"500","currency":"HKD","market":"HK"}]\\n'
                     ;;
                   quote)
-                    printf '[{"symbol":"AAPL.US","last_done":"200","prev_close":"198","trade_status":"Overnight","overnight_quote":{"last_done":"201.5"}},{"symbol":"700.HK","last_done":"510","prev_close":"505","trade_status":"Normal"}]\\n'
+                    printf '[{"symbol":"AAPL.US","last":"200","prev_close":"198","trade_status":"Overnight","status":"Normal","pre_market":{"last":"199.5"},"post_market":{"last":"200.5"},"overnight":{"last":"201.5"}},{"symbol":"700.HK","last":"510","prev_close":"505","status":"Normal"}]\\n'
                     ;;
                   kline)
                     printf '[{"time":"2026-09-18T01:00:00Z","open":"198","high":"201","low":"197","close":"200","volume":"1000","turnover":"200000"}]\\n'
                     ;;
                   market-status)
-                    printf '[{"market":"US","status":"Overnight"},{"market":"HK","status":"Trading"}]\\n'
+                    printf '[{"market":"US","status":"Closed"},{"market":"HK","status":"Trading"}]\\n'
+                    ;;
+                  static)
+                    case "$2" in
+                      NVDA.US)
+                        printf '[{"symbol":"NVDA.US","name":"英伟达","currency":"USD"}]\\n'
+                        ;;
+                      SPY.US)
+                        printf '[{"symbol":"SPY.US","name":"标普500ETF-SPDR","currency":"USD"}]\\n'
+                        ;;
+                      BRK.B.US)
+                        printf '[{"symbol":"BRK.B.US","name":"Berkshire Hathaway","currency":"USD"}]\\n'
+                        ;;
+                      *)
+                        exit 8
+                        ;;
+                    esac
                     ;;
                   order)
                     if [ "$2" = "executions" ]; then
@@ -2255,6 +2356,27 @@ struct ChangFuDesktopTests {
             )
             await broker.connect()
             let snapshot = try await broker.loadSnapshot()
+            let stockSearch = try await broker.searchInstruments(
+                BrokerInstrumentSearchRequest(
+                    query: "US.NVDA",
+                    markets: [.us],
+                    instrumentTypes: [.stock]
+                )
+            )
+            let etfSearch = try await broker.searchInstruments(
+                BrokerInstrumentSearchRequest(
+                    query: "SPY.US",
+                    markets: [.us],
+                    instrumentTypes: [.etf]
+                )
+            )
+            let dottedSearch = try await broker.searchInstruments(
+                BrokerInstrumentSearchRequest(
+                    query: "US.BRK.B",
+                    markets: [.us],
+                    instrumentTypes: [.stock]
+                )
+            )
             suite.test("Longbridge Host 标准化动态 JSON") {
                 snapshot.account.totalAssets == Decimal(string: "12000.50")
                     && snapshot.positions.count == 2
@@ -2271,8 +2393,25 @@ struct ChangFuDesktopTests {
             suite.test("Longbridge 美股与港股时段互不污染") {
                 snapshot.quotes.first { $0.symbol == "US.AAPL" }?.marketState == "夜盘"
                     && snapshot.quotes.first { $0.symbol == "HK.700" }?.marketState == "盘中"
+                    && snapshot.quotes.first { $0.symbol == "US.AAPL" }?.preMarketPrice
+                        == Decimal(string: "199.5")
+                    && snapshot.quotes.first { $0.symbol == "US.AAPL" }?.afterHoursPrice
+                        == Decimal(string: "200.5")
                     && snapshot.quotes.first { $0.symbol == "US.AAPL" }?.overnightPrice
                         == Decimal(string: "201.5")
+            }
+            suite.test("Longbridge 静态信息缺少类型时仍允许已指定类型标的入池") {
+                stockSearch.results.first?.providerSymbol == "NVDA.US"
+                    && stockSearch.results.first?.canonicalSymbol == "US.NVDA"
+                    && stockSearch.results.first?.instrumentType == .stock
+                    && stockSearch.results.first?.addable == true
+                    && etfSearch.results.first?.providerSymbol == "SPY.US"
+                    && etfSearch.results.first?.canonicalSymbol == "US.SPY"
+                    && etfSearch.results.first?.instrumentType == .etf
+                    && etfSearch.results.first?.addable == true
+                    && dottedSearch.results.first?.providerSymbol == "BRK.B.US"
+                    && dottedSearch.results.first?.canonicalSymbol == "US.BRK.B"
+                    && dottedSearch.results.first?.addable == true
             }
         } catch {
             suite.fail("Longbridge Host 解析夹具", detail: error.localizedDescription)
@@ -2450,7 +2589,8 @@ struct ChangFuDesktopTests {
     private static let tokenJSON = Data(
         """
         {"accessToken":"access-token","accessExpiresAt":"2027-01-15T08:00:00Z",
-         "refreshToken":"refresh-token","refreshExpiresAt":"2027-01-16T08:00:00Z"}
+         "refreshToken":"refresh-token","refreshExpiresAt":"2027-01-16T08:00:00Z",
+         "deviceId":"11111111-1111-4111-8111-111111111111","mustChangePassword":true}
         """.utf8
     )
 
@@ -2518,7 +2658,7 @@ private struct TestSuite {
     mutating func test(_ name: String, _ assertion: () -> Bool) {
         if assertion() {
             passed += 1
-            print("通过：\(name)")
+            writeLine("通过：\(name)")
         } else {
             fail(name, detail: "断言不成立")
         }
@@ -2527,7 +2667,7 @@ private struct TestSuite {
     mutating func test(_ name: String, _ assertion: () async -> Bool) async {
         if await assertion() {
             passed += 1
-            print("通过：\(name)")
+            writeLine("通过：\(name)")
         } else {
             fail(name, detail: "断言不成立")
         }
@@ -2535,12 +2675,16 @@ private struct TestSuite {
 
     mutating func fail(_ name: String, detail: String) {
         failed += 1
-        print("失败：\(name)：\(detail)")
+        writeLine("失败：\(name)：\(detail)")
     }
 
     func finish() -> Never {
-        print("长富桌面测试：通过 \(passed)，失败 \(failed)")
+        writeLine("长富桌面测试：通过 \(passed)，失败 \(failed)")
         Foundation.exit(failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+
+    private func writeLine(_ value: String) {
+        FileHandle.standardOutput.write(Data((value + "\n").utf8))
     }
 }
 

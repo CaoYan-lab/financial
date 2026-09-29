@@ -24,7 +24,7 @@ const catalogPath = fileURLToPath(
   new URL('../catalog/subscriptions/catalog.v1.json', import.meta.url),
 )
 const catalog = await loadSubscriptionCatalog(catalogPath)
-const repository = new PostgresSubscriptionRepository(pool, catalog)
+const repository = new PostgresSubscriptionRepository(pool)
 const modelCredentialKey = Buffer.alloc(32, 9).toString('base64')
 const modelProviderRepository = new PostgresModelProviderConfigRepository(
   pool,

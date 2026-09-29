@@ -31,7 +31,12 @@ test('登录复用现有账号并原子注册设备和 refresh 会话', async ()
   const client = {
     query: async (sql: string) => {
       statements.push(sql)
-      if (sql.includes('RETURNING device_id')) return { rowCount: 1, rows: [{ device_id: 'device' }] }
+      if (sql.includes('RETURNING device_id')) {
+        return {
+          rowCount: 1,
+          rows: [{ device_id: '11111111-1111-4111-8111-111111111111' }],
+        }
+      }
       return { rowCount: 1, rows: [] }
     },
     release() {},
@@ -39,7 +44,11 @@ test('登录复用现有账号并原子注册设备和 refresh 会话', async ()
   const pool = {
     query: async () => ({
       rowCount: 1,
-      rows: [{ id: '42', password_hash: passwordHash('correct-password') }],
+      rows: [{
+        id: '42',
+        password_hash: passwordHash('correct-password'),
+        must_change_password: true,
+      }],
     }),
     connect: async () => client,
   } as unknown as Pool
@@ -63,10 +72,16 @@ test('登录复用现有账号并原子注册设备和 refresh 会话', async ()
     audience: keys.config.audience,
   })
   assert.equal(claims.sub, '42')
-  assert.equal(claims.device_id, '22222222-2222-4222-8222-222222222222')
+  assert.equal(claims.device_id, '11111111-1111-4111-8111-111111111111')
+  assert.equal(tokens.deviceId, '11111111-1111-4111-8111-111111111111')
+  assert.equal(tokens.mustChangePassword, true)
   assert.equal(tokens.refreshToken.length >= 64, true)
   assert.equal(statements[0], 'BEGIN')
   assert.equal(statements.some(sql => sql.includes('INSERT INTO changfu.devices')), true)
+  assert.equal(
+    statements.some(sql => sql.includes('ON CONFLICT (user_id, fingerprint_hash)')),
+    true,
+  )
   assert.equal(statements.some(sql => sql.includes('INSERT INTO changfu.device_sessions')), true)
   assert.equal(statements.some(sql => sql.includes('INSERT INTO changfu.security_audit')), true)
   assert.equal(statements.at(-1), 'COMMIT')
@@ -111,6 +126,7 @@ test('refresh token 单次轮换并可注销', async () => {
             session_id: '55555555-5555-4555-8555-555555555555',
             user_id: '42',
             device_id: '22222222-2222-4222-8222-222222222222',
+            must_change_password: false,
           }],
         }
       }
@@ -129,9 +145,54 @@ test('refresh token 单次轮换并可注销', async () => {
 
   const refreshed = await service.refresh('r'.repeat(64))
   assert.equal(refreshed.refreshToken === 'r'.repeat(64), false)
+  assert.equal(refreshed.mustChangePassword, false)
   assert.equal(poolStatements.some(item => item.sql.includes('FOR UPDATE OF s')), true)
   assert.equal(poolStatements.some(item => item.sql.includes('ON CONFLICT (session_id)')), true)
 
   await service.logout(refreshed.refreshToken)
   assert.equal(poolStatements.some(item => item.sql.includes('SET revoked_at = now()')), true)
+})
+
+test('首次登录会话无需重复提交临时密码即可清除门禁并撤销现有会话', async () => {
+  const statements: Array<{ sql: string; values: unknown[] | undefined }> = []
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      statements.push({ sql, values })
+      if (sql.includes('SELECT u.password_hash')) {
+        return {
+          rowCount: 1,
+          rows: [{
+            password_hash: passwordHash('temporary-password-1'),
+            must_change_password: true,
+          }],
+        }
+      }
+      return { rowCount: 1, rows: [] }
+    },
+    release() {},
+  } as unknown as PoolClient
+  const pool = {
+    connect: async () => client,
+  } as unknown as Pool
+  const service = new AuthService(pool, signing().config)
+
+  await service.changePassword({
+    userId: '42',
+    deviceId: '22222222-2222-4222-8222-222222222222',
+    nextPassword: 'replacement-password-2',
+  })
+
+  assert.equal(
+    statements.some(item => item.sql.includes('SET must_change_password = false')),
+    true,
+  )
+  assert.equal(
+    statements.some(item => item.sql.includes('UPDATE changfu.device_sessions')),
+    true,
+  )
+  assert.equal(
+    statements.some(item => item.sql.includes("'PASSWORD_CHANGE'")),
+    false,
+  )
+  assert.equal(statements.at(-1)?.sql, 'COMMIT')
 })

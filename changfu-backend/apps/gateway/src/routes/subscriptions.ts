@@ -11,8 +11,10 @@ import type { PaymentChannel } from '../../../../packages/payments/src/paymentPr
 import { PostgresSubscriptionRepository } from '../../../../packages/persistence/src/postgresSubscriptionRepository.js'
 import {
   publicSubscriptionCatalog,
-  type SubscriptionCatalog,
 } from '../../../../packages/subscriptions/src/catalog.js'
+import type {
+  PostgresSubscriptionCatalogRepository,
+} from '../../../../packages/persistence/src/postgresSubscriptionCatalogRepository.js'
 import type { BillingPeriod } from '../../../../packages/subscriptions/src/billingClock.js'
 import type { SubscriptionOrderType } from '../../../../packages/subscriptions/src/subscriptionService.js'
 
@@ -26,7 +28,7 @@ type Context = {
   requestId: string
   userId: string
   pool: Pool
-  catalog: SubscriptionCatalog
+  catalogRepository: PostgresSubscriptionCatalogRepository
   paymentService: PaymentService
 }
 
@@ -105,10 +107,11 @@ async function idempotentJson(
 }
 
 export async function handleSubscriptionRoute(context: Context): Promise<boolean> {
-  const { request, response, url, requestId, userId, catalog, paymentService } = context
-  const repository = new PostgresSubscriptionRepository(context.pool, catalog)
+  const { request, response, url, requestId, userId, paymentService } = context
+  const repository = new PostgresSubscriptionRepository(context.pool)
 
   if (request.method === 'GET' && url.pathname === '/v1/subscription/catalog') {
+    const catalog = await context.catalogRepository.activeCatalog()
     sendJson(response, 200, publicSubscriptionCatalog(catalog, paymentService.availability()))
     return true
   }

@@ -86,6 +86,33 @@ public actor BackendClient {
         _ = try? await session.data(for: request)
     }
 
+    public func changePassword(
+        nextPassword: String,
+        accessToken: String
+    ) async throws {
+        let url = baseURL.appending(path: "/v1/auth/password")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(UUID().uuidString.lowercased(), forHTTPHeaderField: "Idempotency-Key")
+        request.httpBody = try JSONEncoder().encode(PasswordChangeRequest(
+            nextPassword: nextPassword
+        ))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.requestFailed
+        }
+        if http.statusCode == 401 {
+            throw BackendClientError.authenticationRejected
+        }
+        guard http.statusCode == 200 else {
+            throw responseError(data: data, statusCode: http.statusCode)
+        }
+    }
+
     public func readiness() async throws -> BackendReadiness {
         var request = URLRequest(url: baseURL.appending(path: "/v1/ready"))
         request.timeoutInterval = 5
@@ -592,7 +619,7 @@ public actor BackendClient {
             method: "POST",
             body: input,
             acceptedStatusCodes: [201],
-            timeoutInterval: 330,
+            timeoutInterval: 360,
             accessToken: accessToken
         )
     }
@@ -833,7 +860,17 @@ public enum BackendClientError: LocalizedError {
         case .serviceUnavailable: "长富服务暂时不可用"
         case .notFound: "请求的长富资源不存在"
         case .modelRunFailed(let code): "模型运行失败（\(code)）"
-        case .serviceRejected(let code): "请求未完成（\(code)）"
+        case .serviceRejected(let code):
+            switch code {
+            case "CURRENT_PASSWORD_INVALID":
+                "当前密码错误"
+            case "PASSWORD_POLICY_INVALID":
+                "新密码至少 12 位，并同时包含字母和数字"
+            case "PASSWORD_CHANGE_REQUIRED":
+                "首次登录必须先修改密码"
+            default:
+                "请求未完成（\(code)）"
+            }
         }
     }
 }

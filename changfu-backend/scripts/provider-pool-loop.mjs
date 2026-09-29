@@ -420,10 +420,7 @@ try {
           state.items.map(item => item.provider_symbol),
         )
         let nextIndex = 0
-        const concurrency = Math.max(
-          1,
-          Math.min(Number(state.config.maxConcurrency ?? 1), state.items.length),
-        )
+        const concurrency = state.items.length
         const workers = Array.from({ length: concurrency }, async () => {
           while (nextIndex < state.items.length) {
             const item = state.items[nextIndex++]

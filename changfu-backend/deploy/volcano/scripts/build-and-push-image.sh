@@ -44,6 +44,7 @@ fi
 TAG="${RELEASE}-${SHA}"
 GATEWAY_IMAGE="${REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-gateway"
 WORKER_IMAGE="${REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-worker"
+ADMIN_IMAGE="${REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-admin"
 MIGRATOR_IMAGE="${REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-migrator"
 
 export VE_CALLER_TYPE="${VE_CALLER_TYPE:-ai_agent}"
@@ -65,6 +66,11 @@ npm run check
   -t "$WORKER_IMAGE" \
   .
 "$CONTAINER_CLI" build \
+  --target admin \
+  -f deploy/volcano/Dockerfile.vefaas \
+  -t "$ADMIN_IMAGE" \
+  .
+"$CONTAINER_CLI" build \
   --target migrator \
   -f deploy/volcano/Dockerfile.vefaas \
   -t "$MIGRATOR_IMAGE" \
@@ -82,11 +88,19 @@ unset AUTH_JSON CR_TOKEN CR_USERNAME
 
 "$CONTAINER_CLI" push "$GATEWAY_IMAGE"
 "$CONTAINER_CLI" push "$WORKER_IMAGE"
+"$CONTAINER_CLI" push "$ADMIN_IMAGE"
 "$CONTAINER_CLI" push "$MIGRATOR_IMAGE"
 
 jq -n \
   --arg tag "$TAG" \
   --arg gateway "$GATEWAY_IMAGE" \
   --arg worker "$WORKER_IMAGE" \
+  --arg admin "$ADMIN_IMAGE" \
   --arg migrator "$MIGRATOR_IMAGE" \
-  '{tag:$tag,gatewayImage:$gateway,workerImage:$worker,migratorImage:$migrator}'
+  '{
+    tag:$tag,
+    gatewayImage:$gateway,
+    workerImage:$worker,
+    adminImage:$admin,
+    migratorImage:$migrator
+  }'

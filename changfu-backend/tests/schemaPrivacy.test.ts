@@ -126,6 +126,53 @@ test('第三方模型迁移只保存 AES-GCM 密文和脱敏尾号', async () =>
   }
 })
 
+test('管理端迁移隔离管理员身份、人工授权和官方模型密钥', async () => {
+  const sql = await readFile(
+    resolve(root, 'migrations/010_admin_console.sql'),
+    'utf8',
+  )
+  for (const table of [
+    'admin_users',
+    'admin_sessions',
+    'audit_events',
+    'subscription_grants',
+    'official_model_config_versions',
+  ]) {
+    assert.match(
+      sql,
+      new RegExp(`CREATE TABLE IF NOT EXISTS changfu_admin\\.${table} \\(`),
+    )
+  }
+  assert.match(sql, /session_token_hash char\(64\) NOT NULL UNIQUE/)
+  assert.match(sql, /csrf_token_hash char\(64\) NOT NULL/)
+  assert.match(sql, /api_key_ciphertext bytea NOT NULL/)
+  assert.match(sql, /api_key_nonce bytea NOT NULL/)
+  assert.match(sql, /api_key_auth_tag bytea NOT NULL/)
+  assert.match(sql, /source IN \('PAYMENT', 'ADMIN_GRANT'\)/)
+  assert.match(sql, /WHERE status = 'ACTIVE'/)
+  for (const forbidden of [
+    'session_token text',
+    'csrf_token text',
+    'api_key text',
+    'authorization text',
+  ]) {
+    assert.equal(sql.toLowerCase().includes(forbidden), false)
+  }
+})
+
+test('管理端写操作幂等键使用独立增量迁移且不保存响应正文', async () => {
+  const sql = await readFile(
+    resolve(root, 'migrations/011_admin_mutation_idempotency.sql'),
+    'utf8',
+  )
+  assert.match(
+    sql,
+    /CREATE TABLE IF NOT EXISTS changfu_admin\.mutation_idempotency_keys \(/,
+  )
+  assert.match(sql, /PRIMARY KEY \(admin_user_id, operation, idempotency_key\)/)
+  assert.equal(sql.includes('response_body'), false)
+})
+
 test('模型运行审计只新增请求标的而不保存原始上下文', async () => {
   const sql = await readFile(
     resolve(root, 'migrations/005_model_run_requested_symbols.sql'),

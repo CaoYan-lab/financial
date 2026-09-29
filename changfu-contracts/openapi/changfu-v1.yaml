@@ -82,6 +82,36 @@ paths:
       responses:
         "204":
           description: 会话已注销
+  /v1/auth/password:
+    post:
+      operationId: changePassword
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [nextPassword]
+              properties:
+                # 首次强制改密由重置后签发的有效访问令牌证明身份，无需重复提交临时密码。
+                currentPassword: { type: string, minLength: 1, maxLength: 256 }
+                nextPassword: { type: string, minLength: 12, maxLength: 256 }
+      responses:
+        "200":
+          description: 密码修改成功，现有会话已撤销
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [changed]
+                properties:
+                  changed: { type: boolean, const: true }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
   /v1/devices/enroll:
     post:
       operationId: enrollDevice
@@ -976,12 +1006,15 @@ components:
     TokenPair:
       type: object
       additionalProperties: false
-      required: [accessToken, accessExpiresAt, refreshToken, refreshExpiresAt]
+      required:
+        [accessToken, accessExpiresAt, refreshToken, refreshExpiresAt, deviceId, mustChangePassword]
       properties:
         accessToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         refreshToken: { type: string }
         refreshExpiresAt: { type: string, format: date-time }
+        deviceId: { type: string, format: uuid }
+        mustChangePassword: { type: boolean }
     EnrollDeviceRequest:
       type: object
       additionalProperties: false

@@ -123,6 +123,32 @@ public struct UserSubscription: Codable, Equatable, Identifiable, Sendable {
     public let slots: [SubscriptionBrokerSlot]
 
     public var id: String { subscriptionId }
+
+    public func grantsResearchAccess(
+        to providerId: String,
+        at now: Date = Date()
+    ) -> Bool {
+        isActive(at: now) && hasActiveSlot(for: providerId)
+    }
+
+    public func isActive(at now: Date = Date()) -> Bool {
+        guard status == "ACTIVE",
+              let startsAt = Self.parseTimestamp(startsAt),
+              let expiresAt = Self.parseTimestamp(expiresAt) else { return false }
+        return startsAt <= now && now < expiresAt
+    }
+
+    public func hasActiveSlot(for providerId: String) -> Bool {
+        return slots.contains {
+            $0.status == "ACTIVE" && $0.providerId == providerId
+        }
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
 }
 
 public struct SubscriptionCurrentEnvelope: Codable, Equatable, Sendable {

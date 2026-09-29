@@ -12,9 +12,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:admin-web": "npm --prefix admin-web run build",
     "check": "npm run typecheck && npm test",
     "dev:gateway": "tsx watch apps/gateway/src/server.ts",
     "dev:worker": "tsx watch apps/decision-worker/src/server.ts",
+    "dev:admin": "tsx watch apps/admin/src/server.ts",
+    "dev:admin-web": "npm --prefix admin-web run dev",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:verify": "tsx scripts/verify-database.ts",
     "test": "node --import tsx --test tests/**/*.test.ts",

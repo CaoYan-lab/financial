@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/admin-user.schema.json",
+  "title": "AdminManagedUser",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "userId",
+    "username",
+    "displayName",
+    "active",
+    "mustChangePassword",
+    "createdAt",
+    "lastLoginAt"
+  ],
+  "properties": {
+    "userId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "username": { "type": "string", "pattern": "^[a-zA-Z0-9._-]{3,80}$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "active": { "type": "boolean" },
+    "mustChangePassword": { "type": "boolean" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "lastLoginAt": { "type": ["string", "null"], "format": "date-time" },
+    "activeDeviceCount": { "type": "integer", "minimum": 0 },
+    "brokerConnections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/brokerConnection" }
+    },
+    "subscription": {
+      "oneOf": [
+        { "$ref": "admin-subscription.schema.json" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "brokerConnection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connectionId", "provider", "status"],
+      "properties": {
+        "connectionId": { "type": "string", "format": "uuid" },
+        "provider": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" },
+        "status": { "type": "string", "minLength": 1, "maxLength": 32 }
+      }
+    },
+    "createRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username", "displayName", "temporaryPassword"],
+      "properties": {
+        "username": { "type": "string", "pattern": "^[a-zA-Z0-9._-]{3,80}$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "temporaryPassword": { "type": "string", "minLength": 12, "maxLength": 256 }
+      }
+    },
+    "updateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "username": { "type": "string", "pattern": "^[a-zA-Z0-9._-]{3,80}$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 }
+      }
+    },
+    "resetPasswordRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["temporaryPassword"],
+      "properties": {
+        "temporaryPassword": { "type": "string", "minLength": 12, "maxLength": 256 }
+      }
+    }
+  }
+}

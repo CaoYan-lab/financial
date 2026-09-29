@@ -14,6 +14,11 @@ import {
   PostgresModelProviderConfigRepository,
   type ModelProviderProtocol,
 } from '../../../packages/model-provider/src/postgresModelProviderConfigRepository.js'
+import {
+  PostgresOfficialModelConfigRepository,
+  type EffectiveOfficialModelConfig,
+} from '../../../packages/model-provider/src/postgresOfficialModelConfigRepository.js'
+import { requestModelText } from '../../../packages/model-provider/src/modelHttpClient.js'
 import { DecisionService, type DecisionModel } from './decisionService.js'
 import { normalizeModelResult } from './modelResultNormalizer.js'
 import {
@@ -250,6 +255,7 @@ function parseModelConfigId(route: unknown): string | null | undefined {
 class ArkDecisionModel implements DecisionModel {
   constructor(
     private readonly modelConfigs: PostgresModelProviderConfigRepository,
+    private readonly officialModelConfigs: PostgresOfficialModelConfigRepository,
   ) {}
 
   async run(input: {
@@ -266,17 +272,23 @@ class ArkDecisionModel implements DecisionModel {
     if (typeof input.modelConfigId === 'string' && !custom) {
       throw new ModelRouteError('MODEL_ROUTE_UNAVAILABLE')
     }
-    const selectedModel = custom?.model ?? input.authority?.model.deploymentId ?? arkModel
-    const selectedApiKey = custom?.apiKey ?? arkApiKey
-    const selectedEndpoint = custom?.endpoint ?? arkEndpoint
-    const selectedProtocol: ModelProviderProtocol = custom?.protocol ?? 'OPENAI_RESPONSES'
+    const official = custom ? null : await this.officialModelConfigs.effective()
+    const selectedModel = custom?.model
+      ?? official?.model
+      ?? input.authority?.model.deploymentId
+      ?? arkModel
+    const selectedApiKey = custom?.apiKey ?? official?.apiKey ?? arkApiKey
+    const selectedEndpoint = custom?.endpoint ?? official?.endpoint ?? arkEndpoint
+    const selectedProtocol: ModelProviderProtocol = custom?.protocol
+      ?? official?.protocol
+      ?? 'OPENAI_RESPONSES'
     if (!selectedApiKey || !selectedModel) throw new Error('MODEL_CONFIG_MISSING')
-    if (custom) {
+    if (custom || official) {
       await assertSafeModelEndpoint(selectedEndpoint)
-      safeLogger.info('third_party_model_route_selected', {
+      safeLogger.info(custom ? 'third_party_model_route_selected' : 'official_model_route_selected', {
         requestId: input.context.requestId,
-        configId: custom.configId,
-        protocol: custom.protocol,
+        configId: custom?.configId ?? official?.configVersionId,
+        protocol: selectedProtocol,
       })
     }
     const toolCapabilities = new Map(
@@ -489,15 +501,33 @@ const pool = databaseUrl
       applicationName: 'changfu-decision-worker',
     }))
   : null
+const officialModelConfigs = pool
+  ? new PostgresOfficialModelConfigRepository(pool, modelCredentialKey)
+  : null
+
+function environmentOfficialConfig(): EffectiveOfficialModelConfig | null {
+  if (!arkApiKey || !arkModel) return null
+  return {
+    configVersionId: 'environment',
+    version: 0,
+    displayName: '长富Pro',
+    protocol: 'OPENAI_RESPONSES',
+    endpoint: arkEndpoint,
+    model: arkModel,
+    apiKey: arkApiKey,
+  }
+}
 
 const server = createServer(async (request, response) => {
   const requestId = request.headers['x-request-id']?.toString() ?? randomUUID()
   if (request.method === 'GET' && request.url === '/internal/v1/health') {
+    const activeOfficial = officialModelConfigs
+      ? await officialModelConfigs.effective().catch(() => null)
+      : null
     const configured = Boolean(
       pool
       && internalToken
-      && arkApiKey
-      && arkModel
+      && (activeOfficial || environmentOfficialConfig())
       && modelCredentialKey,
     )
     const database = pool
@@ -527,7 +557,10 @@ const server = createServer(async (request, response) => {
   }
   if (isSellPutReport) {
     try {
-      if (!arkApiKey || !arkModel) throw new Error('MODEL_CONFIG_MISSING')
+      if (!officialModelConfigs) throw new Error('MODEL_CONFIG_MISSING')
+      const official = await officialModelConfigs.effective() ?? environmentOfficialConfig()
+      if (!official) throw new Error('MODEL_CONFIG_MISSING')
+      await assertSafeModelEndpoint(official.endpoint)
       const body = JSON.parse((await readBody(request)).toString('utf8')) as {
         runId?: unknown
         providerId?: unknown
@@ -549,24 +582,14 @@ const server = createServer(async (request, response) => {
         observations: body.observations as SellPutObservation[],
         deterministicBaseline: body.deterministicBaseline as SellPutReportAnalysis,
       })
-      const upstream = await fetch(arkEndpoint, {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          authorization: `Bearer ${arkApiKey}`,
-          'content-type': 'application/json',
-        },
-        signal: AbortSignal.timeout(sellPutReportModelTimeoutMs),
-        body: JSON.stringify({
-          model: arkModel,
-          temperature: 0,
-          input: messages,
-        }),
-      })
-      if (!upstream.ok) throw new Error(`MODEL_HTTP_${upstream.status}`)
-      const bytes = Buffer.from(await upstream.arrayBuffer())
-      if (bytes.length > maxModelResponseBytes) throw new Error('MODEL_RESPONSE_TOO_LARGE')
-      const markdown = textFromResponse(JSON.parse(bytes.toString('utf8'))).trim()
+      const markdown = (await requestModelText({
+        config: official,
+        system: messages[0]!.content,
+        user: messages[1]!.content,
+        temperature: 0,
+        timeoutMs: sellPutReportModelTimeoutMs,
+        maxResponseBytes: maxModelResponseBytes,
+      })).trim()
         .replace(/^```(?:markdown)?\s*/i, '')
         .replace(/\s*```$/, '')
       if (!markdown) throw new Error('MODEL_RESPONSE_INVALID')
@@ -609,6 +632,7 @@ const server = createServer(async (request, response) => {
       new PostgresModelRunRepository(pool),
       new ArkDecisionModel(
         new PostgresModelProviderConfigRepository(pool, modelCredentialKey),
+        new PostgresOfficialModelConfigRepository(pool, modelCredentialKey),
       ),
       safeLogger,
       new PostgresDeviceAuthorizer(pool),

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/admin-plan.schema.json",
+  "title": "AdminSubscriptionPlanVersion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "planVersionId",
+    "planCode",
+    "version",
+    "displayName",
+    "status",
+    "effectiveFrom",
+    "effectiveUntil",
+    "brokerSlotLimit",
+    "poolCapacityPerProvider",
+    "monthlyReplacementLimit",
+    "features",
+    "catalogVersion",
+    "createdAt",
+    "prices"
+  ],
+  "properties": {
+    "planVersionId": { "type": "string", "format": "uuid" },
+    "planCode": { "enum": ["LITE", "PRO", "FLAGSHIP"] },
+    "version": { "type": "integer", "minimum": 1 },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "status": { "enum": ["DRAFT", "ACTIVE", "RETIRED"] },
+    "effectiveFrom": { "type": "string", "format": "date-time" },
+    "effectiveUntil": { "type": ["string", "null"], "format": "date-time" },
+    "brokerSlotLimit": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "poolCapacityPerProvider": { "type": ["integer", "null"], "minimum": 1 },
+    "monthlyReplacementLimit": { "type": ["integer", "null"], "minimum": 0 },
+    "features": { "$ref": "#/$defs/features" },
+    "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "prices": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/price" }
+    }
+  },
+  "$defs": {
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batchSize", "optionResearch", "optionTrading"],
+      "properties": {
+        "batchSize": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "optionResearch": { "type": "boolean" },
+        "optionTrading": { "type": "boolean" },
+        "poolCapacityProtectionLimit": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "price": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priceId", "billingPeriod", "durationMonths", "amountMinor"],
+      "properties": {
+        "priceId": { "type": "string", "format": "uuid" },
+        "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+        "durationMonths": { "enum": [1, 3, 12] },
+        "amountMinor": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "displayName",
+        "effectiveFrom",
+        "brokerSlotLimit",
+        "poolCapacityPerProvider",
+        "monthlyReplacementLimit",
+        "features",
+        "prices"
+      ],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "effectiveFrom": { "type": "string", "format": "date-time" },
+        "brokerSlotLimit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "poolCapacityPerProvider": { "type": ["integer", "null"], "minimum": 1 },
+        "monthlyReplacementLimit": { "type": ["integer", "null"], "minimum": 0 },
+        "features": { "$ref": "#/$defs/features" },
+        "prices": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["billingPeriod", "amountMinor"],
+            "properties": {
+              "billingPeriod": { "enum": ["MONTHLY", "QUARTERLY", "YEARLY"] },
+              "amountMinor": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

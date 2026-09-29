@@ -23,15 +23,18 @@ fi
 
 : "${CHANGFU_GATEWAY_FUNCTION_ID:?required}"
 : "${CHANGFU_WORKER_FUNCTION_ID:?required}"
+: "${CHANGFU_ADMIN_FUNCTION_ID:?required}"
 : "${CHANGFU_CR_REGISTRY_ENDPOINT:?required}"
 : "${CHANGFU_PUBLIC_API_ORIGIN:?required}"
 : "${CHANGFU_PRIVATE_WORKER_ORIGIN:?required}"
 : "${CHANGFU_WORKER_PROBE_ORIGIN:?required}"
+: "${CHANGFU_ADMIN_ORIGIN:?required}"
 
 NAMESPACE="${CHANGFU_CR_NAMESPACE:-fin}"
 REPOSITORY="${CHANGFU_CR_REPOSITORY:-changfu-backend}"
 GATEWAY_IMAGE="${CHANGFU_CR_REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-gateway"
 WORKER_IMAGE="${CHANGFU_CR_REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-worker"
+ADMIN_IMAGE="${CHANGFU_CR_REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-admin"
 export CHANGFU_MIGRATOR_IMAGE="${CHANGFU_CR_REGISTRY_ENDPOINT}/${NAMESPACE}/${REPOSITORY}:${TAG}-migrator"
 
 for command in flock vefaas curl jq; do
@@ -76,6 +79,7 @@ wait_release() {
 
 assert_function_name "$CHANGFU_GATEWAY_FUNCTION_ID" "changfu-gateway"
 assert_function_name "$CHANGFU_WORKER_FUNCTION_ID" "changfu-decision-worker"
+assert_function_name "$CHANGFU_ADMIN_FUNCTION_ID" "changfu-admin"
 
 cd "$BACKEND_ROOT"
 "$SCRIPT_DIR/migrate-rds.sh"
@@ -93,6 +97,12 @@ vefaas fn config --id "$CHANGFU_GATEWAY_FUNCTION_ID" \
 vefaas fn release --id "$CHANGFU_GATEWAY_FUNCTION_ID" \
   --description "$TAG gateway" -y -o json >/dev/null
 wait_release "$CHANGFU_GATEWAY_FUNCTION_ID" "Gateway"
+
+vefaas fn config --id "$CHANGFU_ADMIN_FUNCTION_ID" \
+  --source "$ADMIN_IMAGE" --sourceType image -y -o json >/dev/null
+vefaas fn release --id "$CHANGFU_ADMIN_FUNCTION_ID" \
+  --description "$TAG admin" -y -o json >/dev/null
+wait_release "$CHANGFU_ADMIN_FUNCTION_ID" "Admin"
 
 "$SCRIPT_DIR/verify-deployment.sh"
 echo "ChangFu release completed: $TAG"

@@ -27,6 +27,8 @@ export type TokenPair = {
   accessExpiresAt: string
   refreshToken: string
   refreshExpiresAt: string
+  deviceId: string
+  mustChangePassword: boolean
 }
 
 export class LoginRejectedError extends Error {
@@ -57,6 +59,29 @@ function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function validPassword(password: string): boolean {
+  return (
+    password.length >= 12
+    && password.length <= 256
+    && /[A-Za-z]/.test(password)
+    && /\d/.test(password)
+  )
+}
+
+async function hashPassword(password: string): Promise<string> {
+  if (!validPassword(password)) throw new PasswordChangeError('PASSWORD_POLICY_INVALID')
+  const salt = randomBytes(16).toString('hex')
+  const key = await derivePassword(password, salt)
+  return `scrypt$${salt}$${key.toString('hex')}`
+}
+
+export class PasswordChangeError extends Error {
+  constructor(readonly code: 'CURRENT_PASSWORD_INVALID' | 'PASSWORD_POLICY_INVALID') {
+    super(code === 'CURRENT_PASSWORD_INVALID' ? '当前密码错误' : '新密码不符合安全要求')
+    this.name = 'PasswordChangeError'
+  }
+}
+
 export class AuthService {
   constructor(
     private readonly pool: Pool,
@@ -72,8 +97,9 @@ export class AuthService {
     const user = await this.pool.query<{
       id: string
       password_hash: string
+      must_change_password: boolean
     }>(
-      `SELECT u.id, u.password_hash
+      `SELECT u.id, u.password_hash, p.must_change_password
          FROM public.cloud_users u
          JOIN multiuser.user_profiles p ON p.user_id = u.id
         WHERE u.username = $1
@@ -88,19 +114,18 @@ export class AuthService {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
-      const enrolled = await client.query(
+      const enrolled = await client.query<{ device_id: string }>(
         `INSERT INTO changfu.devices (
            device_id, user_id, display_name, platform, app_version,
            public_key, fingerprint_hash, status, last_seen_at
          ) VALUES ($1::uuid, $2::bigint, $3, $4, $5, $6, $7, 'ACTIVE', now())
-         ON CONFLICT (device_id) DO UPDATE
+         ON CONFLICT (user_id, fingerprint_hash) DO UPDATE
            SET display_name = EXCLUDED.display_name,
                platform = EXCLUDED.platform,
                app_version = EXCLUDED.app_version,
                public_key = EXCLUDED.public_key,
-               fingerprint_hash = EXCLUDED.fingerprint_hash,
+               status = 'ACTIVE',
                last_seen_at = now()
-         WHERE changfu.devices.user_id = EXCLUDED.user_id
          RETURNING device_id`,
         [
           input.deviceId,
@@ -113,12 +138,18 @@ export class AuthService {
         ],
       )
       if (enrolled.rowCount !== 1) throw new LoginRejectedError()
-      const tokens = await this.issueTokenPair(client, row.id, input.deviceId)
+      const deviceId = enrolled.rows[0]!.device_id
+      const tokens = await this.issueTokenPair(
+        client,
+        row.id,
+        deviceId,
+        row.must_change_password,
+      )
       await client.query(
         'UPDATE public.cloud_users SET last_login_at = now() WHERE id = $1::bigint',
         [row.id],
       )
-      await this.writeAudit(client, row.id, input.deviceId, 'LOGIN', 'SUCCESS')
+      await this.writeAudit(client, row.id, deviceId, 'LOGIN', 'SUCCESS')
       await client.query('COMMIT')
       return tokens
     } catch (error) {
@@ -138,8 +169,9 @@ export class AuthService {
         session_id: string
         user_id: string
         device_id: string
+        must_change_password: boolean
       }>(
-        `SELECT s.session_id, s.user_id, s.device_id
+        `SELECT s.session_id, s.user_id, s.device_id, p.must_change_password
            FROM changfu.device_sessions s
            JOIN changfu.devices d ON d.device_id = s.device_id AND d.user_id = s.user_id
            JOIN multiuser.user_profiles p ON p.user_id = s.user_id
@@ -157,6 +189,7 @@ export class AuthService {
         client,
         session.user_id,
         session.device_id,
+        session.must_change_password,
         session.session_id,
       )
       await client.query('COMMIT')
@@ -179,10 +212,70 @@ export class AuthService {
     )
   }
 
+  async changePassword(input: {
+    userId: string
+    deviceId: string
+    currentPassword?: string
+    nextPassword: string
+  }): Promise<void> {
+    if (!validPassword(input.nextPassword)) {
+      throw new PasswordChangeError('PASSWORD_POLICY_INVALID')
+    }
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await client.query<{
+        password_hash: string
+        must_change_password: boolean
+      }>(
+        `SELECT u.password_hash, p.must_change_password
+           FROM public.cloud_users u
+           JOIN multiuser.user_profiles p ON p.user_id = u.id
+          WHERE u.id = $1::bigint
+          FOR UPDATE`,
+        [input.userId],
+      )
+      const user = result.rows[0]
+      const currentPasswordValid = input.currentPassword
+        ? await verifyPassword(input.currentPassword, user?.password_hash ?? '')
+        : false
+      if (!user || (!user.must_change_password && !currentPasswordValid)) {
+        throw new PasswordChangeError('CURRENT_PASSWORD_INVALID')
+      }
+      await client.query(
+        'UPDATE public.cloud_users SET password_hash = $2 WHERE id = $1::bigint',
+        [input.userId, await hashPassword(input.nextPassword)],
+      )
+      await client.query(
+        `UPDATE multiuser.user_profiles
+            SET must_change_password = false,
+                sessions_valid_after = now(),
+                updated_at = now()
+          WHERE user_id = $1::bigint`,
+        [input.userId],
+      )
+      await client.query(
+        `UPDATE changfu.device_sessions
+            SET revoked_at = now()
+          WHERE user_id = $1::bigint
+            AND revoked_at IS NULL`,
+        [input.userId],
+      )
+      await this.writeAudit(client, input.userId, input.deviceId, 'PASSWORD_CHANGE', 'SUCCESS')
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   private async issueTokenPair(
     client: PoolClient,
     userId: string,
     deviceId: string,
+    mustChangePassword: boolean,
     existingSessionId?: string,
   ): Promise<TokenPair> {
     const access = signAccessToken({
@@ -212,6 +305,8 @@ export class AuthService {
       accessExpiresAt: access.expiresAt.toISOString(),
       refreshToken,
       refreshExpiresAt: refreshExpiresAt.toISOString(),
+      deviceId,
+      mustChangePassword,
     }
   }
 

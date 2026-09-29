@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import type { Pool } from 'pg'
 import {
   analyzeSellPutReport,
   SELL_PUT_POOL_CAPACITY,
@@ -16,7 +17,10 @@ import {
   buildSellPutReportPrompt,
   SELL_PUT_PROMPT_TITLE,
 } from '../packages/domain/src/sellPutPrompt.js'
-import { parseObservation } from '../apps/gateway/src/routes/sellPutResearch.js'
+import {
+  hasActiveSellPutEntitlement,
+  parseObservation,
+} from '../apps/gateway/src/routes/sellPutResearch.js'
 
 const base: SellPutObservation = {
   requestId: '11111111-1111-4111-8111-111111111111',
@@ -120,6 +124,34 @@ test('SELL PUT 报告以专属 Top30 研究池校验版本和标的', () => {
   assert.doesNotMatch(createReport, /changfu\.provider_research_pool/)
 })
 
+test('SELL PUT 写入只允许有效套餐已绑定的 Provider', async () => {
+  let statement = ''
+  let values: unknown[] = []
+  const activePool = {
+    query: async (text: string, parameters: unknown[]) => {
+      statement = text
+      values = parameters
+      return { rows: [{ active: true }] }
+    },
+  } as unknown as Pick<Pool, 'query'>
+  const inactivePool = {
+    query: async () => ({ rows: [{ active: false }] }),
+  } as unknown as Pick<Pool, 'query'>
+
+  assert.equal(
+    await hasActiveSellPutEntitlement(activePool, '42', 'FUTU'),
+    true,
+  )
+  assert.equal(
+    await hasActiveSellPutEntitlement(inactivePool, '42', 'LONGBRIDGE'),
+    false,
+  )
+  assert.match(statement, /subscription\.status = 'ACTIVE'/)
+  assert.match(statement, /subscription\.expires_at > now\(\)/)
+  assert.match(statement, /slot\.status = 'ACTIVE'/)
+  assert.deepEqual(values, ['42', 'FUTU'])
+})
+
 test('Top30 合并 Alphabet 与 Berkshire 股权类别后仍严格返回 30 家公司', () => {
   const companies: SellPutUniverseCompany[] = [
     { rank: 1, ticker: 'GOOGL', companyName: 'Alphabet A', marketCap: '1' },
@@ -209,11 +241,22 @@ test('SELL PUT 报告详情和桌面缓存按 Provider 隔离', () => {
     new URL('../../changfu-desktop/macos/LongbridgeHost/main.swift', import.meta.url),
     'utf8',
   )
+  const workspace = readFileSync(
+    new URL('../../changfu-desktop/macos/App/FutuWorkspaces.swift', import.meta.url),
+    'utf8',
+  )
+  const apig = readFileSync(
+    new URL('../deploy/volcano/scripts/configure-apig.sh', import.meta.url),
+    'utf8',
+  )
   assert.match(gateway, /providerId: selectedProvider/)
   assert.match(gateway, /getReport\(userId, selectedProvider, reportMatch\.groups\.run\)/)
   assert.match(gateway, /AbortSignal\.timeout\(330_000\)/)
   assert.match(worker, /sellPutReportModelTimeoutMs = modelRequestTimeoutMs/)
-  assert.match(worker, /temperature: 0,\s*input: messages/)
+  assert.match(
+    worker,
+    /requestModelText\(\{[\s\S]*temperature: 0,[\s\S]*timeoutMs: sellPutReportModelTimeoutMs/,
+  )
   assert.doesNotMatch(worker, /max_output_tokens: 6_000/)
   assert.match(repository, /provider_id = \$2 AND run_id = \$3::uuid/)
   assert.match(appState, /sellPutReports\[providerId\]/)
@@ -224,6 +267,9 @@ test('SELL PUT 报告详情和桌面缓存按 Provider 隔离', () => {
   assert.match(appState, /providerId == "FUTU" \? 8 : 5/)
   assert.match(appState, /message\.contains\("429002"\)/)
   assert.match(appState, /validateLongbridgeSellPutAccess\(items\)/)
+  assert.match(appState, /subscription\.grantsResearchAccess\(to: providerId\)/)
+  assert.match(workspace, /\.disabled\(!state\.canStartSellPutReport\)/)
+  assert.match(apig, /TimeoutSetting:\{Enable:false\}/)
   assert.match(appState, /message\.contains\("301604"\)/)
   assert.match(appState, /message\.contains\("500 internal server error"\)/)
   assert.match(longbridgeHost, /stride\(from: 0, to: symbols\.count, by: 100\)/)

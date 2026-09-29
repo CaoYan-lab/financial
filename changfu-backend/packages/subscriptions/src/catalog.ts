@@ -29,9 +29,9 @@ export type SubscriptionPlan = {
   poolCapacityPerProvider: number | null
   monthlyReplacementLimit: number | null
   features: {
-    batchSize: 100
+    batchSize: number
     optionResearch: boolean
-    optionTrading: false
+    optionTrading: boolean
     poolCapacityProtectionLimit?: number
   }
   prices: SubscriptionPrice[]
@@ -118,8 +118,11 @@ function assertCatalog(value: unknown): asserts value is Omit<SubscriptionCatalo
         plan.monthlyReplacementLimit !== null
         && (!Number.isInteger(plan.monthlyReplacementLimit) || plan.monthlyReplacementLimit < 0)
       )
-      || plan.features?.batchSize !== 100
-      || plan.features.optionTrading !== false
+      || !Number.isInteger(plan.features?.batchSize)
+      || plan.features.batchSize < 1
+      || plan.features.batchSize > 10_000
+      || typeof plan.features.optionResearch !== 'boolean'
+      || typeof plan.features.optionTrading !== 'boolean'
       || !Array.isArray(plan.prices)
       || plan.prices.length !== 3
     ) throw new SubscriptionCatalogError('PLAN_INVALID')
@@ -278,7 +281,13 @@ export async function seedSubscriptionCatalog(
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    await seedCatalog(client, catalog)
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('changfu-subscription-catalog-seed'))`)
+    const existing = await client.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM changfu.subscription_plan_versions',
+    )
+    if (Number(existing.rows[0]?.count ?? 0) === 0) {
+      await seedCatalog(client, catalog)
+    }
     await client.query('COMMIT')
   } catch (error) {
     await client.query('ROLLBACK')

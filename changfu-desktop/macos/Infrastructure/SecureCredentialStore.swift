@@ -94,9 +94,30 @@ public final class SecureCredentialStore: @unchecked Sendable {
         try delete(account: "longbridge-legacy-credentials")
     }
 
-    public func deviceIdentity() throws -> DeviceIdentity {
-        let deviceId = try stableString(account: "device-id") {
+    public func deviceIdentity(
+        for environment: BackendEnvironment? = nil,
+        username: String? = nil
+    ) throws -> DeviceIdentity {
+        let legacyDeviceId = try stableString(account: "device-id") {
             UUID().uuidString.lowercased()
+        }
+        let deviceId: String
+        if let environment,
+           let username,
+           !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            deviceId = try stableString(
+                account: Self.scopedDeviceAccount(for: environment, username: username)
+            ) {
+                UUID().uuidString.lowercased()
+            }
+        } else if let environment,
+                  let active = try read(
+                    account: "active-device-id.\(environment.credentialAccount)"
+                  ).flatMap({ String(data: $0, encoding: .utf8) }),
+                  !active.isEmpty {
+            deviceId = active
+        } else {
+            deviceId = legacyDeviceId
         }
         let fingerprint = try stableString(account: "device-fingerprint") {
             Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }).base64EncodedString()
@@ -118,6 +139,35 @@ public final class SecureCredentialStore: @unchecked Sendable {
             displayName: Host.current().localizedName ?? "Mac",
             publicKeyPEM: pemPublicKey(privateKey.publicKey.rawRepresentation),
             privateKey: privateKey
+        )
+    }
+
+    public static func scopedDeviceAccount(
+        for environment: BackendEnvironment,
+        username: String
+    ) -> String {
+        let normalized = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let scope = "\(environment.credentialAccount):\(normalized)"
+        let digest = SHA256.hash(data: Data(scope.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "device-id.user.\(digest)"
+    }
+
+    public func activateDeviceIdentity(
+        _ identity: DeviceIdentity,
+        for environment: BackendEnvironment
+    ) throws {
+        try activateDeviceIdentity(identity.deviceId, for: environment)
+    }
+
+    public func activateDeviceIdentity(
+        _ deviceId: String,
+        for environment: BackendEnvironment
+    ) throws {
+        try save(
+            Data(deviceId.utf8),
+            account: "active-device-id.\(environment.credentialAccount)"
         )
     }
 

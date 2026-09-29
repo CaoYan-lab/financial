@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/official-model-config.schema.json",
+  "title": "OfficialModelConfigVersion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "configVersionId",
+    "version",
+    "displayName",
+    "protocol",
+    "endpoint",
+    "model",
+    "keyConfigured",
+    "keyLastFour",
+    "keyVersion",
+    "status",
+    "testStatus",
+    "testErrorCode",
+    "testedAt",
+    "activatedAt",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "configVersionId": { "type": "string", "format": "uuid" },
+    "version": { "type": "integer", "minimum": 1 },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "protocol": { "$ref": "#/$defs/protocol" },
+    "endpoint": { "type": "string", "format": "uri", "maxLength": 2048 },
+    "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "keyConfigured": { "const": true },
+    "keyLastFour": { "type": "string", "minLength": 4, "maxLength": 4 },
+    "keyVersion": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["DRAFT", "ACTIVE", "RETIRED"] },
+    "testStatus": { "enum": ["UNTESTED", "SUCCEEDED", "FAILED"] },
+    "testErrorCode": { "type": ["string", "null"], "maxLength": 100 },
+    "testedAt": { "type": ["string", "null"], "format": "date-time" },
+    "activatedAt": { "type": ["string", "null"], "format": "date-time" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "protocol": {
+      "enum": ["OPENAI_RESPONSES", "OPENAI_CHAT_COMPLETIONS"]
+    },
+    "createInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "protocol", "endpoint", "model", "apiKey"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "endpoint": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "apiKey": { "type": "string", "minLength": 8, "maxLength": 8192 }
+      }
+    },
+    "updateInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "protocol", "endpoint", "model"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "endpoint": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "apiKey": { "type": "string", "minLength": 8, "maxLength": 8192 }
+      }
+    }
+  }
+}

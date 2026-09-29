@@ -21,17 +21,23 @@ public struct TokenPair: Decodable, Sendable {
     public let accessExpiresAt: Date
     public let refreshToken: String
     public let refreshExpiresAt: Date
+    public let deviceId: String?
+    public let mustChangePassword: Bool?
 
     public init(
         accessToken: String,
         accessExpiresAt: Date,
         refreshToken: String,
-        refreshExpiresAt: Date
+        refreshExpiresAt: Date,
+        deviceId: String? = nil,
+        mustChangePassword: Bool? = nil
     ) {
         self.accessToken = accessToken
         self.accessExpiresAt = accessExpiresAt
         self.refreshToken = refreshToken
         self.refreshExpiresAt = refreshExpiresAt
+        self.deviceId = deviceId
+        self.mustChangePassword = mustChangePassword
     }
 
     public var session: AuthenticationSession {
@@ -40,6 +46,14 @@ public struct TokenPair: Decodable, Sendable {
             accessExpiresAt: accessExpiresAt,
             refreshExpiresAt: refreshExpiresAt
         )
+    }
+}
+
+public struct PasswordChangeRequest: Encodable, Sendable {
+    public let nextPassword: String
+
+    public init(nextPassword: String) {
+        self.nextPassword = nextPassword
     }
 }
 

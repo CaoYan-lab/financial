@@ -13,6 +13,9 @@ fi
 : "${CHANGFU_DATABASE_URL:?CHANGFU_DATABASE_URL must use the runtime role}"
 : "${CHANGFU_RUNTIME_DB_ROLE:?CHANGFU_RUNTIME_DB_ROLE is required}"
 : "${CHANGFU_RUNTIME_DB_PASSWORD:?CHANGFU_RUNTIME_DB_PASSWORD is required}"
+: "${CHANGFU_ADMIN_DATABASE_URL:?CHANGFU_ADMIN_DATABASE_URL is required}"
+: "${CHANGFU_ADMIN_RUNTIME_DB_ROLE:?CHANGFU_ADMIN_RUNTIME_DB_ROLE is required}"
+: "${CHANGFU_ADMIN_RUNTIME_DB_PASSWORD:?CHANGFU_ADMIN_RUNTIME_DB_PASSWORD is required}"
 : "${CHANGFU_MIGRATOR_IMAGE:?CHANGFU_MIGRATOR_IMAGE is required}"
 : "${CHANGFU_VPC_ID:?CHANGFU_VPC_ID is required}"
 : "${CHANGFU_SUBNET_IDS:?CHANGFU_SUBNET_IDS is required}"
@@ -50,6 +53,9 @@ jq -n \
   --arg runtimeDatabaseUrl "$CHANGFU_DATABASE_URL" \
   --arg runtimeRole "$CHANGFU_RUNTIME_DB_ROLE" \
   --arg runtimePassword "$CHANGFU_RUNTIME_DB_PASSWORD" \
+  --arg adminDatabaseUrl "$CHANGFU_ADMIN_DATABASE_URL" \
+  --arg adminRuntimeRole "$CHANGFU_ADMIN_RUNTIME_DB_ROLE" \
+  --arg adminRuntimePassword "$CHANGFU_ADMIN_RUNTIME_DB_PASSWORD" \
   '{
     Name:$name,
     Description:"Ephemeral ChangFu database migrator",
@@ -70,7 +76,10 @@ jq -n \
       {Key:"CHANGFU_MIGRATION_DATABASE_URL",Value:$migrationDatabaseUrl},
       {Key:"CHANGFU_RUNTIME_DATABASE_URL",Value:$runtimeDatabaseUrl},
       {Key:"CHANGFU_RUNTIME_DB_ROLE",Value:$runtimeRole},
-      {Key:"CHANGFU_RUNTIME_DB_PASSWORD",Value:$runtimePassword}
+      {Key:"CHANGFU_RUNTIME_DB_PASSWORD",Value:$runtimePassword},
+      {Key:"CHANGFU_ADMIN_RUNTIME_DATABASE_URL",Value:$adminDatabaseUrl},
+      {Key:"CHANGFU_ADMIN_RUNTIME_DB_ROLE",Value:$adminRuntimeRole},
+      {Key:"CHANGFU_ADMIN_RUNTIME_DB_PASSWORD",Value:$adminRuntimePassword}
     ]
   }' > "$BODY"
 chmod 600 "$BODY"
