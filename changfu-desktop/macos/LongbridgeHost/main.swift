@@ -226,6 +226,16 @@ private func fetchedAt() -> String {
     ISO8601DateFormatter().string(from: Date())
 }
 
+private func fieldValueDecimal(_ json: Any, _ labels: String...) -> Decimal? {
+    let expected = Set(labels.map {
+        $0.lowercased().filter(\.isLetter)
+    })
+    return records(json).first {
+        guard let field = $0.string("field") else { return false }
+        return expected.contains(field.lowercased().filter(\.isLetter))
+    }?.decimal("value")
+}
+
 private func decimalString(_ value: Decimal) -> String {
     NSDecimalNumber(decimal: value).stringValue
 }
@@ -960,12 +970,22 @@ private func longbridgeTradeReadiness(
     ).first else {
         throw HostError.missingField("max-qty")
     }
-    let maxQuantity = maxRecord.decimal(
+    let marginMaxQuantity = maxRecord.decimal(
         "margin_max_qty",
-        "marginMaxQty",
+        "marginMaxQty"
+    ) ?? fieldValueDecimal(maxJSON, "Margin Max Qty")
+    let cashMaxQuantity = maxRecord.decimal(
         "cash_max_qty",
         "cashMaxQty"
-    )
+    ) ?? fieldValueDecimal(maxJSON, "Cash Max Qty")
+    let maxQuantity = switch order.positionEffect {
+    case "OPEN_SHORT", "ADD_SHORT":
+        marginMaxQuantity
+    case "REDUCE_LONG":
+        cashMaxQuantity
+    default:
+        marginMaxQuantity ?? cashMaxQuantity
+    }
 
     var shortable: Bool?
     var reason: String?
@@ -988,9 +1008,16 @@ private func longbridgeTradeReadiness(
             marginJSON,
             keys: ["data", "margin_ratio", "marginRatio"]
         ).first
-        let ratiosKnown = margin?.decimal("im_factor", "imFactor") != nil
-            && margin?.decimal("mm_factor", "mmFactor") != nil
-            && margin?.decimal("fm_factor", "fmFactor") != nil
+        let ratiosKnown = (
+            margin?.decimal("im_factor", "imFactor")
+                ?? fieldValueDecimal(marginJSON, "Initial Margin Ratio")
+        ) != nil && (
+            margin?.decimal("mm_factor", "mmFactor")
+                ?? fieldValueDecimal(marginJSON, "Maintenance Margin Ratio")
+        ) != nil && (
+            margin?.decimal("fm_factor", "fmFactor")
+                ?? fieldValueDecimal(marginJSON, "Forced Liquidation Ratio")
+        ) != nil
         shortable = maxQuantity.map { $0 >= requested } ?? false
         if !marginAccount {
             reason = "Longbridge 当前账户无法确认是保证金账户"
@@ -1253,6 +1280,39 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
             + additionalSymbols.map(longbridgeSymbol)
     )).sorted()
     let symbols = Array(Set(positions.map(\.symbol) + additionalSymbols)).sorted()
+    let orderBooks = try cliSymbols.prefix(8).compactMap { cliSymbol -> OrderBookSummary? in
+        let depthJSON = try cli.json(["depth", cliSymbol], name: "\(cliSymbol) 盘口")
+        guard let root = depthJSON as? [String: Any] else { return nil }
+        let record = JSONRecord(value: root)
+        let symbol = normalizeSymbol(record.string("symbol") ?? cliSymbol, market: nil)
+        func levels(_ key: String, side: String) -> [OrderBookLevel] {
+            records(root[key] ?? [], keys: [key]).enumerated().compactMap { index, level in
+                guard let price = level.decimal("price"),
+                      let volume = level.decimal("volume") else { return nil }
+                let position = level.decimal("position").map {
+                    NSDecimalNumber(decimal: $0).intValue
+                } ?? (index + 1)
+                let orderCount = level.decimal("order_num", "order_count").map {
+                    NSDecimalNumber(decimal: $0).intValue
+                }
+                return OrderBookLevel(
+                    side: side,
+                    level: position,
+                    price: price,
+                    volume: volume,
+                    orderCount: orderCount
+                )
+            }
+        }
+        return OrderBookSummary(
+            symbol: symbol,
+            asks: levels("asks", side: "ASK"),
+            bids: levels("bids", side: "BID")
+        )
+    }
+    let orderBookBySymbol = Dictionary(
+        uniqueKeysWithValues: orderBooks.map { ($0.symbol, $0) }
+    )
     let quoteJSON: Any = cliSymbols.isEmpty
         ? []
         : try cli.json(["quote"] + cliSymbols, name: "报价")
@@ -1288,7 +1348,9 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
             ) ?? (providerMarket(for: symbol) == .us
                 ? activeUSExtendedSession(record: record)
                 : nil),
-            marketStateValue: nil
+            marketStateValue: nil,
+            bidPrice: orderBookBySymbol[symbol]?.bids.first?.price,
+            askPrice: orderBookBySymbol[symbol]?.asks.first?.price
         )
     }
 
@@ -1348,7 +1410,12 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
             afterHoursPrice: quote.afterHoursPrice,
             overnightPrice: quote.overnightPrice,
             marketState: state,
-            marketStateValue: nil
+            marketStateValue: nil,
+            bidPrice: quote.bidPrice,
+            askPrice: quote.askPrice,
+            lotSize: quote.lotSize,
+            shortable: quote.shortable,
+            maxShortQuantity: quote.maxShortQuantity
         )
     }
     let preferredCode = preferredMarket == "港股"
@@ -1396,7 +1463,7 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
 
     let currentOrders = try orderSummaries(
         cli.json(["order"], name: "当前订单")
-    )
+    ).filter { $0.status <= 2 }
     let historicalOrders = try orderSummaries(
         cli.json(["order", "--history"], name: "历史订单")
     )
@@ -1412,6 +1479,7 @@ private func makeSnapshot(_ cli: CLI, additionalSymbols: [String] = []) throws -
         market: market,
         quotes: quotes,
         minuteBars: minuteBars,
+        orderBooks: orderBooks,
         openOrders: currentOrders,
         recentDeals: currentDeals,
         historicalOrders: historicalOrders,

@@ -3017,13 +3017,20 @@ struct ChangFuDesktopTests {
                     printf '[{"symbol":"AAPL.US","name":"Apple","quantity":"10","cost_price":"180","currency":"USD","market":"US"},{"symbol":"700.HK","name":"腾讯控股","quantity":20,"cost_price":"500","currency":"HKD","market":"HK"}]\\n'
                     ;;
                   max-qty)
-                    printf '{"margin_max_qty":"100","cash_max_qty":"20"}\\n'
+                    if printf '%s' "$*" | grep -q -- '--side sell'; then
+                      printf '[{"field":"Symbol","value":"AAPL.US"},{"field":"Cash Max Qty","value":"20"},{"field":"Margin Max Qty","value":"0"}]\\n'
+                    else
+                      printf '[{"field":"Symbol","value":"AAPL.US"},{"field":"Cash Max Qty","value":"20"},{"field":"Margin Max Qty","value":"100"}]\\n'
+                    fi
                     ;;
                   margin-ratio)
-                    printf '{"symbol":"AAPL.US"}\\n'
+                    printf '[{"field":"Symbol","value":"AAPL.US"},{"field":"Initial Margin Ratio","value":"0.35"},{"field":"Maintenance Margin Ratio","value":"0.2"},{"field":"Forced Liquidation Ratio","value":"0.15"}]\\n'
                     ;;
                   quote)
                     printf '[{"symbol":"AAPL.US","last":"200","prev_close":"198","trade_status":"Overnight","status":"Normal","pre_market":{"last":"199.5"},"post_market":{"last":"200.5"},"overnight":{"last":"201.5"}},{"symbol":"700.HK","last":"510","prev_close":"505","status":"Normal"}]\\n'
+                    ;;
+                  depth)
+                    printf '{"symbol":"%s","bids":[{"position":1,"price":"199.9","volume":"100","order_num":2}],"asks":[{"position":1,"price":"200.1","volume":"80","order_num":3}]}\\n' "$2"
                     ;;
                   kline)
                     printf '[{"time":"2026-09-18T01:00:00Z","open":"198","high":"201","low":"197","close":"200","volume":"1000","turnover":"200000"}]\\n'
@@ -3159,9 +3166,20 @@ struct ChangFuDesktopTests {
                     && snapshot.positions.count == 2
                     && snapshot.quotes.count == 2
                     && snapshot.minuteBars.count == 2
-                    && snapshot.openOrders.count == 1
+                    && snapshot.orderBooks.count == 2
+                    && snapshot.openOrders.isEmpty
                     && snapshot.recentDeals.count == 1
                     && snapshot.dataGaps.count == 2
+            }
+            suite.test("Longbridge 一级盘口补齐买卖价且终态订单不冒充挂单") {
+                snapshot.quotes.first { $0.symbol == "US.AAPL" }?.bidPrice
+                    == Decimal(string: "199.9")
+                    && snapshot.quotes.first { $0.symbol == "US.AAPL" }?.askPrice
+                        == Decimal(string: "200.1")
+                    && snapshot.orderBooks.first { $0.symbol == "US.AAPL" }?.bids.first?.level
+                        == 1
+                    && snapshot.orderBooks.first { $0.symbol == "US.AAPL" }?.asks.first?.orderCount
+                        == 3
             }
             suite.test("Longbridge API 凭据经安全通道传入 Host") {
                 credentials.appKey == "test-app-key"
@@ -3205,7 +3223,7 @@ struct ChangFuDesktopTests {
             }
             suite.test("Longbridge 卖空信息不完整时 fail-closed 且不提交") {
                 shortReadiness.ready == false
-                    && shortReadiness.shortable == true
+                    && shortReadiness.shortable == false
                     && shortReadiness.reason?.contains("无法确认") == true
                     && !cliArgv.split(separator: "\n").contains {
                         $0.hasPrefix("order sell ")

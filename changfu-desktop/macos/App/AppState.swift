@@ -2850,7 +2850,15 @@ final class AppState {
         }) else {
             throw AppInteractionError.liveOrderValidationFailed("标的实时行情不可用")
         }
-        let reference = pending.order.side == "BUY" ? quote.askPrice : quote.bidPrice
+        let orderBooks = pending.provider == "LONGBRIDGE"
+            ? longbridgeOrderBooks
+            : self.orderBooks
+        let orderBook = orderBooks.first {
+            BrokerSymbolNormalizer.normalize($0.symbol) == normalized
+        }
+        let reference = pending.order.side == "BUY"
+            ? quote.askPrice ?? orderBook?.asks.first?.price
+            : quote.bidPrice ?? orderBook?.bids.first?.price
         guard let reference, reference > 0,
               let limit = Decimal(string: pending.order.limitPrice),
               limit > 0 else {
