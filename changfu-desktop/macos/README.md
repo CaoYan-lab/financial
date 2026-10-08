@@ -26,6 +26,28 @@ swift run ChangFu
 
 应用输出到 `build/长富.app`，采用本机临时签名，仅用于开发预览。
 
+## 内部灰度 DMG
+
+内部灰度包仅支持 Apple Silicon 与 macOS 14 及以上，采用 ad-hoc 临时签名且不做
+Apple 公证。准备透明背景的 1024×1024 PNG 后执行：
+
+```bash
+export CHANGFU_RELEASE_VERSION=0.1.0
+export CHANGFU_RELEASE_BUILD=2026092901
+export CHANGFU_RELEASE_CHANNEL=internal
+export CHANGFU_PUBLIC_API_ORIGIN=https://s1t8is7jgm85sfs523g5l.apigateway-cn-beijing.volceapi.com
+export CHANGFU_APP_ICON_SOURCE=/absolute/path/to/changfu-app-icon-1024.png
+./scripts/build-internal-dmg.sh
+```
+
+候选包、SHA-256 和发布清单输出到
+`dist/<version>-<build>/`。完整发布、安装、干净机验收与回滚流程见
+[`docs/internal-dmg-release-runbook.md`](docs/internal-dmg-release-runbook.md)。
+
+该发行档位首次启动需要 Finder 右键“打开”或在“隐私与安全性”中人工放行。面向
+普通用户公开分发前，必须迁移到 Developer ID 签名、Hardened Runtime 和 Apple
+公证流程。
+
 ## 后台环境
 
 App 默认通过
@@ -46,4 +68,5 @@ App 默认通过
 4. 定义 `CHANGFU_FUTU_SDK_AVAILABLE`，在 `ChangFuFutuBridge.mm` 内完成官方上下文、回调和线程切换。
 5. SDK 事件只发送给 BrokerHost；SwiftUI 进程不得直接持有 SDK 回调对象。
 
-当前机器只有 Command Line Tools，无法生成签名、公证、XPC entitlement 和 `.xcodeproj`。这些步骤需要安装完整 Xcode 后执行。
+当前机器只有 Command Line Tools，可构建内部 ad-hoc DMG，但无法完成 Developer ID
+签名、公证和正式 Xcode Archive。这些公开发行步骤需要安装完整 Xcode 后执行。

@@ -1532,7 +1532,9 @@ Longbridge 的交易所级 `market-status` 只表示常规交易时段是否开�
 * 候选列表只展示当前券商连接、当前交易配置版本且 `executionMode=CANDIDATE_POOL` 产生的记录；`DIRECT` 模式必须返回空列表并在桌面端明确显示“直推模式不使用候选池”。历史配置候选保留在数据库用于审计，但不得泄漏到当前工作区。
 * 影子调度任务、运行状态和最近运行时间必须按 `brokerConnectionId` 独立保存。任务启动时冻结 `provider + brokerConnectionId`，后续每轮刷新、市场时段判断和上下文组装均使用该 Provider 的快照；切换 Futu/Longbridge 只切换展示，不得改变已启动任务的执行归属。
 * 自动影子评估每次模型请求前重新读取当前 access token，避免多分钟串行评估期间令牌刷新后继续使用旧 token；鉴权失败必须停止调度并显示已停止，不得继续维持“启动中”状态。
-* Futu 快照请求携带当前 ACTIVE Provider 池中的正股/ETF，OpenD 在普通持仓之外一并订阅其基础报价，并优先为池内前 8 个标的加载 60 根分钟线、逐笔和十档盘口。BrokerHost 成功或失败后使用 POSIX `_exit` 结束一次性进程，避免 Futu SDK 回调线程在全局析构阶段导致已成功的 `probe` 被段错误误判为连接失败。
+* Futu 快照请求携带当前 ACTIVE Provider 池中的正股/ETF，OpenD 在普通持仓之外一并订阅其基础报价，并优先为池内前 8 个标的加载 60 根分钟线、逐笔和十档盘口。基础报价必须在耗时的逐标的深度数据采集完成后最后读取，避免快照返回时行情已过 5 秒门禁。BrokerHost 成功或失败后使用 POSIX `_exit` 结束一次性进程，避免 Futu SDK 回调线程在全局析构阶段导致已成功的 `probe` 被段错误误判为连接失败。
+* 可执行量化轮次必须强制刷新对应 Provider 快照；若刷新仍在进行、处于限频退避或刷新结果超过 5 秒，本轮不得发送模型请求。每个 `SINGLE_DECISION` 标的还须独立校验自身报价时间，陈旧报价只阻断该标的，不得以快照完成时间替代真实行情时间。
+* Futu `updateTime` 是交易所本地时间且不携带时区。写入 `ContextEnvelope` 前必须按标的市场映射到 `America/New_York`、`Asia/Hong_Kong`、`Asia/Shanghai` 或 `Asia/Singapore`，再规范为带毫秒的 UTC ISO-8601；美股必须正确处理夏令时与冬令时。Worker 和客户端下单复核只消费该绝对时间语义，禁止把无时区字符串交给 `Date.parse`。
 * 本地后台启动脚本在服务启动前按顺序执行幂等 migration 001/002；交易目录定位同时兼容源码与 `dist` 产物路径，避免升级后运行旧进程或启动失败。
 
 ### 18.3 当前边界
@@ -1747,6 +1749,8 @@ BrokerHost 提供独立 `market-intelligence` IPC 命令，输入当前标的池
 
 影子调度必须与 Web 端并发语义一致：每个标的生成一个独立 `SINGLE_DECISION` 请求、独立 `request_id`、独立模型结论和独立信号记录；同一 Provider 每轮并发数必须等于该轮通过行情与趋势完整性门禁的标的数量，不再受历史配置字段 `maxConcurrency` 压低。标的池 3 个且全部可评估时必须同时发送 3 个独立请求；若仅 2 个通过门禁，则本轮并发为 2。不得把多个标的合并进同一模型请求。Futu 与 Longbridge 仍使用各自独立的连接、研究池版本和行情快照，禁止跨 Provider 混用上下文。
 
+并发发送前的刷新只执行一次，但每个标的在进入任务组前必须基于归一化后的报价绝对时间通过 5 秒新鲜度门禁。刷新函数因同 Provider 请求已在进行而返回时，量化流程必须等待该请求完成并重新检查快照时间；等待超时或限频退避不得回退到旧快照。
+
 Longbridge 快照必须像 Futu 一样接收当前 Provider 标的池代码，合并持仓代码后批量读取报价，并为前 8 个优先标的读取最近 60 根 1 分钟线。Longbridge 暂不支持的逐笔和盘口只作为降级缺口，已取得报价和分钟趋势的标的不得因此被误判为阻断；端到端循环验收使用同轮至少两个标的，并按每条 `model_runs.requested_symbols` 仅含一个代码、每个 `request_id` 仅关联一条 `signals` 记录核对并发语义。
 
 `ModelResult` 在兼容原有 `signal`/`candidate` 字段的同时增加 `signals`/`candidates`。模型必须按授权标的顺序在 `signals` 中恰好返回每个标的一次；Worker 按标的校验代码、动作、置信度、报价和趋势，缺失、重复、越权或关键行情不足的标的仅将该标的降级为 HOLD，不得遗漏落库，也不得连带否决同批其他有效标的。
@@ -1890,3 +1894,45 @@ Secure、SameSite=Strict Cookie，数据库只保存 Token 和 CSRF Token 的 SH
 权限验证、Worker、Gateway、Admin，最后分别验证 Worker health、Gateway ready、
 Admin ready 和管理页面 HTML。管理端上线前仍须人工创建独立函数和 APIG 资源并
 注入 Secret，本次实现不自动修改生产资源。
+
+## 二十四、2026-09-29 macOS 内部灰度 DMG
+
+首个可分发版本限定为 Apple Silicon、macOS 14 及以上的内部灰度包。构建入口固定为
+`changfu-desktop/macos/scripts/build-internal-dmg.sh`，不得使用开发期
+`run-local.sh` 生成发布候选。发布脚本必须执行 UI 契约和生产 Origin 校验，采用
+Swift Release/arm64 构建，并把主程序、两个 Host、Longbridge CLI 及三个运行时
+dylib 组装为自包含 App Bundle。
+
+Release 的 BrokerHost 只允许使用 `@executable_path/../Frameworks` 和系统 RPath。
+候选包不得包含仓库、用户目录、`.data` 或 Command Line Tools 路径。签名固定按
+“dylib、CLI、Host、主程序、App Bundle”顺序逐层执行，不使用 `--deep` 作为签名
+动作。当前内部档位使用 ad-hoc 签名且不做 Apple 公证，因此 Gatekeeper 拒绝是预期
+状态，安装说明必须明确 Finder 右键打开和系统隐私设置放行流程。
+
+每个不可变候选目录同时输出 App、DMG、SHA-256 和 `release-manifest.json`。自动
+门禁必须覆盖 DMG 校验与只读挂载、版本和 Bundle ID、云端 Origin、纯 arm64 架构、
+嵌套签名、依赖闭包、敏感文件名以及仓库外启动冒烟。正式图标只能从 1024×1024 PNG
+生成；缺少源图时构建失败，不允许用默认图标冒充候选。
+
+候选包还必须在未安装开发工具的干净 Apple Silicon Mac 上验证首次安装、云端登录、
+首次改密、Keychain、OpenD 四类状态、Futu/Longbridge 隔离、SELL PUT、覆盖升级和
+上一版回滚。只有自动门禁与人工矩阵均通过后才可标记为 `internal-approved`。
+公开发行仍必须使用 Developer ID、Hardened Runtime、Apple notarization 与
+stapling，且 `spctl --assess` 必须通过。
+
+## 二十五、2026-09-30 交易租约恢复与持仓可用性语义
+
+Futu 与 Longbridge 的交易运行态继续按 `brokerConnectionId` 隔离。REAL 账户在
+券商已连接、Provider 硬门禁开启且无阻断项时，监管任务必须持续获取或续期设备交易
+租约，不能把“当前没有待确认订单”解释为“不需要租约”。自动提交偏好已开启但
+90 秒会话缺失或过期时，客户端必须使用当前配置版本、风险策略版本和同一确认摘要
+重新激活会话；后台 Provider 的续期不得依赖当前界面选中的 Provider。顶部状态条和
+交易设置页只显示未过期租约的实际状态，禁止硬编码“未持有”。
+本地启动脚本必须把 `.env.local` 中的双券商门禁显式映射为 Gateway 与 Worker 共同
+使用的 `CHANGFU_FUTU_LIVE_TRADING_ENABLED` 和
+`CHANGFU_LONGBRIDGE_LIVE_TRADING_ENABLED`，并以健康接口中的相同 gate hash 验收。
+
+持仓接口能力与持仓数量是两个独立状态。券商快照成功且未声明持仓数据缺口时，空数组
+表示“当前账户暂无持仓”，持仓能力仍为可用，持仓市值为零；只有快照尚未成功或
+`dataGaps` 明确包含持仓接口缺口时，才显示“持仓数据暂不可用/待接入”。该语义同时
+适用于 Futu 与 Longbridge，且不得使用另一 Provider 的快照补齐。

@@ -31,10 +31,16 @@ let package = Package(
                     "-lprotobuf",
                     "-lssl",
                     "-lcrypto",
-                    "-lz",
+                    "-lz"
+                ]),
+                .unsafeFlags([
                     "-Xlinker", "-rpath",
                     "-Xlinker", "../../.data/changfu-sdk/third/lib"
-                ])
+                ], .when(configuration: .debug)),
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "@executable_path/../Frameworks"
+                ], .when(configuration: .release))
             ]
         ),
         .target(

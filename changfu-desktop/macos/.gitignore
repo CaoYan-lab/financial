@@ -2,5 +2,9 @@
 .swiftpm/
 build/
 DerivedData/
+*.app/
+*.dmg
+*.dmg.sha256
+*.pkg
 *.xcuserstate
 xcuserdata/

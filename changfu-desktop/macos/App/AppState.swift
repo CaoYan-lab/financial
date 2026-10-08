@@ -314,6 +314,13 @@ final class AppState {
         platform == .longbridge ? longbridgePositions : positions
     }
 
+    var currentPositionsAvailable: Bool {
+        BrokerSnapshotAvailability.positionsAvailable(
+            lastUpdatedAt: currentBrokerLastUpdatedAt,
+            dataGaps: currentBrokerDataGaps
+        )
+    }
+
     var currentMarket: MarketSummary? {
         platform == .longbridge ? longbridgeMarket : market
     }
@@ -425,6 +432,14 @@ final class AppState {
     var currentTradingLease: TradingLease? {
         guard let connectionId = currentBrokerConnectionId else { return nil }
         return liveTradingRuntimeByConnection[connectionId]?.lease
+    }
+
+    var currentTradingLeaseLabel: String {
+        guard let lease = currentTradingLease,
+              Self.secondsRemaining(lease.expiresAt) > 0 else {
+            return "未持有"
+        }
+        return "已持有"
     }
 
     var currentLiveTradingStatusMessage: String? {
@@ -2565,42 +2580,19 @@ final class AppState {
             saveAutoSubmitPreference(setting.autoSubmitEnabled, provider: provider)
             if enabled {
                 do {
-                    let lease = try await backend.acquireTradingLease(
-                        TradingLeaseRequest(
-                            deviceId: identity.deviceId,
-                            brokerConnectionId: connectionId
-                        ),
+                    _ = try await ensureTradingLease(
+                        connectionId: connectionId,
+                        deviceId: identity.deviceId,
                         accessToken: accessToken
                     )
-                    let disclosure = [
-                        provider,
-                        account.accountId,
-                        String(savedConfig.version),
-                        savedConfig.riskPolicyId,
-                        "AUTO_EXECUTE",
-                        "60s-intent",
-                        "90s-session",
-                        "15bps"
-                    ].joined(separator: "|")
-                    let appSessionId = UUID().uuidString.lowercased()
-                    let session = try await backend.activateLiveTradingSession(
-                        ActivateLiveTradingSessionRequest(
-                            brokerConnectionId: connectionId,
-                            provider: provider,
-                            deviceId: identity.deviceId,
-                            configVersion: savedConfig.version,
-                            riskPolicyVersion: savedConfig.riskPolicyId,
-                            confirmationDigest: Self.sha256(disclosure),
-                            appSessionId: appSessionId
-                        ),
+                    _ = try await activateLiveTradingSession(
+                        connectionId: connectionId,
+                        provider: provider,
+                        account: account,
+                        config: savedConfig,
+                        deviceId: identity.deviceId,
                         accessToken: accessToken
                     )
-                    var runtime = liveTradingRuntimeByConnection[connectionId]
-                        ?? LiveTradingRuntimeState()
-                    runtime.lease = lease
-                    runtime.session = session
-                    runtime.statusMessage = "自动提交会话已启用"
-                    liveTradingRuntimeByConnection[connectionId] = runtime
                 } catch {
                     setLiveTradingStatus(
                         "自动提交偏好已保存，会话启动失败：\(error.localizedDescription)"
@@ -2743,10 +2735,20 @@ final class AppState {
             latest.statusMessage = nil
             liveTradingRuntimeByConnection[connectionId] = latest
 
+
             let identity = try credentials.deviceIdentity(for: backendEnvironment)
-            let requiresLease = values.2 != nil
-                || !values.1.isEmpty
-                || values.0.contains(where: Self.isManagedOrder)
+            let account = accountForProvider(provider)
+            let setting = liveExecutionSettings[provider]
+            let hasManagedOrders = values.0.contains(where: Self.isManagedOrder)
+            let requiresLease = LiveTradingLeasePolicy.shouldMaintainLease(
+                accountEnvironment: account?.environment,
+                brokerConnected: isBrokerConnected(provider),
+                hardGateEnabled: setting?.hardGateEnabled == true,
+                blockers: setting?.blockers ?? [],
+                hasSession: values.2 != nil,
+                hasPendingActions: !values.1.isEmpty,
+                hasManagedOrders: hasManagedOrders
+            )
             if requiresLease {
                 _ = try await ensureTradingLease(
                     connectionId: connectionId,
@@ -2754,10 +2756,28 @@ final class AppState {
                     accessToken: accessToken
                 )
             }
+            var activeSession = values.2
+            if LiveTradingLeasePolicy.shouldActivateAutoSubmitSession(
+                accountEnvironment: account?.environment,
+                brokerConnected: isBrokerConnected(provider),
+                hardGateEnabled: setting?.hardGateEnabled == true,
+                autoSubmitEnabled: setting?.autoSubmitEnabled == true,
+                blockers: setting?.blockers ?? [],
+                hasSession: activeSession != nil
+            ), let account, let config = tradingConfigurations[connectionId] {
+                activeSession = try await activateLiveTradingSession(
+                    connectionId: connectionId,
+                    provider: provider,
+                    account: account,
+                    config: config,
+                    deviceId: identity.deviceId,
+                    accessToken: accessToken
+                )
+            }
             let requiresBrokerSnapshot =
                 LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
                     hasPendingActions: !values.1.isEmpty,
-                    hasManagedOrders: values.0.contains(where: Self.isManagedOrder)
+                    hasManagedOrders: hasManagedOrders
                 )
             if requiresBrokerSnapshot {
                 if provider == "LONGBRIDGE" {
@@ -2766,7 +2786,7 @@ final class AppState {
                     await refreshBrokerData()
                 }
             }
-            guard let account = accountForProvider(provider) else { return }
+            guard let account else { return }
             if !values.1.isEmpty {
                 await processManagedActions(
                     values.1,
@@ -2800,9 +2820,8 @@ final class AppState {
                     accessToken: accessToken
                 )
             }
-            if let session = values.2,
-               provider == currentProviderId,
-               liveExecutionSettings[provider]?.autoSubmitEnabled == true {
+            if let session = activeSession,
+               setting?.autoSubmitEnabled == true {
                 try await renewTradingRuntimeIfNeeded(
                     session: session,
                     connectionId: connectionId,
@@ -2897,6 +2916,14 @@ final class AppState {
             BrokerSymbolNormalizer.normalize($0.symbol) == normalized
         }) else {
             throw AppInteractionError.liveOrderValidationFailed("标的实时行情不可用")
+        }
+        guard quote.updateTime == nil
+                || BrokerTimestampNormalizer.isFresh(
+                    quote.updateTime,
+                    symbol: quote.symbol,
+                    maximumAge: maxAge
+                ) else {
+            throw AppInteractionError.liveOrderValidationFailed("标的行情时间已超过允许范围")
         }
         let orderBooks = pending.provider == "LONGBRIDGE"
             ? longbridgeOrderBooks
@@ -3118,6 +3145,44 @@ final class AppState {
         return lease
     }
 
+    private func activateLiveTradingSession(
+        connectionId: String,
+        provider: String,
+        account: AccountSummary,
+        config: TradingConfiguration,
+        deviceId: String,
+        accessToken: String
+    ) async throws -> LiveTradingSession {
+        let disclosure = [
+            provider,
+            account.accountId,
+            String(config.version),
+            config.riskPolicyId,
+            "AUTO_EXECUTE",
+            "60s-intent",
+            "90s-session",
+            "15bps"
+        ].joined(separator: "|")
+        let session = try await backend.activateLiveTradingSession(
+            ActivateLiveTradingSessionRequest(
+                brokerConnectionId: connectionId,
+                provider: provider,
+                deviceId: deviceId,
+                configVersion: config.version,
+                riskPolicyVersion: config.riskPolicyId,
+                confirmationDigest: Self.sha256(disclosure),
+                appSessionId: UUID().uuidString.lowercased()
+            ),
+            accessToken: accessToken
+        )
+        var runtime = liveTradingRuntimeByConnection[connectionId]
+            ?? LiveTradingRuntimeState()
+        runtime.session = session
+        runtime.statusMessage = "自动提交会话已激活"
+        liveTradingRuntimeByConnection[connectionId] = runtime
+        return session
+    }
+
     private func renewTradingRuntimeIfNeeded(
         session: LiveTradingSession,
         connectionId: String,
@@ -3327,10 +3392,12 @@ final class AppState {
             return
         }
         setShadowRuntimeStatus("刷新券商快照", for: connectionId)
-        if provider == "LONGBRIDGE" {
-            await refreshLongbridgeData()
-        } else {
-            await refreshBrokerData()
+        guard await refreshSnapshotForShadowEvaluation(provider: provider) else {
+            setShadowRuntimeStatus(
+                "券商快照未刷新或已超过 5 秒，本轮未发送模型请求",
+                for: connectionId
+            )
+            return
         }
         if let accessToken = authenticationSession?.accessToken {
             await refreshShadowHistory(connectionId: connectionId, accessToken: accessToken)
@@ -3519,6 +3586,30 @@ final class AppState {
         }
     }
 
+    private func refreshSnapshotForShadowEvaluation(provider: String) async -> Bool {
+        if provider == "LONGBRIDGE" {
+            await refreshLongbridgeData()
+        } else {
+            await refreshBrokerData(force: true)
+        }
+
+        let deadline = Date().addingTimeInterval(60)
+        while (provider == "LONGBRIDGE" ? isRefreshingLongbridge : isRefreshingBroker) {
+            guard Date() < deadline else { return false }
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return false
+            }
+        }
+        let sourceAt = provider == "LONGBRIDGE"
+            ? longbridgeLastUpdatedAt
+            : brokerLastUpdatedAt
+        return LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+            updatedAt: sourceAt
+        )
+    }
+
     private func setShadowRuntimeStatus(_ status: String, for connectionId: String? = nil) {
         guard let connectionId else {
             shadowRuntimeFallbackStatus = status
@@ -3565,7 +3656,7 @@ final class AppState {
         config: TradingConfiguration
     ) throws -> ContextEnvelope {
         contextSequence += 1
-        return try ContextEnvelopeFactory.makeTrading(
+        let context = try ContextEnvelopeFactory.makeTrading(
             deviceId: identity.deviceId,
             brokerConnectionId: connectionId,
             provider: provider,
@@ -3586,6 +3677,7 @@ final class AppState {
             clientPolicyVersion: "macos-shadow-v5-just-in-time-context",
             devicePrivateKey: identity.privateKey
         )
+        return context
     }
 
     private func marketEvaluationDecision(
@@ -3656,12 +3748,30 @@ final class AppState {
         case .cn: marketLabel = "A 股"
         case .sg: marketLabel = "新加坡"
         }
+        let sourceAt = provider == "LONGBRIDGE"
+            ? longbridgeLastUpdatedAt
+            : brokerLastUpdatedAt
+        let quoteIsFresh = quote.map {
+            if let updateTime = $0.updateTime {
+                return BrokerTimestampNormalizer.isFresh(
+                    updateTime,
+                    symbol: $0.symbol,
+                    maximumAge: LiveTradingBrokerRefreshPolicy
+                        .executableSnapshotMaximumAge
+                )
+            }
+            return LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+                updatedAt: sourceAt
+            )
+        } ?? false
         return ShadowEvaluationItem(
             symbol: item.canonicalSymbol,
             market: marketLabel,
             marketState: readiness.sessionLabel ?? marketState ?? "状态不可用",
-            state: readiness.shouldEvaluate ? .active : .waiting,
-            reason: readiness.reason
+            state: readiness.shouldEvaluate && quoteIsFresh ? .active : .waiting,
+            reason: readiness.shouldEvaluate && !quoteIsFresh
+                ? "行情时间已超过 5 秒，等待刷新"
+                : readiness.reason
         )
     }
 
@@ -3841,12 +3951,16 @@ final class AppState {
         let quoteValues = snapshotQuotes.filter { quote in
             requestedSymbolSet?.contains(quote.symbol) ?? true
         }.map { quote in
-            JSONValue.object([
+            let sourceAt = BrokerTimestampNormalizer.iso8601UTC(
+                from: quote.updateTime,
+                symbol: quote.symbol
+            ) ?? quote.updateTime ?? ISO8601DateFormatter().string(
+                from: snapshotSourceAt ?? Date()
+            )
+            return JSONValue.object([
                 "symbol": .string(quote.symbol),
                 "market": .string(quote.symbol.hasPrefix("HK.") ? "HK" : "US"),
-                "sourceAt": .string(quote.updateTime ?? ISO8601DateFormatter().string(
-                    from: snapshotSourceAt ?? Date()
-                )),
+                "sourceAt": .string(sourceAt),
                 "lastPrice": .string(quote.lastPrice.description),
                 "bidPrice": quote.bidPrice.map { .string($0.description) } ?? .null,
                 "askPrice": quote.askPrice.map { .string($0.description) } ?? .null,

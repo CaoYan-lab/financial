@@ -47,6 +47,7 @@ public final class AutoSubmitPreferenceStore {
 public enum LiveTradingBrokerRefreshPolicy {
     public static let minimumSnapshotInterval: TimeInterval = 10
     public static let rateLimitBackoff: TimeInterval = 31
+    public static let executableSnapshotMaximumAge: TimeInterval = 5
 
     public static func shouldRefreshSnapshot(
         lastUpdatedAt: Date?,
@@ -66,10 +67,65 @@ public enum LiveTradingBrokerRefreshPolicy {
         return now.timeIntervalSince(lastUpdatedAt) >= minimumSnapshotInterval
     }
 
+    public static func isExecutableSnapshotFresh(
+        updatedAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard let updatedAt else { return false }
+        return abs(now.timeIntervalSince(updatedAt)) <= executableSnapshotMaximumAge
+    }
+
     public static func supervisorNeedsSnapshot(
         hasPendingActions: Bool,
         hasManagedOrders: Bool
     ) -> Bool {
         hasPendingActions || hasManagedOrders
+    }
+}
+
+public enum LiveTradingLeasePolicy {
+    public static func shouldMaintainLease(
+        accountEnvironment: String?,
+        brokerConnected: Bool,
+        hardGateEnabled: Bool,
+        blockers: [String],
+        hasSession: Bool,
+        hasPendingActions: Bool,
+        hasManagedOrders: Bool
+    ) -> Bool {
+        let gateReady = accountEnvironment?.uppercased() == "REAL"
+            && brokerConnected
+            && hardGateEnabled
+            && blockers.isEmpty
+        return gateReady || hasSession || hasPendingActions || hasManagedOrders
+    }
+
+    public static func shouldActivateAutoSubmitSession(
+        accountEnvironment: String?,
+        brokerConnected: Bool,
+        hardGateEnabled: Bool,
+        autoSubmitEnabled: Bool,
+        blockers: [String],
+        hasSession: Bool
+    ) -> Bool {
+        accountEnvironment?.uppercased() == "REAL"
+            && brokerConnected
+            && hardGateEnabled
+            && autoSubmitEnabled
+            && blockers.isEmpty
+            && !hasSession
+    }
+}
+
+public enum BrokerSnapshotAvailability {
+    public static func positionsAvailable(
+        lastUpdatedAt: Date?,
+        dataGaps: [String]
+    ) -> Bool {
+        guard lastUpdatedAt != nil else { return false }
+        return !dataGaps.contains { gap in
+            let normalized = gap.lowercased()
+            return normalized.contains("持仓") || normalized.contains("position")
+        }
     }
 }

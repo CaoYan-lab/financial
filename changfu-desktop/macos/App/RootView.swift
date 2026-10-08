@@ -263,7 +263,10 @@ private struct MarketStatusBanner: View {
                 systemImage: "clock"
             )
             Label(state.currentConnectionLabel, systemImage: "network")
-            Label("交易租约：未持有", systemImage: "lock.shield")
+            Label(
+                "交易租约：\(state.currentTradingLeaseLabel)",
+                systemImage: "lock.shield"
+            )
             if let updatedAt = state.currentBrokerLastUpdatedAt {
                 Text("更新于 \(updatedAt.formatted(date: .omitted, time: .standard))")
                     .foregroundStyle(.secondary)

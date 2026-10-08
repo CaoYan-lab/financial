@@ -144,6 +144,18 @@ if rg -q '"真实下单关闭"' "$WORKSPACES"; then
   exit 1
 fi
 
+if rg -q 'Label\("交易租约：未持有"' "$ROOT_VIEW"; then
+  printf '%s\n' "UI 契约失败：交易租约不得使用固定未持有状态" >&2
+  exit 1
+fi
+
+for contract in 'currentTradingLeaseLabel' 'currentPositionsAvailable' '"当前账户暂无持仓"'; do
+  if ! rg -q "$contract" "$ROOT_VIEW" "$WORKSPACES" "$APP_STATE"; then
+    printf '%s\n' "UI 契约失败：租约或零持仓状态缺少 ${contract}" >&2
+    exit 1
+  fi
+done
+
 if rg -q 'kind: "POLICY"|kind: event\.group\.rawValue' "$DECISION_CONTEXT"; then
   printf '%s\n' "UI 契约失败：市场情报证据类型必须映射到后端注册类型" >&2
   exit 1

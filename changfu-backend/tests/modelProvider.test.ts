@@ -7,7 +7,10 @@ import {
   decryptCredential,
   encryptCredential,
 } from '../packages/model-provider/src/credentialCrypto.js'
-import { assertSafeModelEndpoint } from '../packages/model-provider/src/endpointSecurity.js'
+import {
+  assertSafeModelEndpoint,
+  assertSafeOfficialModelEndpoint,
+} from '../packages/model-provider/src/endpointSecurity.js'
 import {
   ModelProviderConfigError,
   PostgresModelProviderConfigRepository,
@@ -99,6 +102,40 @@ test('第三方模型 Endpoint 拒绝非 HTTPS、本机名和 IP 字面量', asy
   )
   await assert.rejects(
     () => assertSafeModelEndpoint('https://127.0.0.1/v1/responses'),
+    /MODEL_ENDPOINT_NOT_ALLOWED/,
+  )
+})
+
+test('官方 Ark Endpoint 仅放行部署 VPC 内的 PrivateLink 地址', async () => {
+  const privateLinkLookup = async () => [
+    { address: '10.20.1.110', family: 4 },
+    { address: '10.20.2.194', family: 4 },
+  ]
+  await assert.doesNotReject(
+    () => assertSafeOfficialModelEndpoint(
+      'https://ark.cn-beijing.volces.com/api/v3/responses',
+      privateLinkLookup,
+    ),
+  )
+  await assert.rejects(
+    () => assertSafeModelEndpoint(
+      'https://ark.cn-beijing.volces.com/api/v3/responses',
+      privateLinkLookup,
+    ),
+    /MODEL_ENDPOINT_NOT_ALLOWED/,
+  )
+  await assert.rejects(
+    () => assertSafeOfficialModelEndpoint(
+      'https://api.example.com/v1/responses',
+      privateLinkLookup,
+    ),
+    /MODEL_ENDPOINT_NOT_ALLOWED/,
+  )
+  await assert.rejects(
+    () => assertSafeOfficialModelEndpoint(
+      'https://ark.cn-beijing.volces.com/api/v3/responses',
+      async () => [{ address: '10.21.1.10', family: 4 }],
+    ),
     /MODEL_ENDPOINT_NOT_ALLOWED/,
   )
 })

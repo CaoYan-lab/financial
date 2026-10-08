@@ -171,7 +171,7 @@ private struct OverviewWorkspace: View {
                 ) {
                     DataAvailabilityRows(items: [
                         ("账户资金", state.currentAccount != nil),
-                        ("持仓", !state.currentPositions.isEmpty),
+                        ("持仓", state.currentPositionsAvailable),
                         ("实时行情", !state.currentQuotes.isEmpty),
                         ("K 线与逐笔", !state.currentMinuteBars.isEmpty || !state.currentTickerPoints.isEmpty),
                         ("订单与成交", !state.currentOpenOrders.isEmpty || !state.currentRecentDeals.isEmpty)
@@ -188,6 +188,9 @@ private struct OverviewWorkspace: View {
 
     private var currency: String { state.currentAccount?.currency ?? "不可用" }
     private var positionMarketValue: Decimal? {
+        if state.currentPositions.isEmpty {
+            return state.currentPositionsAvailable ? 0 : nil
+        }
         let values = state.currentPositions.compactMap { position -> Decimal? in
             guard let price = position.lastPrice else { return nil }
             return price * position.quantity
@@ -1354,7 +1357,7 @@ private struct LiveTradingSettingsSheet: View {
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 12) {
                 settingRow("后台硬门禁", state.currentLiveExecutionSetting?.hardGateEnabled == true
                     ? "已开启" : "已关闭")
-                settingRow("交易租约", state.currentTradingLease == nil ? "未持有" : "已持有")
+                settingRow("交易租约", state.currentTradingLeaseLabel)
                 settingRow("自动交易会话", state.currentLiveTradingSession == nil
                     ? "未激活" : "已激活")
                 settingRow("券商连接", state.currentConnectionLabel)
@@ -2079,6 +2082,7 @@ private struct AssetsWorkspace: View {
                 GroupedPositionTable(
                     positions: state.currentPositions,
                     quotes: state.currentQuotes,
+                    positionsAvailable: state.currentPositionsAvailable,
                     hideAmounts: hideAmounts,
                     collapsedGroups: $collapsedGroups
                 )
@@ -2335,12 +2339,15 @@ private struct PositionGroup: Identifiable {
 private struct GroupedPositionTable: View {
     let positions: [PositionSummary]
     let quotes: [QuoteSummary]
+    let positionsAvailable: Bool
     let hideAmounts: Bool
     @Binding var collapsedGroups: Set<String>
 
     var body: some View {
         if positions.isEmpty {
-            DataUnavailableView(text: "OpenD 暂未返回持仓数据")
+            DataUnavailableView(
+                text: positionsAvailable ? "当前账户暂无持仓" : "持仓数据暂不可用"
+            )
         } else {
             VStack(spacing: 12) {
                 ForEach(positionGroups(positions)) { group in

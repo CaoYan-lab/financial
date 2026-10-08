@@ -13,7 +13,10 @@ import { loadTradingCatalog } from '../../../packages/catalog/src/tradingCatalog
 import { safeLogger } from '../../../packages/observability/src/safeLogger.js'
 import { PostgresModelRunRepository } from '../../../packages/persistence/src/postgresModelRunRepository.js'
 import { PostgresDeviceAuthorizer } from '../../../packages/auth/src/deviceAuthorization.js'
-import { assertSafeModelEndpoint } from '../../../packages/model-provider/src/endpointSecurity.js'
+import {
+  assertSafeModelEndpoint,
+  assertSafeOfficialModelEndpoint,
+} from '../../../packages/model-provider/src/endpointSecurity.js'
 import {
   PostgresModelProviderConfigRepository,
   type ModelProviderProtocol,
@@ -299,7 +302,11 @@ class ArkDecisionModel implements DecisionModel {
       ?? 'OPENAI_RESPONSES'
     if (!selectedApiKey || !selectedModel) throw new Error('MODEL_CONFIG_MISSING')
     if (custom || official) {
-      await assertSafeModelEndpoint(selectedEndpoint)
+      if (custom) {
+        await assertSafeModelEndpoint(selectedEndpoint)
+      } else {
+        await assertSafeOfficialModelEndpoint(selectedEndpoint)
+      }
       safeLogger.info(custom ? 'third_party_model_route_selected' : 'official_model_route_selected', {
         requestId: input.context.requestId,
         configId: custom?.configId ?? official?.configVersionId,
@@ -582,7 +589,7 @@ const server = createServer(async (request, response) => {
       if (!officialModelConfigs) throw new Error('MODEL_CONFIG_MISSING')
       const official = await officialModelConfigs.effective() ?? environmentOfficialConfig()
       if (!official) throw new Error('MODEL_CONFIG_MISSING')
-      await assertSafeModelEndpoint(official.endpoint)
+      await assertSafeOfficialModelEndpoint(official.endpoint)
       const body = JSON.parse((await readBody(request)).toString('utf8')) as {
         runId?: unknown
         providerId?: unknown

@@ -881,6 +881,48 @@ struct ChangFuDesktopTests {
                 && quote.marketState == nil
                 && quote.marketStateValue == nil
         }
+        suite.test("券商本地报价时间按市场与夏令时规范为 UTC") {
+            BrokerTimestampNormalizer.iso8601UTC(
+                from: "2026-09-29 13:55:22.680",
+                symbol: "US.GOOG"
+            ) == "2026-09-29T17:55:22.680Z"
+                && BrokerTimestampNormalizer.iso8601UTC(
+                    from: "2026-01-15 13:55:22.680",
+                    symbol: "AAPL.US"
+                ) == "2026-01-15T18:55:22.680Z"
+                && BrokerTimestampNormalizer.iso8601UTC(
+                    from: "2026-09-29 13:55:22.680",
+                    symbol: "HK.00700"
+                ) == "2026-09-29T05:55:22.680Z"
+                && BrokerTimestampNormalizer.iso8601UTC(
+                    from: "2026-09-29 13:55:22.680",
+                    symbol: "600519.SH"
+                ) == "2026-09-29T05:55:22.680Z"
+                && BrokerTimestampNormalizer.iso8601UTC(
+                    from: "2026-09-29 13:55:22.680",
+                    symbol: "D05.SG"
+                ) == "2026-09-29T05:55:22.680Z"
+                && BrokerTimestampNormalizer.iso8601UTC(
+                    from: "2026-09-29T17:55:22.680Z",
+                    symbol: "US.GOOG"
+                ) == "2026-09-29T17:55:22.680Z"
+        }
+        suite.test("报价新鲜度使用归一化后的绝对时间") {
+            let reference = ISO8601DateFormatter().date(
+                from: "2026-09-29T17:55:25Z"
+            )!
+            return BrokerTimestampNormalizer.isFresh(
+                "2026-09-29 13:55:22.680",
+                symbol: "US.GOOG",
+                relativeTo: reference,
+                maximumAge: 5
+            ) && !BrokerTimestampNormalizer.isFresh(
+                "2026-09-29 13:55:10.000",
+                symbol: "US.GOOG",
+                relativeTo: reference,
+                maximumAge: 5
+            )
+        }
         suite.test("账户累计收益字段可编码往返") {
             let account = AccountSummary(
                 accountId: "test-account",
@@ -1482,6 +1524,20 @@ struct ChangFuDesktopTests {
                     force: true
                 )
         }
+        suite.test("可执行快照严格限制为五秒") {
+            LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+                updatedAt: now.addingTimeInterval(-5),
+                now: now
+            )
+                && !LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+                    updatedAt: now.addingTimeInterval(-5.001),
+                    now: now
+                )
+                && !LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+                    updatedAt: nil,
+                    now: now
+                )
+        }
 
         suite.test("仅自动交易会话存活时监管不刷新券商快照") {
             !LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
@@ -1495,6 +1551,70 @@ struct ChangFuDesktopTests {
                 && LiveTradingBrokerRefreshPolicy.supervisorNeedsSnapshot(
                     hasPendingActions: false,
                     hasManagedOrders: true
+                )
+        }
+
+        suite.test("实盘硬门禁就绪后持续持有交易租约") {
+            LiveTradingLeasePolicy.shouldMaintainLease(
+                accountEnvironment: "REAL",
+                brokerConnected: true,
+                hardGateEnabled: true,
+                blockers: [],
+                hasSession: false,
+                hasPendingActions: false,
+                hasManagedOrders: false
+            )
+                && !LiveTradingLeasePolicy.shouldMaintainLease(
+                    accountEnvironment: "REAL",
+                    brokerConnected: false,
+                    hardGateEnabled: true,
+                    blockers: [],
+                    hasSession: false,
+                    hasPendingActions: false,
+                    hasManagedOrders: false
+                )
+                && LiveTradingLeasePolicy.shouldMaintainLease(
+                    accountEnvironment: "REAL",
+                    brokerConnected: false,
+                    hardGateEnabled: false,
+                    blockers: ["后台门禁关闭"],
+                    hasSession: false,
+                    hasPendingActions: true,
+                    hasManagedOrders: false
+                )
+        }
+
+        suite.test("自动提交设置在会话缺失时触发恢复") {
+            LiveTradingLeasePolicy.shouldActivateAutoSubmitSession(
+                accountEnvironment: "REAL",
+                brokerConnected: true,
+                hardGateEnabled: true,
+                autoSubmitEnabled: true,
+                blockers: [],
+                hasSession: false
+            )
+                && !LiveTradingLeasePolicy.shouldActivateAutoSubmitSession(
+                    accountEnvironment: "REAL",
+                    brokerConnected: true,
+                    hardGateEnabled: true,
+                    autoSubmitEnabled: true,
+                    blockers: [],
+                    hasSession: true
+                )
+        }
+
+        suite.test("成功空持仓快照仍表示持仓能力可用") {
+            BrokerSnapshotAvailability.positionsAvailable(
+                lastUpdatedAt: now,
+                dataGaps: ["Longbridge 暂不提供逐笔成交"]
+            )
+                && !BrokerSnapshotAvailability.positionsAvailable(
+                    lastUpdatedAt: nil,
+                    dataGaps: []
+                )
+                && !BrokerSnapshotAvailability.positionsAvailable(
+                    lastUpdatedAt: now,
+                    dataGaps: ["持仓接口调用失败"]
                 )
         }
     }

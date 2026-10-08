@@ -1,5 +1,19 @@
 import { isIP } from 'node:net'
+import type { LookupAddress } from 'node:dns'
 import { lookup } from 'node:dns/promises'
+
+type AddressLookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<LookupAddress[]>
+
+const arkPrivateLinkHostname = 'ark.cn-beijing.volces.com'
+
+function trustedArkPrivateLinkAddress(hostname: string, address: LookupAddress): boolean {
+  if (hostname !== arkPrivateLinkHostname || address.family !== 4) return false
+  const [first, second] = address.address.split('.').map(Number)
+  return first === 10 && second === 20
+}
 
 function blockedIpv4(address: string): boolean {
   const parts = address.split('.').map(Number)
@@ -34,7 +48,11 @@ function blockedIpv6(address: string): boolean {
   )
 }
 
-export async function assertSafeModelEndpoint(endpoint: string): Promise<URL> {
+async function assertEndpoint(
+  endpoint: string,
+  allowArkPrivateLink: boolean,
+  addressLookup: AddressLookup,
+): Promise<URL> {
   try {
     const url = new URL(endpoint)
     if (
@@ -48,15 +66,30 @@ export async function assertSafeModelEndpoint(endpoint: string): Promise<URL> {
       || isIP(url.hostname) !== 0
     ) throw new Error('MODEL_ENDPOINT_NOT_ALLOWED')
 
-    const addresses = await lookup(url.hostname, { all: true, verbatim: true })
+    const addresses = await addressLookup(url.hostname, { all: true, verbatim: true })
     if (
       addresses.length === 0
       || addresses.some(item => (
-        item.family === 4 ? blockedIpv4(item.address) : blockedIpv6(item.address)
+        (item.family === 4 ? blockedIpv4(item.address) : blockedIpv6(item.address))
+        && !(allowArkPrivateLink && trustedArkPrivateLinkAddress(url.hostname, item))
       ))
     ) throw new Error('MODEL_ENDPOINT_NOT_ALLOWED')
     return url
   } catch {
     throw new Error('MODEL_ENDPOINT_NOT_ALLOWED')
   }
+}
+
+export async function assertSafeModelEndpoint(
+  endpoint: string,
+  addressLookup: AddressLookup = lookup,
+): Promise<URL> {
+  return assertEndpoint(endpoint, false, addressLookup)
+}
+
+export async function assertSafeOfficialModelEndpoint(
+  endpoint: string,
+  addressLookup: AddressLookup = lookup,
+): Promise<URL> {
+  return assertEndpoint(endpoint, true, addressLookup)
 }

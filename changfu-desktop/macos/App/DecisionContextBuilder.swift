@@ -53,7 +53,7 @@ public enum DecisionContextBuilder {
                     id: evidenceId("QUOTE", symbol),
                     kind: "QUOTE",
                     summary: quoteSummary(quote),
-                    sourceAt: quote.updateTime ?? sourceTime
+                    sourceAt: normalizedQuoteTime(quote, fallback: sourceTime)
                 ))
             } else {
                 gaps.append(gap(
@@ -177,7 +177,9 @@ public enum DecisionContextBuilder {
                 "preMarketPrice": quote?.preMarketPrice.map(decimal) ?? .null,
                 "afterHoursPrice": quote?.afterHoursPrice.map(decimal) ?? .null,
                 "overnightPrice": quote?.overnightPrice.map(decimal) ?? .null,
-                "sourceAt": quote?.updateTime.map(JSONValue.string) ?? .string(sourceTime)
+                "sourceAt": quote.map {
+                    .string(normalizedQuoteTime($0, fallback: sourceTime))
+                } ?? .string(sourceTime)
             ])
         }
 
@@ -450,6 +452,16 @@ public enum DecisionContextBuilder {
 
     private static func quoteSummary(_ quote: QuoteSummary) -> String {
         "\(quote.symbol) 最新价 \(quote.lastPrice)，开 \(quote.openPrice?.description ?? "不可用")，高 \(quote.highPrice?.description ?? "不可用")，低 \(quote.lowPrice?.description ?? "不可用")，成交量 \(quote.volume?.description ?? "不可用")"
+    }
+
+    private static func normalizedQuoteTime(
+        _ quote: QuoteSummary,
+        fallback: String
+    ) -> String {
+        BrokerTimestampNormalizer.iso8601UTC(
+            from: quote.updateTime,
+            symbol: quote.symbol
+        ) ?? quote.updateTime ?? fallback
     }
 
     private static func evidenceId(_ prefix: String, _ symbol: String) -> String {

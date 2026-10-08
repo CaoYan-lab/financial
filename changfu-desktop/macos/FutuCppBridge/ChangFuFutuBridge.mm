@@ -1298,56 +1298,6 @@ void loadQuoteSnapshot(
         appendGap(gaps, "逐市场交易状态不可用，部分持仓时段将显示未知");
     }
 
-    Qot_GetBasicQot::Request quoteRequest;
-    for (const auto &security : securities) {
-        quoteRequest.mutable_c2s()->add_securitylist()->CopyFrom(security);
-    }
-    Qot_GetBasicQot::Response quoteResponse;
-    status = sendRequest(
-        client,
-        FTAPI_ProtoID_Qot_GetBasicQot,
-        quoteRequest,
-        &quoteResponse
-    );
-    google::protobuf::ListValue *quoteList =
-        (*root->mutable_fields())["quotes"].mutable_list_value();
-    if (status == ChangFuFutuStatusOk
-        && quoteResponse.rettype() == Common::RetType_Succeed
-        && quoteResponse.has_s2c()) {
-        for (const auto &quote : quoteResponse.s2c().basicqotlist()) {
-            auto *object = quoteList->add_values()->mutable_struct_value();
-            setString(object, "symbol", quoteSymbol(quote.security()));
-            setString(object, "name", quote.name());
-            setNumber(object, "lastPrice", quote.curprice());
-            setNumber(object, "openPrice", quote.openprice());
-            setNumber(object, "highPrice", quote.highprice());
-            setNumber(object, "lowPrice", quote.lowprice());
-            setNumber(object, "previousClose", quote.lastcloseprice());
-            setNumber(object, "volume", static_cast<double>(quote.volume()));
-            setNumber(object, "turnover", quote.turnover());
-            setString(object, "updateTime", quote.updatetime());
-            const auto marketState = marketStates.find(quote.security().market());
-            if (marketState != marketStates.end()) {
-                setNumber(object, "marketStateValue", marketState->second.first);
-                setString(object, "marketState", marketState->second.second);
-            }
-            const auto extended = extendedPrices.find(quoteSymbol(quote.security()));
-            if (extended != extendedPrices.end()) {
-                if (extended->second.hasPreMarket) {
-                    setNumber(object, "preMarketPrice", extended->second.preMarket);
-                }
-                if (extended->second.hasAfterHours) {
-                    setNumber(object, "afterHoursPrice", extended->second.afterHours);
-                }
-                if (extended->second.hasOvernight) {
-                    setNumber(object, "overnightPrice", extended->second.overnight);
-                }
-            }
-        }
-    } else {
-        appendGap(gaps, "基本行情不可用");
-    }
-
     google::protobuf::ListValue *barList =
         (*root->mutable_fields())["minuteBars"].mutable_list_value();
     google::protobuf::ListValue *tickerList =
@@ -1460,6 +1410,58 @@ void loadQuoteSnapshot(
         } else {
             appendGap(gaps, symbol + " 盘口不可用");
         }
+    }
+
+    // Read executable quotes last so slow per-symbol depth collection cannot
+    // make them stale before the signed context is created.
+    Qot_GetBasicQot::Request quoteRequest;
+    for (const auto &security : securities) {
+        quoteRequest.mutable_c2s()->add_securitylist()->CopyFrom(security);
+    }
+    Qot_GetBasicQot::Response quoteResponse;
+    status = sendRequest(
+        client,
+        FTAPI_ProtoID_Qot_GetBasicQot,
+        quoteRequest,
+        &quoteResponse
+    );
+    google::protobuf::ListValue *quoteList =
+        (*root->mutable_fields())["quotes"].mutable_list_value();
+    if (status == ChangFuFutuStatusOk
+        && quoteResponse.rettype() == Common::RetType_Succeed
+        && quoteResponse.has_s2c()) {
+        for (const auto &quote : quoteResponse.s2c().basicqotlist()) {
+            auto *object = quoteList->add_values()->mutable_struct_value();
+            setString(object, "symbol", quoteSymbol(quote.security()));
+            setString(object, "name", quote.name());
+            setNumber(object, "lastPrice", quote.curprice());
+            setNumber(object, "openPrice", quote.openprice());
+            setNumber(object, "highPrice", quote.highprice());
+            setNumber(object, "lowPrice", quote.lowprice());
+            setNumber(object, "previousClose", quote.lastcloseprice());
+            setNumber(object, "volume", static_cast<double>(quote.volume()));
+            setNumber(object, "turnover", quote.turnover());
+            setString(object, "updateTime", quote.updatetime());
+            const auto marketState = marketStates.find(quote.security().market());
+            if (marketState != marketStates.end()) {
+                setNumber(object, "marketStateValue", marketState->second.first);
+                setString(object, "marketState", marketState->second.second);
+            }
+            const auto extended = extendedPrices.find(quoteSymbol(quote.security()));
+            if (extended != extendedPrices.end()) {
+                if (extended->second.hasPreMarket) {
+                    setNumber(object, "preMarketPrice", extended->second.preMarket);
+                }
+                if (extended->second.hasAfterHours) {
+                    setNumber(object, "afterHoursPrice", extended->second.afterHours);
+                }
+                if (extended->second.hasOvernight) {
+                    setNumber(object, "overnightPrice", extended->second.overnight);
+                }
+            }
+        }
+    } else {
+        appendGap(gaps, "基本行情不可用");
     }
 }
 

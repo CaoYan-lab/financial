@@ -1,4 +1,6 @@
-import { assertSafeModelEndpoint } from '../../../../packages/model-provider/src/endpointSecurity.js'
+import {
+  assertSafeOfficialModelEndpoint,
+} from '../../../../packages/model-provider/src/endpointSecurity.js'
 import { requestModelText } from '../../../../packages/model-provider/src/modelHttpClient.js'
 import {
   OfficialModelConfigError,
@@ -72,7 +74,7 @@ export async function handleAdminOfficialModelRoute(
       return true
     }
     return handleOfficialModelError(context, async () => {
-      await assertSafeModelEndpoint(parsed.endpoint)
+      await assertSafeOfficialModelEndpoint(parsed.endpoint)
       sendAdminJson(context.response, 201, await context.officialModelRepository.createDraft({
         ...parsed,
         apiKey: parsed.apiKey!,
@@ -92,7 +94,7 @@ export async function handleAdminOfficialModelRoute(
       return true
     }
     return handleOfficialModelError(context, async () => {
-      await assertSafeModelEndpoint(parsed.endpoint)
+      await assertSafeOfficialModelEndpoint(parsed.endpoint)
       sendAdminJson(context.response, 200, await context.officialModelRepository.updateDraft({
         configVersionId: version.groups!.versionId!,
         ...parsed,
@@ -122,7 +124,7 @@ export async function handleAdminOfficialModelRoute(
         if (!config) throw new OfficialModelConfigError('OFFICIAL_MODEL_CONFIG_NOT_FOUND')
         let errorCode: string | null = null
         try {
-          await assertSafeModelEndpoint(config.endpoint)
+          await assertSafeOfficialModelEndpoint(config.endpoint)
           const output = await requestModelText({
             config,
             system: '你是长富Pro连通性检查器，只返回 OK。',
