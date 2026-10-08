@@ -902,6 +902,166 @@ public actor BackendClient {
         )
     }
 
+    public func quantitativePool(
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativePool {
+        try await authenticatedGET(
+            path: "/v1/quantitative/pools/\(providerId)",
+            query: [],
+            accessToken: accessToken
+        )
+    }
+
+    public func syncQuantitativeTopThirtyPool(
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativePool {
+        try await authenticatedMutation(
+            path: "/v1/quantitative/pools/\(providerId)/sync-top30",
+            method: "POST",
+            body: EmptyRequest(),
+            acceptedStatusCodes: [200],
+            timeoutInterval: 30,
+            accessToken: accessToken
+        )
+    }
+
+    public func startQuantitativeRun(
+        _ input: StartQuantitativeRunRequest,
+        accessToken: String
+    ) async throws -> QuantitativeRun {
+        try await authenticatedMutation(
+            path: "/v1/quantitative/runs",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [201],
+            accessToken: accessToken
+        )
+    }
+
+    public func activeQuantitativeRun(
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativeReport? {
+        do {
+            return try await authenticatedGET(
+                path: "/v1/quantitative/runs/active",
+                query: [URLQueryItem(name: "provider", value: providerId)],
+                accessToken: accessToken
+            )
+        } catch BackendClientError.notFound {
+            return nil
+        }
+    }
+
+    public func cancelQuantitativeRun(
+        runId: String,
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativeRunCancelled {
+        try await authenticatedMutation(
+            path: "/v1/quantitative/runs/\(runId)/cancel",
+            method: "POST",
+            body: FinalizeQuantitativeRunRequest(providerId: providerId),
+            acceptedStatusCodes: [200],
+            accessToken: accessToken
+        )
+    }
+
+    public func submitQuantitativeObservation(
+        runId: String,
+        requestId: String,
+        input: SubmitQuantitativeObservationRequest,
+        accessToken: String
+    ) async throws -> QuantitativeItemSubmission {
+        try await authenticatedMutation(
+            path: "/v1/quantitative/runs/\(runId)/items/\(requestId)",
+            method: "POST",
+            body: input,
+            acceptedStatusCodes: [200],
+            timeoutInterval: 360,
+            accessToken: accessToken
+        )
+    }
+
+    public func finalizeQuantitativeRun(
+        runId: String,
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativeReport {
+        try await authenticatedMutation(
+            path: "/v1/quantitative/runs/\(runId)/finalize",
+            method: "POST",
+            body: FinalizeQuantitativeRunRequest(providerId: providerId),
+            acceptedStatusCodes: [200],
+            timeoutInterval: 60,
+            accessToken: accessToken
+        )
+    }
+
+    public func latestQuantitativeReport(
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativeReport? {
+        do {
+            return try await authenticatedGET(
+                path: "/v1/quantitative/reports/latest",
+                query: [URLQueryItem(name: "provider", value: providerId)],
+                accessToken: accessToken
+            )
+        } catch BackendClientError.notFound {
+            return nil
+        }
+    }
+
+    public func quantitativeReportHistory(
+        providerId: String,
+        page: Int = 1,
+        pageSize: Int = 10,
+        accessToken: String
+    ) async throws -> QuantitativeReportHistoryPage {
+        try await authenticatedGET(
+            path: "/v1/quantitative/reports/history",
+            query: [
+                URLQueryItem(name: "provider", value: providerId),
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "pageSize", value: String(pageSize))
+            ],
+            accessToken: accessToken
+        )
+    }
+
+    public func quantitativeReport(
+        runId: String,
+        providerId: String,
+        accessToken: String
+    ) async throws -> QuantitativeReport {
+        try await authenticatedGET(
+            path: "/v1/quantitative/reports/\(runId)",
+            query: [URLQueryItem(name: "provider", value: providerId)],
+            accessToken: accessToken
+        )
+    }
+
+    public func compareQuantitativeReports(
+        leftRunId: String,
+        leftProviderId: String,
+        rightRunId: String,
+        rightProviderId: String,
+        accessToken: String
+    ) async throws -> QuantitativeReportComparison {
+        try await authenticatedGET(
+            path: "/v1/quantitative/reports/\(leftRunId)/compare",
+            query: [
+                URLQueryItem(name: "provider", value: leftProviderId),
+                URLQueryItem(name: "otherProvider", value: rightProviderId),
+                URLQueryItem(name: "otherRunId", value: rightRunId)
+            ],
+            accessToken: accessToken
+        )
+    }
+
     private func authenticatedGET<Response: Decodable>(
         path: String,
         query: [URLQueryItem],

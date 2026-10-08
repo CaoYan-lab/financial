@@ -35,6 +35,11 @@ import type {
   SellPutObservation,
   SellPutReportAnalysis,
 } from '../../../packages/domain/src/sellPutResearch.js'
+import {
+  validateQuantitativeScoreResult,
+  type QuantitativeObservation,
+} from '../../../packages/domain/src/quantitativeResearch.js'
+import { buildQuantitativeScorePrompt } from '../../../packages/domain/src/quantitativePrompt.js'
 import { PostgresTradingDecisionAuthority } from './tradingDecisionAuthority.js'
 import { PostgresTradingOutcomeRepository } from './tradingOutcomeRepository.js'
 import { postgresPoolConfig } from '../../../packages/runtime/src/postgresPool.js'
@@ -540,6 +545,45 @@ function environmentOfficialConfig(): EffectiveOfficialModelConfig | null {
   }
 }
 
+function isQuantitativeObservation(value: unknown): value is QuantitativeObservation {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const observation = value as Record<string, unknown>
+  return (
+    typeof observation.requestId === 'string'
+    && typeof observation.rank === 'number'
+    && Number.isInteger(observation.rank)
+    && observation.rank >= 1
+    && observation.rank <= 30
+    && typeof observation.symbol === 'string'
+    && typeof observation.ticker === 'string'
+    && typeof observation.displayName === 'string'
+    && (observation.providerId === 'FUTU' || observation.providerId === 'LONGBRIDGE')
+    && typeof observation.capturedAt === 'string'
+    && Number.isFinite(Date.parse(observation.capturedAt))
+    && (
+      observation.currentPrice === null
+      || (typeof observation.currentPrice === 'number' && Number.isFinite(observation.currentPrice))
+    )
+    && (
+      observation.quoteFreshness === 'FRESH'
+      || observation.quoteFreshness === 'STALE'
+      || observation.quoteFreshness === 'UNAVAILABLE'
+    )
+    && typeof observation.adjustedDailyBarCount === 'number'
+    && Number.isInteger(observation.adjustedDailyBarCount)
+    && observation.adjustedDailyBarCount >= 0
+    && Array.isArray(observation.evidence)
+    && Array.isArray(observation.dataGaps)
+  )
+}
+
+function isRetryableModelError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.name === 'TimeoutError'
+    || error.name === 'AbortError'
+    || /^MODEL_HTTP_(408|429|5\d\d)$/.test(error.message)
+}
+
 const server = createServer(async (request, response) => {
   const requestId = request.headers['x-request-id']?.toString() ?? randomUUID()
   if (request.method === 'GET' && request.url === '/internal/v1/health') {
@@ -574,7 +618,9 @@ const server = createServer(async (request, response) => {
   const isModelRun = request.method === 'POST' && request.url === '/internal/v1/model/runs'
   const isSellPutReport = request.method === 'POST'
     && request.url === '/internal/v1/sell-put/report'
-  if (!isModelRun && !isSellPutReport) {
+  const isQuantitativeScore = request.method === 'POST'
+    && request.url === '/internal/v1/quantitative/score'
+  if (!isModelRun && !isSellPutReport && !isQuantitativeScore) {
     sendJson(response, 404, { code: 'NOT_FOUND', requestId })
     return
   }
@@ -629,6 +675,66 @@ const server = createServer(async (request, response) => {
         errorName: error instanceof Error ? error.message : 'UnknownError',
       })
       sendJson(response, 502, { code: 'SELL_PUT_REPORT_GENERATION_FAILED', requestId })
+    }
+    return
+  }
+  if (isQuantitativeScore) {
+    try {
+      if (!officialModelConfigs) throw new Error('MODEL_CONFIG_MISSING')
+      const official = await officialModelConfigs.effective() ?? environmentOfficialConfig()
+      if (!official) throw new Error('MODEL_CONFIG_MISSING')
+      await assertSafeOfficialModelEndpoint(official.endpoint)
+      const body = JSON.parse((await readBody(request)).toString('utf8')) as {
+        observation?: unknown
+        modelProfile?: unknown
+      }
+      if (
+        !isQuantitativeObservation(body.observation)
+        || !['fast', 'deep', 'risk'].includes(String(body.modelProfile))
+      ) {
+        throw new Error('QUANTITATIVE_SCORE_INPUT_INVALID')
+      }
+      const prompt = buildQuantitativeScorePrompt(
+        body.observation,
+        body.modelProfile as 'fast' | 'deep' | 'risk',
+      )
+      let lastError: unknown
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const text = (await requestModelText({
+            config: official,
+            system: prompt.system,
+            user: prompt.user,
+            temperature: 0,
+            timeoutMs: modelRequestTimeoutMs,
+            maxResponseBytes: maxModelResponseBytes,
+          })).trim()
+            .replace(/^```json\s*/i, '')
+            .replace(/\s*```$/, '')
+          const parsed = JSON.parse(text) as unknown
+          const validated = validateQuantitativeScoreResult(
+            parsed,
+            body.observation.evidence,
+          )
+          if (!validated.ok) throw new Error(validated.reason)
+          sendJson(response, 200, {
+            requestId: body.observation.requestId,
+            scoreResult: validated.value,
+          })
+          return
+        } catch (error) {
+          lastError = error
+          if (attempt > 0 || !isRetryableModelError(error)) throw error
+        }
+      }
+      throw lastError
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'QUANTITATIVE_SCORE_FAILED'
+      safeLogger.error('quantitative_score_failed', {
+        requestId,
+        errorCode: code,
+      })
+      sendJson(response, 502, { code, requestId })
     }
     return
   }

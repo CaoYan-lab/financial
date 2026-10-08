@@ -2790,6 +2790,11 @@ ChangFuFutuStatus changfu_futu_sell_put_underlying_json(
         for (const auto &bar : barResponse.s2c().kllist()) {
             if (bar.closeprice() > 0) closes.push_back(bar.closeprice());
         }
+        setNumber(
+            &root,
+            "adjustedDailyBarCount",
+            static_cast<double>(closes.size())
+        );
         const auto movingAverage = [&](std::size_t periods) -> double {
             if (closes.size() < periods) return 0;
             double sum = 0;

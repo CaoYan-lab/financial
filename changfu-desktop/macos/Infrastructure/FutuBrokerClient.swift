@@ -58,10 +58,12 @@ public final class FutuBrokerClient:
     BrokerClient,
     BrokerInstrumentDiscoveryClient,
     MarketIntelligenceClient,
+    QuantitativeResearchBrokerClient,
     LiveOrderBrokerClient
 {
     public private(set) var connectionState: OpenDConnectionState = .disconnected
     private let runner: BrokerHostRunner
+    private var quantitativeMarketSnapshot: MarketIntelligenceSnapshot?
 
     public init(hostExecutableURL: URL? = nil) {
         runner = BrokerHostRunner(executableURL: hostExecutableURL ?? Self.defaultHostURL())
@@ -168,6 +170,135 @@ public final class FutuBrokerClient:
             MarketIntelligenceSnapshot.self,
             command: "market-intelligence",
             request: MarketIntelligenceRequest(symbols: symbols)
+        )
+    }
+
+    public func prepareQuantitativeResearch(symbols: [String]) async throws {
+        var snapshots: [MarketIntelligenceSnapshot] = []
+        for start in stride(from: 0, to: symbols.count, by: 12) {
+            let end = min(start + 12, symbols.count)
+            snapshots.append(try await loadMarketIntelligence(
+                symbols: Array(symbols[start..<end])
+            ))
+        }
+        guard let first = snapshots.first else {
+            quantitativeMarketSnapshot = try await loadMarketIntelligence(symbols: [])
+            return
+        }
+        let sections = MarketEventGroup.allCases.map { group in
+            let matching = snapshots.map { $0.section(group) }
+            let events = Dictionary(
+                matching.flatMap(\.events).map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            ).values.sorted { $0.publishedAt > $1.publishedAt }
+            let availability: MarketIntelligenceAvailability
+            if matching.allSatisfy({ $0.availability == .available }) {
+                availability = .available
+            } else if matching.contains(where: { !$0.events.isEmpty }) {
+                availability = .partial
+            } else {
+                availability = .unavailable
+            }
+            return MarketIntelligenceSection(
+                group: group,
+                availability: availability,
+                message: matching.compactMap(\.message).first,
+                events: events
+            )
+        }
+        quantitativeMarketSnapshot = MarketIntelligenceSnapshot(
+            providerId: "FUTU",
+            fetchedAt: first.fetchedAt,
+            sections: sections
+        )
+    }
+
+    public func quantitativeResearchObservation(
+        _ request: QuantitativeBrokerObservationRequest
+    ) async throws -> QuantitativeBrokerObservation {
+        let snapshot = try await sellPutUnderlyingSnapshot(symbol: request.symbol)
+        let market: MarketIntelligenceSnapshot
+        if let quantitativeMarketSnapshot {
+            market = quantitativeMarketSnapshot
+        } else {
+            market = try await loadMarketIntelligence(symbols: [request.symbol])
+        }
+        let capturedAt = snapshot.capturedAt
+        var evidence: [QuantitativeEvidence] = []
+        func appendNumber(
+            _ id: String,
+            _ layer: QuantitativeEvidenceLayer,
+            _ title: String,
+            _ value: Double?
+        ) {
+            guard let value else { return }
+            evidence.append(QuantitativeEvidence(
+                id: "futu:\(id):\(request.ticker)",
+                layer: layer,
+                source: "FUTU",
+                title: title,
+                capturedAt: capturedAt,
+                asOf: capturedAt,
+                value: .number(value)
+            ))
+        }
+        appendNumber("market-cap", .fundamentals, "总市值", snapshot.marketCap)
+        appendNumber("pe-ratio", .fundamentals, "市盈率", snapshot.peRatio)
+        appendNumber("rsi14", .priceTrend, "RSI14", snapshot.rsi14)
+        appendNumber("ma50", .priceTrend, "50 日均线", snapshot.ma50)
+        appendNumber("ma200", .priceTrend, "200 日均线", snapshot.ma200)
+        appendNumber("trend20d", .priceTrend, "20 日前复权趋势", snapshot.trend20d)
+        appendNumber("trend60d", .priceTrend, "60 日前复权趋势", snapshot.trend60d)
+        appendNumber("trend120d", .priceTrend, "120 日前复权趋势", snapshot.trend120d)
+        appendNumber("distance-52w-high", .priceTrend, "距 52 周高点", snapshot.distanceTo52wHigh)
+        appendNumber("distance-52w-low", .priceTrend, "距 52 周低点", snapshot.distanceTo52wLow)
+        appendNumber("realized-vol-30d", .priceTrend, "30 日实现波动率", snapshot.realizedVol30d)
+
+        let relatedEvents = market.sections.flatMap(\.events).filter { event in
+            event.group == .usMacro
+                || event.relatedSymbols.isEmpty
+                || event.relatedSymbols.contains(request.symbol)
+        }
+        for event in relatedEvents {
+            let layer: QuantitativeEvidenceLayer = event.group == .usMacro
+                ? .macroFit
+                : .filings
+            evidence.append(QuantitativeEvidence(
+                id: "futu:event:\(event.id)",
+                layer: layer,
+                source: "FUTU",
+                title: event.title,
+                capturedAt: event.fetchedAt,
+                asOf: event.publishedAt,
+                value: .string(event.detail ?? event.category),
+                metadata: [
+                    "category": .string(event.category),
+                    "importance": .string(event.importance.rawValue),
+                    "validUntil": .string(event.validUntil)
+                ]
+            ))
+        }
+        let sectionGaps = market.sections.compactMap { section -> String? in
+            guard section.availability != .available else { return nil }
+            return section.message ?? "\(section.group.rawValue) 数据不可用"
+        }
+        return QuantitativeBrokerObservation(
+            requestId: request.requestId,
+            rank: request.rank,
+            symbol: request.symbol,
+            ticker: request.ticker,
+            displayName: request.displayName,
+            providerId: "FUTU",
+            capturedAt: capturedAt,
+            currentPrice: snapshot.currentPrice,
+            quoteFreshness: snapshot.currentPrice == nil ? "UNAVAILABLE" : "FRESH",
+            adjustedDailyBarCount: snapshot.adjustedDailyBarCount ?? 0,
+            evidence: evidence,
+            dataGaps: Array(Set(
+                snapshot.dataGaps
+                    + sectionGaps
+                    + ["Futu 完整财务报表能力不可用", "Futu 卖空数据能力不可用"]
+            )).sorted()
         )
     }
 

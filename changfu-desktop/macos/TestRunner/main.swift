@@ -102,13 +102,14 @@ struct ChangFuDesktopTests {
         suite.test("研究技能版本和内容完整") {
             ResearchSkill.allCases.map(\.id) == ["quantitative", "sellPut"]
                 && ResearchSkill.allCases.map(\.title)
-                    == ["量化研究", "SELL PUT 期权研究"]
+                    == ["选股研究", "SELL PUT 期权研究"]
                 && ResearchSkill.allCases.map(\.promptVersion)
                     == ["research-quantitative-v1", "top30-mega-cap-csp-v3"]
                 && ResearchSkill.allCases.map(\.systemImage)
                     == ["chart.xyaxis.line", "option"]
                 && ResearchSkill.allCases.allSatisfy { !$0.detail.isEmpty }
-                && ResearchSkill.allCases.allSatisfy { $0.sections.count == 4 }
+                && ResearchSkill.quantitative.sections.count == 5
+                && ResearchSkill.sellPut.sections.count == 4
         }
         suite.test("SELL PUT 报告保留独立请求与缺失数据门禁") {
             let data = Data("""
@@ -143,21 +144,81 @@ struct ChangFuDesktopTests {
                     == "00000000-0000-4000-8000-000000000602"
                 && report.items.first?.analysis.candidate == false
         }
+        suite.test("Top30 量化报告保留五维评分、独立请求与缺失维度") {
+            let data = Data("""
+            {"runId":"00000000-0000-4000-8000-000000000701","providerId":"FUTU",
+             "poolVersion":2,"promptVersion":"top30-quant-selection-v1",
+             "scoringVersion":"top30-five-layer-score-v1","modelProfile":"OFFICIAL",
+             "status":"COMPLETED","symbolCount":30,"terminalCount":30,
+             "completedCount":29,"rejectedCount":1,"unavailableCount":0,
+             "candidateCount":5,"dataGapCount":1,
+             "summary":{"generatedAt":"2026-10-08T00:00:00Z",
+             "topFive":[],"watchlist":[],"bottomFive":[],"insufficient":[]},
+             "markdown":"# 报告","errorCode":null,
+             "startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z",
+             "items":[{"requestId":"00000000-0000-4000-8000-000000000702",
+             "symbol":"US.NVDA","ticker":"NVDA","rank":1,"status":"COMPLETED",
+             "brokerObservation":null,"officialEvidence":null,"errorCode":null,
+             "attempts":1,"updatedAt":"2026-10-08T00:00:01Z",
+             "analysis":{"requestId":"00000000-0000-4000-8000-000000000702",
+             "rank":1,"finalRank":1,"symbol":"US.NVDA","ticker":"NVDA",
+             "displayName":"NVIDIA","providerId":"FUTU","status":"COMPLETED",
+             "candidateStatus":"ELIGIBLE","totalScore":82,"coverageWeight":90,
+             "dimensions":{"fundamentals":{"score":27,"availability":"AVAILABLE"},
+             "filings":{"score":15,"availability":"AVAILABLE"},
+             "shortActivity":{"score":null,"availability":"UNAVAILABLE"},
+             "priceTrend":{"score":25,"availability":"AVAILABLE"},
+             "macroFit":{"score":15,"availability":"PARTIAL"}},
+             "summary":"证据支持","evidenceIds":["sec:fact:revenue:1"],
+             "counterEvidenceIds":[],"risks":[],"dataGaps":["卖空层不可用"],
+             "invalidationConditions":["趋势失效"],
+             "capturedAt":"2026-10-08T00:00:00Z","rejectionReason":null}}]}
+            """.utf8)
+            guard let report = try? JSONDecoder().decode(
+                QuantitativeReport.self,
+                from: data
+            ) else {
+                return false
+            }
+            let item = report.items.first?.analysis
+            return report.symbolCount == 30
+                && report.scoringVersion == "top30-five-layer-score-v1"
+                && item?.requestId == "00000000-0000-4000-8000-000000000702"
+                && item?.dimensions?.shortActivity.score == nil
+                && item?.dimensions?.shortActivity.availability == .unavailable
+                && item?.totalScore == 82
+        }
+        suite.test("量化证据值支持数值、文本、布尔和空值往返") {
+            let values: [QuantitativeEvidenceValue] = [
+                .number(12.5),
+                .string("10-Q"),
+                .boolean(true),
+                .null
+            ]
+            guard let data = try? JSONEncoder().encode(values),
+                  let decoded = try? JSONDecoder().decode(
+                    [QuantitativeEvidenceValue].self,
+                    from: data
+                  ) else {
+                return false
+            }
+            return decoded == values
+        }
         suite.test("对话能力显式区分技能智能体和工具") {
             let capability = ConversationCapability(
                 id: "quantitative",
                 kind: .skill,
-                title: "量化研究",
+                title: "选股研究",
                 detail: "测试",
                 systemImage: "chart.xyaxis.line"
             )
             return ConversationCapabilityKind.skill.title == "技能"
                 && ConversationCapabilityKind.agent.title == "智能体"
                 && ConversationCapabilityKind.tool.title == "工具"
-                && capability.mention == "@量化研究"
-                && capability.isMentioned(in: "@量化研究 分析")
-                && capability.isMentioned(in: "请用 @量化研究，分析")
-                && !capability.isMentioned(in: "@量化研究报告")
+                && capability.mention == "@选股研究"
+                && capability.isMentioned(in: "@选股研究 分析")
+                && capability.isMentioned(in: "请用 @选股研究，分析")
+                && !capability.isMentioned(in: "@选股研究报告")
         }
         suite.test("套餐和支付渠道目录完整") {
             SubscriptionTier.allCases.map(\.id) == ["light", "advanced", "flagship"]
@@ -1111,7 +1172,7 @@ struct ChangFuDesktopTests {
                 .object([
                     "id": .string("quantitative"),
                     "kind": .string("skill"),
-                    "title": .string("量化研究"),
+                    "title": .string("选股研究"),
                     "promptVersion": .string("research-quantitative-v1"),
                     "modelProfile": .string("deep"),
                     "toolPolicyVersion": .string("research-readonly-v1")
@@ -1535,6 +1596,23 @@ struct ChangFuDesktopTests {
                 )
                 && !LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
                     updatedAt: nil,
+                    now: now
+                )
+        }
+        suite.test("量化评估按快照获取时间而非最后成交时间判定") {
+            LiveTradingBrokerRefreshPolicy.isEvaluationSnapshotReady(
+                hasQuote: true,
+                updatedAt: now.addingTimeInterval(-4),
+                now: now
+            )
+                && !LiveTradingBrokerRefreshPolicy.isEvaluationSnapshotReady(
+                    hasQuote: false,
+                    updatedAt: now.addingTimeInterval(-4),
+                    now: now
+                )
+                && !LiveTradingBrokerRefreshPolicy.isEvaluationSnapshotReady(
+                    hasQuote: true,
+                    updatedAt: now.addingTimeInterval(-6),
                     now: now
                 )
         }

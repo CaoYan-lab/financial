@@ -15,6 +15,8 @@ SETTINGS="$ROOT/App/SettingsView.swift"
 GLOBAL_MODEL="$ROOT/App/GlobalModelConfigurationView.swift"
 DECISION_CONTEXT="$ROOT/App/DecisionContextBuilder.swift"
 MARKET_INSIGHT="$ROOT/App/MarketEventInsight.swift"
+QUANTITATIVE_REPORT="$ROOT/App/QuantitativeResearchWorkspace.swift"
+LONGBRIDGE_HOST="$ROOT/LongbridgeHost/main.swift"
 FUTU_BRIDGE="$ROOT/FutuCppBridge/ChangFuFutuBridge.mm"
 
 required_tokens=(
@@ -36,8 +38,28 @@ for token in "${required_tokens[@]}"; do
   fi
 done
 
+for contract in \
+  '"quantitative-research-macro"' \
+  '"quantitative-research-observation"' \
+  '"financial-statement"' \
+  '"insider-trades"' \
+  '"short-trades"' \
+  '"short-positions"'
+do
+  if ! rg -q "$contract" "$LONGBRIDGE_HOST"; then
+    printf '%s\n' "UI 契约失败：Longbridge 量化只读 Host 缺少 ${contract}" >&2
+    exit 1
+  fi
+done
+
+if rg -qi 'yahoo|query[12]\.finance' "$QUANTITATIVE_REPORT" "$LONGBRIDGE_HOST"; then
+  printf '%s\n' "UI 契约失败：Top30 选股研究不得使用 Yahoo 数据" >&2
+  exit 1
+fi
+
 if rg -n '\.font\(\.(caption|caption2|callout|body|headline)' \
-  "$WORKSPACES" "$ROOT_VIEW" "$SUBSCRIPTION" "$PROVIDER_POOL" "$SETTINGS"; then
+  "$WORKSPACES" "$ROOT_VIEW" "$SUBSCRIPTION" "$PROVIDER_POOL" "$SETTINGS" \
+  "$QUANTITATIVE_REPORT"; then
   printf '%s\n' "UI 契约失败：业务模块不得直接使用系统语义字号" >&2
   exit 1
 fi
@@ -50,6 +72,24 @@ fi
 for height in 230 250 390 490; do
   if ! rg -q "minimumHeight: ${height}" "$WORKSPACES" "$SUBSCRIPTION" "$PROVIDER_POOL"; then
     printf '%s\n' "UI 契约失败：缺少 ${height}px 等高模块约束" >&2
+    exit 1
+  fi
+done
+
+for contract in \
+  '"执行 Top30 选股研究"' \
+  'QuantitativeReportModule' \
+  '"Top 5 候选"' \
+  '"观察名单"' \
+  '"Bottom 5 风险"' \
+  '"逐标的明细"' \
+  '"选择另一平台报告对比"' \
+  '"SEC 官方申报"' \
+  '"FINRA 官方成交"' \
+  'quantitativeRunStates'
+do
+  if ! rg -q "$contract" "$WORKSPACES" "$QUANTITATIVE_REPORT" "$APP_STATE"; then
+    printf '%s\n' "UI 契约失败：Top30 选股研究缺少 ${contract}" >&2
     exit 1
   fi
 done

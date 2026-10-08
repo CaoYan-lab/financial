@@ -718,6 +718,363 @@ private func sellPutUnderlyingSnapshot(
     )
 }
 
+private func quantitativeMacroSnapshot(_ cli: CLI) -> QuantitativeMacroSnapshot {
+    let capturedAt = fetchedAt()
+    do {
+        let json = try cli.json(
+            [
+                "finance-calendar", "macrodata",
+                "--market", "US",
+                "--count", "100"
+            ],
+            name: "美国宏观日历"
+        )
+        return QuantitativeMacroSnapshot(
+            providerId: "LONGBRIDGE",
+            capturedAt: capturedAt,
+            evidence: macroEvidence(
+                json,
+                capturedAt: capturedAt,
+                limit: 100
+            ),
+            dataGaps: []
+        )
+    } catch {
+        return QuantitativeMacroSnapshot(
+            providerId: "LONGBRIDGE",
+            capturedAt: capturedAt,
+            evidence: [],
+            dataGaps: ["Longbridge 美国宏观日历不可用"]
+        )
+    }
+}
+
+private func quantitativeResearchObservation(
+    _ cli: CLI,
+    request: QuantitativeBrokerObservationRequest,
+    macro: QuantitativeMacroSnapshot?
+) -> QuantitativeBrokerObservation {
+    let capturedAt = fetchedAt()
+    let brokerSymbol = longbridgeSymbol(request.symbol)
+    var evidence = macro?.evidence ?? []
+    var gaps = macro?.dataGaps ?? ["Longbridge 宏观快照未准备"]
+
+    let quoteJSON = try? cli.json(["quote", brokerSymbol], name: "量化研究行情")
+    let quote = quoteJSON.flatMap {
+        records($0, keys: ["data", "quotes", "list"]).first
+    }
+    let currentPrice = double(quote?.decimal("last_done", "last", "last_price", "price"))
+    appendNumberEvidence(
+        &evidence,
+        id: "quote-market-cap",
+        layer: .fundamentals,
+        title: "总市值",
+        ticker: request.ticker,
+        capturedAt: capturedAt,
+        value: double(quote?.decimal("market_cap", "marketCap", "total_market_value"))
+    )
+    appendNumberEvidence(
+        &evidence,
+        id: "quote-pe",
+        layer: .fundamentals,
+        title: "市盈率",
+        ticker: request.ticker,
+        capturedAt: capturedAt,
+        value: double(quote?.decimal("pe_ttm_ratio", "pe_ttm", "pe"))
+    )
+    if currentPrice == nil { gaps.append("Longbridge 当前报价不可用") }
+
+    var closes: [Double] = []
+    if let klineJSON = try? cli.json(
+        [
+            "kline", brokerSymbol,
+            "--period", "day",
+            "--count", "260",
+            "--adjust", "forward"
+        ],
+        name: "量化研究前复权日 K"
+    ) {
+        closes = records(klineJSON, keys: ["data", "candlesticks", "list"])
+            .compactMap { double($0.decimal("close", "close_price")) }
+        appendPriceEvidence(
+            &evidence,
+            closes: closes,
+            ticker: request.ticker,
+            capturedAt: capturedAt
+        )
+    } else {
+        gaps.append("Longbridge 前复权日 K 不可用")
+    }
+
+    let readOnlyCommands: [(
+        arguments: [String],
+        name: String,
+        layer: QuantitativeEvidenceLayer,
+        prefix: String,
+        title: String,
+        limit: Int
+    )] = [
+        (
+            ["financial-statement", brokerSymbol, "--kind", "ALL", "--report", "qf"],
+            "财务报表", .fundamentals, "financial", "财务报表", 40
+        ),
+        (
+            ["filing", brokerSymbol, "--count", "20"],
+            "监管申报", .filings, "filing", "监管申报", 20
+        ),
+        (
+            ["insider-trades", brokerSymbol, "--count", "20"],
+            "内部人交易", .filings, "insider", "Form 4 内部人交易", 20
+        ),
+        (
+            ["short-trades", brokerSymbol, "--count", "60"],
+            "每日卖空成交", .shortActivity, "short-trades", "每日卖空成交", 60
+        ),
+        (
+            ["short-positions", brokerSymbol, "--count", "20"],
+            "卖空持仓", .shortActivity, "short-positions", "卖空持仓", 20
+        )
+    ]
+    for command in readOnlyCommands {
+        do {
+            let json = try cli.json(command.arguments, name: command.name)
+            let rows = genericEvidence(
+                json,
+                layer: command.layer,
+                prefix: "\(command.prefix):\(request.ticker.lowercased())",
+                title: command.title,
+                capturedAt: capturedAt,
+                limit: command.limit
+            )
+            if rows.isEmpty {
+                gaps.append("Longbridge \(command.name)未返回记录")
+            } else {
+                evidence.append(contentsOf: rows)
+            }
+        } catch {
+            gaps.append("Longbridge \(command.name)不可用")
+        }
+    }
+
+    return QuantitativeBrokerObservation(
+        requestId: request.requestId,
+        rank: request.rank,
+        symbol: request.symbol,
+        ticker: request.ticker,
+        displayName: request.displayName,
+        providerId: "LONGBRIDGE",
+        capturedAt: capturedAt,
+        currentPrice: currentPrice,
+        quoteFreshness: currentPrice == nil ? "UNAVAILABLE" : "FRESH",
+        adjustedDailyBarCount: closes.count,
+        evidence: evidence,
+        dataGaps: Array(Set(gaps)).sorted()
+    )
+}
+
+private func appendNumberEvidence(
+    _ evidence: inout [QuantitativeEvidence],
+    id: String,
+    layer: QuantitativeEvidenceLayer,
+    title: String,
+    ticker: String,
+    capturedAt: String,
+    value: Double?
+) {
+    guard let value else { return }
+    evidence.append(QuantitativeEvidence(
+        id: "longbridge:\(id):\(ticker)",
+        layer: layer,
+        source: "LONGBRIDGE",
+        title: title,
+        capturedAt: capturedAt,
+        asOf: capturedAt,
+        value: .number(value)
+    ))
+}
+
+private func appendPriceEvidence(
+    _ evidence: inout [QuantitativeEvidence],
+    closes: [Double],
+    ticker: String,
+    capturedAt: String
+) {
+    func trend(_ periods: Int) -> Double? {
+        guard closes.count > periods, closes[closes.count - 1 - periods] > 0 else {
+            return nil
+        }
+        return ((closes.last! / closes[closes.count - 1 - periods]) - 1) * 100
+    }
+    func average(_ periods: Int) -> Double? {
+        guard closes.count >= periods else { return nil }
+        return closes.suffix(periods).reduce(0, +) / Double(periods)
+    }
+    appendNumberEvidence(
+        &evidence,
+        id: "trend-20d",
+        layer: .priceTrend,
+        title: "20 日前复权趋势",
+        ticker: ticker,
+        capturedAt: capturedAt,
+        value: trend(20)
+    )
+    appendNumberEvidence(
+        &evidence,
+        id: "trend-60d",
+        layer: .priceTrend,
+        title: "60 日前复权趋势",
+        ticker: ticker,
+        capturedAt: capturedAt,
+        value: trend(60)
+    )
+    appendNumberEvidence(
+        &evidence,
+        id: "trend-120d",
+        layer: .priceTrend,
+        title: "120 日前复权趋势",
+        ticker: ticker,
+        capturedAt: capturedAt,
+        value: trend(120)
+    )
+    appendNumberEvidence(
+        &evidence,
+        id: "ma-50",
+        layer: .priceTrend,
+        title: "50 日均线",
+        ticker: ticker,
+        capturedAt: capturedAt,
+        value: average(50)
+    )
+    appendNumberEvidence(
+        &evidence,
+        id: "ma-200",
+        layer: .priceTrend,
+        title: "200 日均线",
+        ticker: ticker,
+        capturedAt: capturedAt,
+        value: average(200)
+    )
+    if let latest = closes.last {
+        let annual = closes.suffix(min(252, closes.count))
+        appendNumberEvidence(
+            &evidence,
+            id: "distance-52w-high",
+            layer: .priceTrend,
+            title: "距 52 周高点",
+            ticker: ticker,
+            capturedAt: capturedAt,
+            value: annual.max().map { (($0 == 0 ? 0 : latest / $0) - 1) * 100 }
+        )
+        appendNumberEvidence(
+            &evidence,
+            id: "distance-52w-low",
+            layer: .priceTrend,
+            title: "距 52 周低点",
+            ticker: ticker,
+            capturedAt: capturedAt,
+            value: annual.min().map { (($0 == 0 ? 0 : latest / $0) - 1) * 100 }
+        )
+    }
+}
+
+private func genericEvidence(
+    _ json: Any,
+    layer: QuantitativeEvidenceLayer,
+    prefix: String,
+    title: String,
+    capturedAt: String,
+    limit: Int
+) -> [QuantitativeEvidence] {
+    Array(records(
+        json,
+        keys: ["data", "list", "items", "records", "filings", "events"]
+    ).prefix(limit).enumerated()).compactMap { index, record in
+        guard JSONSerialization.isValidJSONObject(record.value),
+              let data = try? JSONSerialization.data(
+                withJSONObject: record.value,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+              ),
+              let serialized = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return QuantitativeEvidence(
+            id: "longbridge:\(prefix):\(index)",
+            layer: layer,
+            source: "LONGBRIDGE",
+            title: record.string("title", "name", "field", "form", "type")
+                ?? "\(title) \(index + 1)",
+            capturedAt: capturedAt,
+            asOf: record.string(
+                "date", "filing_date", "filed_at", "report_date", "timestamp"
+            ),
+            value: .string(String(serialized.prefix(2_000)))
+        )
+    }
+}
+
+private func macroEvidence(
+    _ json: Any,
+    capturedAt: String,
+    limit: Int
+) -> [QuantitativeEvidence] {
+    let groups = records(json, keys: ["data", "list", "items", "records"])
+    let events = groups.flatMap { group -> [(date: String?, event: JSONRecord)] in
+        let nested = records(group.value["infos"] ?? [])
+        if nested.isEmpty {
+            return group.string("content", "title", "name") == nil
+                ? []
+                : [(group.string("date"), group)]
+        }
+        return nested.map { (group.string("date"), $0) }
+    }
+    return Array(events.prefix(limit).enumerated()).map { index, item in
+        let values = records(item.event.value["data_kv"] ?? [])
+        func metric(_ type: String) -> String? {
+            values.first {
+                $0.string("type")?.lowercased() == type
+            }?.string("value")
+        }
+        let previous = metric("previous")
+        let estimate = metric("estimate")
+        let actual = metric("actual")
+        let detail = [
+            previous.map { "前值 \($0)" },
+            estimate.map { "预测 \($0)" },
+            actual.map { "实际 \($0)" },
+        ].compactMap { $0 }.joined(separator: "；")
+        let extensionRecord = item.event.object("ext")
+        var metadata: [String: QuantitativeEvidenceValue] = [:]
+        if let star = item.event.decimal("star") {
+            metadata["importance"] = .number(NSDecimalNumber(decimal: star).doubleValue)
+        }
+        if let unit = extensionRecord?.string("unit"), !unit.isEmpty {
+            metadata["unit"] = .string(unit)
+        }
+        if let period = extensionRecord?.string("period"), !period.isEmpty {
+            metadata["period"] = .string(period)
+        }
+        if let timestamp = item.event.string("datetime"),
+           let seconds = TimeInterval(timestamp) {
+            metadata["scheduledAt"] = .string(
+                ISO8601DateFormatter().string(
+                    from: Date(timeIntervalSince1970: seconds)
+                )
+            )
+        }
+        return QuantitativeEvidence(
+            id: "longbridge:macro:\(item.event.string("id") ?? String(index))",
+            layer: .macroFit,
+            source: "LONGBRIDGE",
+            title: item.event.string("content", "title", "name")
+                ?? "美国宏观事件 \(index + 1)",
+            capturedAt: capturedAt,
+            asOf: item.date ?? extensionRecord?.string("period"),
+            value: .string(detail.isEmpty ? "待公布" : detail),
+            metadata: metadata.isEmpty ? nil : metadata
+        )
+    }
+}
+
 private func normalizeSymbol(_ raw: String, market: String?) -> String {
     let knownMarkets = Set(["US", "HK", "SG", "SH", "SZ"])
     let uppercased = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -1613,6 +1970,20 @@ private struct LongbridgeHostMain {
                 try verifyAuthorization(cli)
                 FileHandle.standardOutput.write(try encoder.encode(
                     sellPutUnderlyingSnapshot(cli, request: request)
+                ))
+            case "quantitative-research-macro":
+                try verifyAuthorization(cli)
+                FileHandle.standardOutput.write(try encoder.encode(
+                    quantitativeMacroSnapshot(cli)
+                ))
+            case "quantitative-research-observation":
+                let request = try JSONDecoder().decode(
+                    QuantitativeBrokerObservationRequest.self,
+                    from: inputData
+                )
+                try verifyAuthorization(cli)
+                FileHandle.standardOutput.write(try encoder.encode(
+                    quantitativeResearchObservation(cli, request: request, macro: nil)
                 ))
             case "snapshot":
                 let data = try encoder.encode(makeSnapshot(

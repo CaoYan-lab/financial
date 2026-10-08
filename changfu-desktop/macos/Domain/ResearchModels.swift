@@ -32,7 +32,7 @@ public enum ResearchSkill: String, CaseIterable, Codable, Identifiable, Sendable
 
     public var title: String {
         switch self {
-        case .quantitative: "量化研究"
+        case .quantitative: "选股研究"
         case .sellPut: "SELL PUT 期权研究"
         }
     }
@@ -61,7 +61,13 @@ public enum ResearchSkill: String, CaseIterable, Codable, Identifiable, Sendable
     public var sections: [String] {
         switch self {
         case .quantitative:
-            ["行情与趋势因子", "量价和波动结构", "支持与反对证据", "风险与退出条件"]
+            [
+                "SEC XBRL 基本面",
+                "SEC 申报事件",
+                "FINRA 卖空成交",
+                "券商宏观环境",
+                "前复权价格趋势"
+            ]
         case .sellPut:
             ["Top30 与基本面", "趋势与波动率", "期权快照与流动性", "Top 5、Bottom 5 与退出条件"]
         }
@@ -158,7 +164,7 @@ public enum SubscriptionTier: String, CaseIterable, Codable, Identifiable, Senda
     public var features: [String] {
         switch self {
         case .light:
-            ["基础标的池额度", "量化研究技能", "标准模型档位", "按套餐周期替换标的"]
+            ["基础标的池额度", "选股研究技能", "标准模型档位", "按套餐周期替换标的"]
         case .advanced:
             ["扩展标的池额度", "全部研究技能", "深度模型档位", "更短的标的替换周期"]
         case .flagship:

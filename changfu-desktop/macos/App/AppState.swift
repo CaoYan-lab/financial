@@ -42,6 +42,15 @@ private struct SellPutRunState {
     var statusMessage: String?
 }
 
+private struct QuantitativeRunState {
+    var isLoading = false
+    var isRunning = false
+    var completedSymbols = 0
+    var totalSymbols = 0
+    var statusMessage: String?
+    var activeRunId: String?
+}
+
 struct ConversationMessage: Identifiable, Equatable {
     enum Role {
         case user
@@ -88,6 +97,7 @@ private struct ShadowEvaluationTaskResult: Sendable {
 private struct ShadowRuntimeState {
     var status = "已停止"
     var lastRunAt: Date?
+    var nextRunAt: Date?
     var isRunning = false
     var isEvaluating = false
     var evaluationItems: [ShadowEvaluationItem] = []
@@ -148,6 +158,11 @@ final class AppState {
     private var sellPutReportHistories: [String: [SellPutReportHistoryItem]] = [:]
     private(set) var sellPutPools: [String: SellPutPool] = [:]
     private var sellPutRunStates: [String: SellPutRunState] = [:]
+    private var quantitativeReports: [String: QuantitativeReport] = [:]
+    private var quantitativeReportHistories: [String: [QuantitativeReportHistoryItem]] = [:]
+    private(set) var quantitativePools: [String: QuantitativePool] = [:]
+    private var quantitativeRunStates: [String: QuantitativeRunState] = [:]
+    private(set) var quantitativeComparison: QuantitativeReportComparison?
     var isSettingsOpen = false
     var conversationWidth: Double = 360 {
         didSet { defaults.set(conversationWidth, forKey: Keys.conversationWidth) }
@@ -243,6 +258,7 @@ final class AppState {
     private var startupTask: Task<Void, Never>?
     private var brokerRefreshTask: Task<Void, Never>?
     private var shadowTradingTasks: [String: Task<Void, Never>] = [:]
+    private var shadowTradingTaskGenerations: [String: UUID] = [:]
     private var liveTradingTasks: [String: Task<Void, Never>] = [:]
     private var startupAdServerTime: Date?
     private var brokerConnectionId: String?
@@ -505,6 +521,11 @@ final class AppState {
         return shadowRuntimeByConnection[connectionId]?.lastRunAt
     }
 
+    var shadowNextRunAt: Date? {
+        guard let connectionId = currentBrokerConnectionId else { return nil }
+        return shadowRuntimeByConnection[connectionId]?.nextRunAt
+    }
+
     var isShadowTradingRunning: Bool {
         guard let connectionId = currentBrokerConnectionId else { return false }
         return shadowRuntimeByConnection[connectionId]?.isRunning ?? false
@@ -606,6 +627,50 @@ final class AppState {
             return "当前套餐未绑定\(platform.title)，请先在套餐中心配置"
         }
         return nil
+    }
+
+    var currentQuantitativeResearchItems: [QuantitativePoolItem] {
+        quantitativePools[currentProviderId]?.items ?? []
+    }
+
+    var quantitativeReport: QuantitativeReport? {
+        quantitativeReports[currentProviderId]
+    }
+
+    var quantitativeReportHistory: [QuantitativeReportHistoryItem] {
+        quantitativeReportHistories[currentProviderId] ?? []
+    }
+
+    var oppositeQuantitativeReportHistory: [QuantitativeReportHistoryItem] {
+        quantitativeReportHistories[currentProviderId == "FUTU" ? "LONGBRIDGE" : "FUTU"] ?? []
+    }
+
+    var isQuantitativeLoading: Bool {
+        quantitativeRunState(for: currentProviderId).isLoading
+    }
+
+    var isQuantitativeRunning: Bool {
+        quantitativeRunState(for: currentProviderId).isRunning
+    }
+
+    var quantitativeCompletedSymbols: Int {
+        quantitativeRunState(for: currentProviderId).completedSymbols
+    }
+
+    var quantitativeTotalSymbols: Int {
+        quantitativeRunState(for: currentProviderId).totalSymbols
+    }
+
+    var quantitativeStatusMessage: String? {
+        quantitativeRunState(for: currentProviderId).statusMessage
+    }
+
+    var canStartQuantitativeReport: Bool {
+        sellPutAccessMessage == nil && !isQuantitativeRunning
+    }
+
+    var canCancelQuantitativeReport: Bool {
+        quantitativeRunState(for: currentProviderId).activeRunId != nil
     }
 
     private var currentBrokerConnectionId: String? {
@@ -858,6 +923,7 @@ final class AppState {
         brokerRefreshTask = nil
         shadowTradingTasks.values.forEach { $0.cancel() }
         shadowTradingTasks = [:]
+        shadowTradingTaskGenerations = [:]
         liveTradingTasks.values.forEach { $0.cancel() }
         liveTradingTasks = [:]
     }
@@ -933,6 +999,11 @@ final class AppState {
         sellPutReportHistories = [:]
         sellPutPools = [:]
         sellPutRunStates = [:]
+        quantitativeReports = [:]
+        quantitativeReportHistories = [:]
+        quantitativePools = [:]
+        quantitativeRunStates = [:]
+        quantitativeComparison = nil
         brokerConnectionId = nil
         longbridgeBrokerConnectionId = nil
         serverResearchPool = nil
@@ -958,7 +1029,8 @@ final class AppState {
         async let pools: Void = refreshProviderPools()
         if sellPutAccessMessage == nil {
             async let sellPut: Void = refreshSellPutResearch()
-            _ = await (pools, sellPut)
+            async let quantitative: Void = refreshQuantitativeResearch()
+            _ = await (pools, sellPut, quantitative)
         } else {
             await pools
         }
@@ -1658,6 +1730,376 @@ final class AppState {
                 $0.statusMessage = error.localizedDescription
             }
         }
+    }
+
+    func refreshQuantitativeResearch() async {
+        guard let accessToken = authenticationSession?.accessToken else { return }
+        let providerId = currentProviderId
+        guard sellPutAccessMessage == nil else { return }
+        guard !quantitativeRunState(for: providerId).isLoading else { return }
+        updateQuantitativeRunState(providerId) { $0.isLoading = true }
+        defer {
+            updateQuantitativeRunState(providerId) { $0.isLoading = false }
+        }
+        do {
+            async let latest = backend.latestQuantitativeReport(
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            async let history = backend.quantitativeReportHistory(
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            async let active = backend.activeQuantitativeRun(
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            let oppositeProvider = providerId == "FUTU" ? "LONGBRIDGE" : "FUTU"
+            async let oppositeHistory = backend.quantitativeReportHistory(
+                providerId: oppositeProvider,
+                accessToken: accessToken
+            )
+            let (loadedLatest, loadedHistory, loadedOppositeHistory, loadedActive) = try await (
+                latest,
+                history,
+                oppositeHistory,
+                active
+            )
+            quantitativeReports[providerId] = loadedLatest
+            quantitativeReportHistories[providerId] = loadedHistory.items
+            quantitativeReportHistories[oppositeProvider] = loadedOppositeHistory.items
+            if !quantitativeRunState(for: providerId).isRunning {
+                updateQuantitativeRunState(providerId) {
+                    $0.activeRunId = loadedActive?.runId
+                    $0.completedSymbols = loadedActive?.terminalCount ?? 0
+                    $0.totalSymbols = loadedActive?.symbolCount ?? 0
+                    $0.statusMessage = loadedActive == nil
+                        ? nil
+                        : "发现未完成运行，可继续执行或取消"
+                }
+            }
+        } catch {
+            if !quantitativeRunState(for: providerId).isRunning {
+                updateQuantitativeRunState(providerId) {
+                    $0.statusMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func startQuantitativeReport() async -> Bool {
+        let providerId = currentProviderId
+        guard let accessToken = authenticationSession?.accessToken,
+              !quantitativeRunState(for: providerId).isRunning else {
+            return false
+        }
+        guard let subscription = currentSubscription,
+              subscription.grantsResearchAccess(to: providerId) else {
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = sellPutAccessMessage
+                    ?? "请先在套餐中心配置有效套餐"
+            }
+            return false
+        }
+        updateQuantitativeRunState(providerId) {
+            $0.isRunning = true
+            $0.completedSymbols = 0
+            $0.totalSymbols = 30
+            $0.statusMessage = "正在锁定当日全球市值 Top30"
+        }
+        defer {
+            updateQuantitativeRunState(providerId) { $0.isRunning = false }
+        }
+
+        do {
+            let active = try await backend.activeQuantitativeRun(
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            let runId: String
+            let runItems: [QuantitativeRunItem]
+            let existingTerminalCount: Int
+            if let active {
+                runId = active.runId
+                existingTerminalCount = active.terminalCount
+                runItems = active.items.compactMap { item in
+                    guard item.status == "PENDING" else { return nil }
+                    return QuantitativeRunItem(
+                        requestId: item.requestId,
+                        rank: item.rank,
+                        symbol: item.symbol,
+                        ticker: item.ticker,
+                        displayName: item.displayName ?? item.ticker,
+                        status: item.status
+                    )
+                }
+                updateQuantitativeRunState(providerId) {
+                    $0.statusMessage = "正在恢复未完成的量化运行"
+                    $0.activeRunId = runId
+                }
+            } else {
+                let pool = try await backend.syncQuantitativeTopThirtyPool(
+                    providerId: providerId,
+                    accessToken: accessToken
+                )
+                quantitativePools[providerId] = pool
+                let run = try await backend.startQuantitativeRun(
+                    StartQuantitativeRunRequest(
+                        providerId: providerId,
+                        poolVersion: pool.version,
+                        modelProfile: researchModel(for: .quantitative).rawValue
+                    ),
+                    accessToken: accessToken
+                )
+                runId = run.runId
+                runItems = run.items
+                existingTerminalCount = 0
+                updateQuantitativeRunState(providerId) {
+                    $0.activeRunId = runId
+                }
+            }
+            let client: any QuantitativeResearchBrokerClient = providerId == "FUTU"
+                ? broker
+                : longbridgeBroker
+            updateQuantitativeRunState(providerId) {
+                $0.completedSymbols = existingTerminalCount
+                $0.totalSymbols = 30
+                $0.statusMessage = "正在采集\(platform.title)宏观与事件快照"
+            }
+            try await client.prepareQuantitativeResearch(
+                symbols: runItems.map(\.symbol)
+            )
+
+            let batchSize = providerId == "FUTU" ? 8 : 3
+            var terminalCount = existingTerminalCount
+            for batchStart in stride(from: 0, to: runItems.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, runItems.count)
+                let batch = Array(runItems[batchStart..<batchEnd])
+                guard let batchAccessToken = authenticationSession?.accessToken else {
+                    throw BackendClientError.authenticationRejected
+                }
+                updateQuantitativeRunState(providerId) {
+                    $0.statusMessage = "正在独立分析 \(terminalCount + 1)-\(terminalCount + batch.count)/30"
+                }
+                let completed = await withTaskGroup(
+                    of: Bool.self,
+                    returning: Int.self
+                ) { group in
+                    for item in batch {
+                        group.addTask { [self] in
+                            let observation = await collectQuantitativeObservation(
+                                item,
+                                providerId: providerId
+                            )
+                            return await submitQuantitativeObservation(
+                                observation,
+                                runId: runId,
+                                providerId: providerId,
+                                accessToken: batchAccessToken
+                            )
+                        }
+                    }
+                    var count = 0
+                    for await success in group where success {
+                        count += 1
+                    }
+                    return count
+                }
+                terminalCount += completed
+                updateQuantitativeRunState(providerId) {
+                    $0.completedSymbols = terminalCount
+                }
+                if batchEnd < runItems.count {
+                    try await Task.sleep(for: .seconds(providerId == "FUTU" ? 31 : 2))
+                }
+            }
+            guard terminalCount == 30 else {
+                updateQuantitativeRunState(providerId) {
+                    $0.statusMessage =
+                        "已完成 \(terminalCount)/30，存在未提交标的，报告未封版"
+                }
+                return false
+            }
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = "30 个独立结果已完成，正在确定性排序"
+            }
+            guard let finalAccessToken = authenticationSession?.accessToken else {
+                throw BackendClientError.authenticationRejected
+            }
+            let report = try await backend.finalizeQuantitativeRun(
+                runId: runId,
+                providerId: providerId,
+                accessToken: finalAccessToken
+            )
+            guard report.providerId == providerId else {
+                throw AppInteractionError.providerReportMismatch
+            }
+            quantitativeReports[providerId] = report
+            if let history = try? await backend.quantitativeReportHistory(
+                providerId: providerId,
+                accessToken: finalAccessToken
+            ) {
+                quantitativeReportHistories[providerId] = history.items
+            }
+            updateQuantitativeRunState(providerId) {
+                $0.activeRunId = nil
+                $0.statusMessage = report.candidateCount > 0
+                    ? "选股结果已完成并落库"
+                    : "报告已落库，但没有标的满足覆盖门槛"
+            }
+            return true
+        } catch {
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = error.localizedDescription
+            }
+            return false
+        }
+    }
+
+    func loadQuantitativeReport(_ runId: String) async {
+        guard let accessToken = authenticationSession?.accessToken else { return }
+        let providerId = currentProviderId
+        guard !quantitativeRunState(for: providerId).isLoading else { return }
+        updateQuantitativeRunState(providerId) { $0.isLoading = true }
+        defer {
+            updateQuantitativeRunState(providerId) { $0.isLoading = false }
+        }
+        do {
+            let report = try await backend.quantitativeReport(
+                runId: runId,
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            guard report.providerId == providerId else {
+                throw AppInteractionError.providerReportMismatch
+            }
+            quantitativeReports[providerId] = report
+        } catch {
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func compareQuantitativeReport(with history: QuantitativeReportHistoryItem) async {
+        guard let accessToken = authenticationSession?.accessToken,
+              let report = quantitativeReport else { return }
+        do {
+            quantitativeComparison = try await backend.compareQuantitativeReports(
+                leftRunId: report.runId,
+                leftProviderId: report.providerId,
+                rightRunId: history.runId,
+                rightProviderId: history.providerId,
+                accessToken: accessToken
+            )
+        } catch {
+            updateQuantitativeRunState(currentProviderId) {
+                $0.statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func clearQuantitativeComparison() {
+        quantitativeComparison = nil
+    }
+
+    func cancelQuantitativeReport() async {
+        let providerId = currentProviderId
+        guard let accessToken = authenticationSession?.accessToken,
+              let runId = quantitativeRunState(for: providerId).activeRunId else {
+            return
+        }
+        do {
+            _ = try await backend.cancelQuantitativeRun(
+                runId: runId,
+                providerId: providerId,
+                accessToken: accessToken
+            )
+            updateQuantitativeRunState(providerId) {
+                $0.activeRunId = nil
+                $0.isRunning = false
+                $0.statusMessage = "未完成运行已取消"
+            }
+        } catch {
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func collectQuantitativeObservation(
+        _ item: QuantitativeRunItem,
+        providerId: String
+    ) async -> QuantitativeBrokerObservation {
+        do {
+            let client: any QuantitativeResearchBrokerClient = providerId == "FUTU"
+                ? broker
+                : longbridgeBroker
+            let observation = try await client.quantitativeResearchObservation(
+                QuantitativeBrokerObservationRequest(
+                    requestId: item.requestId,
+                    rank: item.rank,
+                    symbol: item.symbol,
+                    ticker: item.ticker,
+                    displayName: item.displayName
+                )
+            )
+            return observation
+        } catch {
+            return QuantitativeBrokerObservation(
+                requestId: item.requestId,
+                rank: item.rank,
+                symbol: item.symbol,
+                ticker: item.ticker,
+                displayName: item.displayName,
+                providerId: providerId,
+                capturedAt: ISO8601DateFormatter().string(from: Date()),
+                currentPrice: nil,
+                quoteFreshness: "UNAVAILABLE",
+                adjustedDailyBarCount: 0,
+                evidence: [],
+                dataGaps: ["券商单标的采集失败：\(error.localizedDescription)"]
+            )
+        }
+    }
+
+    private func submitQuantitativeObservation(
+        _ observation: QuantitativeBrokerObservation,
+        runId: String,
+        providerId: String,
+        accessToken: String
+    ) async -> Bool {
+        for attempt in 0..<2 {
+            do {
+                _ = try await backend.submitQuantitativeObservation(
+                    runId: runId,
+                    requestId: observation.requestId,
+                    input: SubmitQuantitativeObservationRequest(
+                        providerId: providerId,
+                        observation: observation
+                    ),
+                    accessToken: accessToken
+                )
+                return true
+            } catch {
+                if attempt == 1 { return false }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        return false
+    }
+
+    private func quantitativeRunState(for providerId: String) -> QuantitativeRunState {
+        quantitativeRunStates[providerId] ?? QuantitativeRunState()
+    }
+
+    private func updateQuantitativeRunState(
+        _ providerId: String,
+        _ update: (inout QuantitativeRunState) -> Void
+    ) {
+        var state = quantitativeRunState(for: providerId)
+        update(&state)
+        quantitativeRunStates[providerId] = state
     }
 
     private func sellPutRunState(for providerId: String) -> SellPutRunState {
@@ -3344,20 +3786,35 @@ final class AppState {
     private func startShadowTrading(connectionId: String, provider: String) {
         guard shadowTradingTasks[connectionId] == nil,
               tradingConfigurations[connectionId] != nil else { return }
+        let generation = UUID()
+        shadowTradingTaskGenerations[connectionId] = generation
         setShadowRuntimeRunning(true, for: connectionId)
+        setShadowNextRunAt(nil, for: connectionId)
         setShadowRuntimeStatus("等待运行", for: connectionId)
-        shadowTradingTasks[connectionId] = Task { [weak self] in
-            guard let self else { return }
+        shadowTradingTasks[connectionId] = Task.detached { [weak self] in
             while !Task.isCancelled {
+                guard let self else { return }
                 await self.runShadowTradingOnce(
                     connectionId: connectionId,
                     provider: provider
                 )
                 guard !Task.isCancelled else { break }
-                let interval = self.tradingConfigurations[connectionId]?
+                let interval = await self.tradingConfigurations[connectionId]?
                     .scanIntervalSeconds ?? 60
-                try? await Task.sleep(for: .seconds(interval))
+                await self.setShadowNextRunAt(
+                    Date().addingTimeInterval(TimeInterval(interval)),
+                    for: connectionId
+                )
+                do {
+                    try await Task.sleep(for: .seconds(interval))
+                } catch {
+                    break
+                }
             }
+            await self?.finishShadowTradingLoop(
+                connectionId: connectionId,
+                generation: generation
+            )
         }
     }
 
@@ -3587,6 +4044,15 @@ final class AppState {
     }
 
     private func refreshSnapshotForShadowEvaluation(provider: String) async -> Bool {
+        let currentSourceAt = provider == "LONGBRIDGE"
+            ? longbridgeLastUpdatedAt
+            : brokerLastUpdatedAt
+        if LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
+            updatedAt: currentSourceAt
+        ) {
+            return true
+        }
+
         if provider == "LONGBRIDGE" {
             await refreshLongbridgeData()
         } else {
@@ -3641,8 +4107,24 @@ final class AppState {
     private func stopShadowTrading(connectionId: String, status: String) {
         shadowTradingTasks[connectionId]?.cancel()
         shadowTradingTasks[connectionId] = nil
+        shadowTradingTaskGenerations[connectionId] = nil
         setShadowRuntimeRunning(false, for: connectionId)
+        setShadowNextRunAt(nil, for: connectionId)
         setShadowRuntimeStatus(status, for: connectionId)
+    }
+
+    private func finishShadowTradingLoop(connectionId: String, generation: UUID) {
+        guard shadowTradingTaskGenerations[connectionId] == generation else { return }
+        shadowTradingTasks[connectionId] = nil
+        shadowTradingTaskGenerations[connectionId] = nil
+        setShadowRuntimeRunning(false, for: connectionId)
+        setShadowNextRunAt(nil, for: connectionId)
+    }
+
+    private func setShadowNextRunAt(_ date: Date?, for connectionId: String) {
+        var runtime = shadowRuntimeByConnection[connectionId] ?? ShadowRuntimeState()
+        runtime.nextRunAt = date
+        shadowRuntimeByConnection[connectionId] = runtime
     }
 
     private func makeSingleDecisionContext(
@@ -3751,26 +4233,19 @@ final class AppState {
         let sourceAt = provider == "LONGBRIDGE"
             ? longbridgeLastUpdatedAt
             : brokerLastUpdatedAt
-        let quoteIsFresh = quote.map {
-            if let updateTime = $0.updateTime {
-                return BrokerTimestampNormalizer.isFresh(
-                    updateTime,
-                    symbol: $0.symbol,
-                    maximumAge: LiveTradingBrokerRefreshPolicy
-                        .executableSnapshotMaximumAge
-                )
-            }
-            return LiveTradingBrokerRefreshPolicy.isExecutableSnapshotFresh(
-                updatedAt: sourceAt
-            )
-        } ?? false
+        // A quote's updateTime is the last market event, not when this snapshot
+        // was fetched. Sparse pre-market trading can legitimately leave it old.
+        let snapshotIsReady = LiveTradingBrokerRefreshPolicy.isEvaluationSnapshotReady(
+            hasQuote: quote != nil,
+            updatedAt: sourceAt
+        )
         return ShadowEvaluationItem(
             symbol: item.canonicalSymbol,
             market: marketLabel,
             marketState: readiness.sessionLabel ?? marketState ?? "状态不可用",
-            state: readiness.shouldEvaluate && quoteIsFresh ? .active : .waiting,
-            reason: readiness.shouldEvaluate && !quoteIsFresh
-                ? "行情时间已超过 5 秒，等待刷新"
+            state: readiness.shouldEvaluate && snapshotIsReady ? .active : .waiting,
+            reason: readiness.shouldEvaluate && !snapshotIsReady
+                ? "券商快照已超过 5 秒，等待刷新"
                 : readiness.reason
         )
     }

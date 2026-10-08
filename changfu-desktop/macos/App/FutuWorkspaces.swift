@@ -675,9 +675,11 @@ private struct ResearchWorkspace: View {
     private func researchSkillPanel(_ skill: ResearchSkill) -> some View {
         WorkbenchPanel(
             skill.title,
-            subtitle: skill == .sellPut && state.platform == .longbridge
-                ? "基于当日全球市值 Top30、Longbridge 行情与期权快照评估现金担保卖 Put"
-                : skill.detail,
+            subtitle: skill == .quantitative
+                ? "基于 SEC、FINRA 与\(state.platform.title)独立证据评选市值 Top30 中的 Top5"
+                : skill == .sellPut && state.platform == .longbridge
+                    ? "基于当日全球市值 Top30、Longbridge 行情与期权快照评估现金担保卖 Put"
+                    : skill.detail,
             systemImage: skill.systemImage,
             minimumHeight: 490
         ) {
@@ -720,7 +722,7 @@ private struct ResearchWorkspace: View {
                     .font(FutuTheme.metricLabel)
                     .foregroundStyle(FutuTheme.inkMuted)
                 Spacer()
-                Text(skill.promptVersion)
+                Text(skill == .quantitative ? "Top30 五层评分 v1" : skill.promptVersion)
                     .font(FutuTheme.metricNote)
                     .foregroundStyle(FutuTheme.inkMuted)
             }
@@ -768,6 +770,57 @@ private struct ResearchWorkspace: View {
                     state.sellPutAccessMessage
                         ?? state.sellPutStatusMessage
                         ?? "执行前自动同步当日全球市值 Top30 美股专属标的池"
+                )
+                .font(FutuTheme.metricNote)
+                .foregroundStyle(FutuTheme.inkMuted)
+                .lineLimit(2)
+                .frame(minHeight: 34, alignment: .topLeading)
+            } else if skill == .quantitative {
+                HStack(spacing: 8) {
+                    Button {
+                        Task {
+                            if await state.startQuantitativeReport() {
+                                state.workspace = .strategyCenter
+                            }
+                        }
+                    } label: {
+                        Label(
+                            state.isQuantitativeRunning
+                                ? "正在生成报告"
+                                : state.canCancelQuantitativeReport
+                                    ? "继续未完成研究"
+                                    : "执行 Top30 选股研究",
+                            systemImage: state.isQuantitativeRunning
+                                ? "clock.arrow.circlepath"
+                                : "play.fill"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!state.canStartQuantitativeReport)
+
+                    if state.canCancelQuantitativeReport && !state.isQuantitativeRunning {
+                        Button {
+                            Task { await state.cancelQuantitativeReport() }
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .frame(width: 26, height: 26)
+                        }
+                        .buttonStyle(.bordered)
+                        .help("取消未完成的选股研究")
+                    }
+                }
+
+                if state.isQuantitativeRunning {
+                    ProgressView(
+                        value: Double(state.quantitativeCompletedSymbols),
+                        total: Double(max(state.quantitativeTotalSymbols, 1))
+                    )
+                }
+                Text(
+                    state.sellPutAccessMessage
+                        ?? state.quantitativeStatusMessage
+                        ?? "执行时锁定当日全球市值 Top30，每个标的独立采集与评分"
                 )
                 .font(FutuTheme.metricNote)
                 .foregroundStyle(FutuTheme.inkMuted)
@@ -830,6 +883,7 @@ private struct TradingWorkspace: View {
                                 "可评估 \(evaluationActiveCount) · 等待 \(evaluationWaitingCount)"
                                     + (evaluationErrorCount > 0 ? " · 异常 \(evaluationErrorCount)" : "")
                                     + " · 共 \(state.shadowEvaluationItems.count)"
+                                    + evaluationScheduleSuffix
                             )
                             .font(FutuTheme.metricNote)
                             .foregroundStyle(FutuTheme.inkMuted)
@@ -1059,6 +1113,14 @@ private struct TradingWorkspace: View {
         if evaluationErrorCount > 0 { return FutuTheme.loss }
         if state.isShadowTradingRunning { return FutuTheme.profit }
         return FutuTheme.inkMuted
+    }
+
+    private var evaluationScheduleSuffix: String {
+        guard state.isShadowTradingRunning,
+              let nextRunAt = state.shadowNextRunAt else {
+            return ""
+        }
+        return " · 下轮 \(nextRunAt.formatted(date: .omitted, time: .standard))"
     }
 
     private var modelRunPager: some View {
@@ -2164,23 +2226,29 @@ private struct StrategyCenterWorkspace: View {
                 headerTrailing: AnyView(
                     Picker("报告范围", selection: $reportScope) {
                         Text("全部报告").tag("全部报告")
-                        Text("量化研究").tag("量化研究")
+                        Text("选股研究").tag("选股研究")
                         Text("SELL PUT 期权研究").tag("SELL PUT 期权研究")
                     }
                     .labelsHidden()
                     .frame(width: 190)
                 )
             ) {
+                if reportScope == "全部报告" || reportScope == "选股研究" {
+                    QuantitativeReportModule(state: state)
+                }
+                if reportScope == "全部报告" {
+                    Divider().padding(.vertical, 8)
+                }
                 if reportScope == "全部报告" || reportScope == "SELL PUT 期权研究" {
                     SellPutReportModule(state: state)
-                } else {
-                    DataUnavailableView(text: "\(reportScope)暂无已生成内容")
                 }
             }
             .id(StrategyCenterAnchor.reports)
         }
         .task(id: state.currentProviderId) {
-            await state.refreshSellPutResearch()
+            async let sellPut: Void = state.refreshSellPutResearch()
+            async let quantitative: Void = state.refreshQuantitativeResearch()
+            _ = await (sellPut, quantitative)
         }
     }
 

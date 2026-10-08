@@ -75,6 +75,14 @@ public enum LiveTradingBrokerRefreshPolicy {
         return abs(now.timeIntervalSince(updatedAt)) <= executableSnapshotMaximumAge
     }
 
+    public static func isEvaluationSnapshotReady(
+        hasQuote: Bool,
+        updatedAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        hasQuote && isExecutableSnapshotFresh(updatedAt: updatedAt, now: now)
+    }
+
     public static func supervisorNeedsSnapshot(
         hasPendingActions: Bool,
         hasManagedOrders: Bool

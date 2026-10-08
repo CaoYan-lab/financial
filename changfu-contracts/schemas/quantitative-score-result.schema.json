@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changfu.local/schemas/quantitative-score-result.schema.json",
+  "title": "Top30 Quantitative Score Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "dimensions",
+    "summary",
+    "evidenceIds",
+    "counterEvidenceIds",
+    "risks",
+    "dataGaps",
+    "invalidationConditions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fundamentals",
+        "filings",
+        "shortActivity",
+        "priceTrend",
+        "macroFit"
+      ],
+      "properties": {
+        "fundamentals": {
+          "$ref": "#/$defs/fundamentals"
+        },
+        "filings": {
+          "$ref": "#/$defs/filings"
+        },
+        "shortActivity": {
+          "$ref": "#/$defs/shortActivity"
+        },
+        "priceTrend": {
+          "$ref": "#/$defs/priceTrend"
+        },
+        "macroFit": {
+          "$ref": "#/$defs/macroFit"
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "evidenceIds": {
+      "$ref": "#/$defs/evidenceIds"
+    },
+    "counterEvidenceIds": {
+      "$ref": "#/$defs/evidenceIds"
+    },
+    "risks": {
+      "$ref": "#/$defs/textItems"
+    },
+    "dataGaps": {
+      "$ref": "#/$defs/textItems"
+    },
+    "invalidationConditions": {
+      "$ref": "#/$defs/textItems"
+    }
+  },
+  "$defs": {
+    "availability": {
+      "type": "string",
+      "enum": [
+        "AVAILABLE",
+        "PARTIAL",
+        "UNAVAILABLE"
+      ]
+    },
+    "fundamentals": {
+      "$ref": "#/$defs/dimension30"
+    },
+    "filings": {
+      "$ref": "#/$defs/dimension20"
+    },
+    "shortActivity": {
+      "$ref": "#/$defs/dimension10"
+    },
+    "priceTrend": {
+      "$ref": "#/$defs/dimension25"
+    },
+    "macroFit": {
+      "$ref": "#/$defs/dimension15"
+    },
+    "dimension30": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "availability"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 30
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        }
+      }
+    },
+    "dimension25": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "availability"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 25
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        }
+      }
+    },
+    "dimension20": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "availability"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 20
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        }
+      }
+    },
+    "dimension15": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "availability"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 15
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        }
+      }
+    },
+    "dimension10": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "availability"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        }
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "textItems": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}

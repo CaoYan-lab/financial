@@ -264,6 +264,30 @@ test('SELL PUT 研究迁移使用独立标的池并持久化逐标的审计结�
   assert.equal(sql.includes('provider_research_pool_items'), false)
 })
 
+test('Top30 量化研究迁移隔离 Provider、逐票请求和官方缓存', async () => {
+  const sql = await readFile(
+    resolve(root, 'migrations/014_quantitative_research.sql'),
+    'utf8',
+  )
+  for (const table of [
+    'quantitative_research_pools',
+    'quantitative_research_pool_items',
+    'quantitative_report_runs',
+    'quantitative_report_items',
+    'quantitative_public_source_cache',
+  ]) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS changfu\\.${table} \\(`))
+  }
+  assert.match(sql, /provider_id IN \('FUTU', 'LONGBRIDGE'\)/)
+  assert.match(sql, /request_id uuid NOT NULL UNIQUE/)
+  assert.match(sql, /UNIQUE \(run_id, ticker\)/)
+  assert.match(sql, /status IN \('PENDING', 'COMPLETED', 'REJECTED', 'UNAVAILABLE'\)/)
+  assert.match(sql, /PRIMARY KEY \(source, cache_key\)/)
+  for (const forbidden of ['access_token', 'api_key', 'secret_key', 'prompt_body']) {
+    assert.equal(sql.toLowerCase().includes(forbidden), false)
+  }
+})
+
 test('Worker 第三方模型请求禁止重定向并设置独立超时', async () => {
   const source = await readFile(
     resolve(root, 'apps/decision-worker/src/server.ts'),

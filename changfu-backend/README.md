@@ -27,6 +27,13 @@
 `CHANGFU_ADMIN_INITIAL_PASSWORD` Secret 播种，首次登录必须改密。浏览器只访问
 同源 `/api/v1/admin/*`，不直接连接 PostgreSQL。
 
+## 量化研究官方数据源
+
+Top30 量化选股由 Gateway 访问 SEC 与 FINRA 官方只读端点，并使用 PostgreSQL
+同日缓存。SEC 要求配置包含真实联系邮箱的 `CHANGFU_SEC_USER_AGENT`；未配置或
+官方网络不可用时，该层明确降级到当前报告所属券商数据，不跨券商补数。该链路不使用
+Yahoo 或其他网页私有行情接口。
+
 ## 本地检查
 
 需要 Node.js 22：

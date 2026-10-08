@@ -14,11 +14,13 @@ private struct LongbridgeSnapshotRequest: Encodable {
 @MainActor
 public final class LongbridgeBrokerClient:
     BrokerInstrumentDiscoveryClient,
+    QuantitativeResearchBrokerClient,
     LiveOrderBrokerClient
 {
     public private(set) var connectionState: LongbridgeConnectionState = .disconnected
     private let runner: BrokerHostRunner
     private let credentialStore: any LongbridgeCredentialProviding
+    private var quantitativeMacroSnapshot: QuantitativeMacroSnapshot?
 
     public init(
         hostExecutableURL: URL? = nil,
@@ -124,6 +126,40 @@ public final class LongbridgeBrokerClient:
             SellPutUnderlyingSnapshot.self,
             command: "sell-put-underlying",
             request: SellPutUnderlyingRequest(symbol: symbol)
+        )
+    }
+
+    public func prepareQuantitativeResearch(symbols _: [String]) async throws {
+        quantitativeMacroSnapshot = try await decode(
+            QuantitativeMacroSnapshot.self,
+            command: "quantitative-research-macro"
+        )
+    }
+
+    public func quantitativeResearchObservation(
+        _ request: QuantitativeBrokerObservationRequest
+    ) async throws -> QuantitativeBrokerObservation {
+        let observation = try await decode(
+            QuantitativeBrokerObservation.self,
+            command: "quantitative-research-observation",
+            request: request
+        )
+        guard let macro = quantitativeMacroSnapshot else { return observation }
+        return QuantitativeBrokerObservation(
+            requestId: observation.requestId,
+            rank: observation.rank,
+            symbol: observation.symbol,
+            ticker: observation.ticker,
+            displayName: observation.displayName,
+            providerId: observation.providerId,
+            capturedAt: observation.capturedAt,
+            currentPrice: observation.currentPrice,
+            quoteFreshness: observation.quoteFreshness,
+            adjustedDailyBarCount: observation.adjustedDailyBarCount,
+            evidence: observation.evidence + macro.evidence,
+            dataGaps: observation.dataGaps.filter {
+                $0 != "Longbridge 宏观快照未准备"
+            } + macro.dataGaps
         )
     }
 

@@ -41,6 +41,7 @@ import { handlePaymentWebhookRoute } from './routes/paymentWebhooks.js'
 import { handleProviderPoolRoute } from './routes/providerPools.js'
 import { handleModelProviderConfigRoute } from './routes/modelProviderConfig.js'
 import { handleSellPutResearchRoute } from './routes/sellPutResearch.js'
+import { handleQuantitativeResearchRoute } from './routes/quantitativeResearch.js'
 import { postgresPoolConfig } from '../../../packages/runtime/src/postgresPool.js'
 
 const port = Number(process.env.CHANGFU_GATEWAY_PORT ?? 4310)
@@ -533,6 +534,18 @@ const server = createServer(async (request, response) => {
       signal: requestController.signal,
     })) return
 
+    if (await handleQuantitativeResearchRoute({
+      request,
+      response,
+      url,
+      requestId,
+      userId,
+      pool,
+      workerUrl,
+      internalToken,
+      signal: requestController.signal,
+    })) return
+
     if (await handleControlPlaneRoute({
       request,
       response,
@@ -686,6 +699,7 @@ const server = createServer(async (request, response) => {
         || error.name === 'SubscriptionRuleError'
         || error.name === 'ProviderPoolError'
         || error.name === 'SellPutResearchError'
+        || error.name === 'QuantitativeResearchError'
         || error.name === 'LiveTradingConflictError'
       )
     const status = tooLarge ? 413 : invalid ? 400 : conflict ? 409 : 503
