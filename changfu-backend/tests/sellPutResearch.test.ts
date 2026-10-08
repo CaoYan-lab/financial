@@ -10,6 +10,7 @@ import {
 } from '../packages/domain/src/sellPutResearch.js'
 import {
   lockSellPutTopThirty,
+  parseStockAnalysisUniverse,
   providerSymbol,
   type SellPutUniverseCompany,
 } from '../packages/domain/src/sellPutUniverse.js'
@@ -172,6 +173,73 @@ test('Top30 合并 Alphabet 与 Berkshire 股权类别后仍严格返回 30 家�
   assert.equal(locked.find(item => item.companyName === 'Berkshire Hathaway')?.ticker, 'BRK.B')
   assert.equal(providerSymbol('FUTU', 'NVDA'), 'US.NVDA')
   assert.equal(providerSymbol('LONGBRIDGE', 'NVDA'), 'NVDA.US')
+})
+
+test('Top30 解析只保留美股代码并正确映射明确的跨市场上市标的', () => {
+  const row = (
+    rank: number,
+    href: string,
+    companyName: string,
+    ticker: string,
+    marketCap: string,
+    price: string,
+  ) => `
+    <tr>
+      <td>${rank}</td>
+      <td>
+        <a href="${href}">
+          <div title="${companyName}">${companyName}</div>
+          <div>${ticker}</div>
+        </a>
+      </td>
+      <td>${marketCap}</td>
+      <td>${price}</td>
+    </tr>`
+  const parsed = parseStockAnalysisUniverse([
+    '<table>',
+    row(1, '/stocks/nvda/', 'NVIDIA Corporation', 'NVDA', '5.73T', '$237.47'),
+    row(
+      2,
+      '/quote/tpe/2330/',
+      'Taiwan Semiconductor Manufacturing Company Limited',
+      'TPE:2330',
+      '2.07T',
+      '$80.01',
+    ),
+    row(
+      3,
+      '/quote/tadawul/2222/',
+      'Saudi Arabian Oil Company',
+      'TADAWUL:2222',
+      '1.66T',
+      '$6.88',
+    ),
+    row(
+      4,
+      '/quote/hkg/0700/',
+      'Tencent Holdings Limited',
+      'HKG:0700',
+      '473.78B',
+      '$52.65',
+    ),
+    row(5, '/stocks/1.26t/', 'Invalid market-cap ticker', '1.26T', '1.26T', '$197.77'),
+    '</table>',
+  ].join(''))
+
+  assert.deepEqual(parsed, [
+    {
+      rank: 1,
+      ticker: 'NVDA',
+      companyName: 'NVIDIA Corporation',
+      marketCap: '5.73T',
+    },
+    {
+      rank: 2,
+      ticker: 'TSM',
+      companyName: 'Taiwan Semiconductor Manufacturing Company Limited',
+      marketCap: '2.07T',
+    },
+  ])
 })
 
 test('桌面 SELL PUT Prompt v3 与 Web 报告保留相同标题和硬约束', () => {

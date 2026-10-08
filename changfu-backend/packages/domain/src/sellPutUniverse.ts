@@ -29,6 +29,18 @@ const shareClassGroups: Record<string, { group: string; preferredTicker: string 
   'BRK.B': { group: 'Berkshire Hathaway', preferredTicker: 'BRK.B' },
 }
 
+const usTickerPattern = /^[A-Z][A-Z0-9]*(?:\.[A-Z])?$/
+const usCrossListingByQuote = new Map([
+  ['AMS:ASML', 'ASML'],
+  ['CPH:NOVO.B', 'NVO'],
+  ['ETR:SAP', 'SAP'],
+  ['HKG:9988', 'BABA'],
+  ['LON:AZN', 'AZN'],
+  ['LON:SHEL', 'SHEL'],
+  ['TPE:2330', 'TSM'],
+  ['TYO:7203', 'TM'],
+])
+
 export function parseStockAnalysisUniverse(html: string): SellPutUniverseCompany[] {
   const rows: SellPutUniverseCompany[] = []
   const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
@@ -37,20 +49,32 @@ export function parseStockAnalysisUniverse(html: string): SellPutUniverseCompany
   while ((rowMatch = rowPattern.exec(html))) {
     const rowHtml = rowMatch[1]
     if (rowHtml === undefined) continue
-    const cells = [...rowHtml.matchAll(cellPattern)]
-      .map(match => cleanHtml(match[1] ?? ''))
-    const rank = cells[0]
-    const companyName = cells[2]
-    if (cells.length < 4 || rank === undefined || companyName === undefined
-      || Number.isNaN(Number(rank))) continue
-    const ticker = rowHtml.match(/\/stocks\/([a-z0-9.-]+)\//i)?.[1]?.toUpperCase()
-      ?? cells[2]?.toUpperCase()
-    if (!ticker) continue
+    const cellHtml = [...rowHtml.matchAll(cellPattern)].map(match => match[1] ?? '')
+    const rank = cleanHtml(cellHtml[0] ?? '')
+    const companyCell = cellHtml[1]
+    if (cellHtml.length < 4 || !companyCell || Number.isNaN(Number(rank))) continue
+
+    const directTicker = companyCell
+      .match(/href=["']\/stocks\/([a-z0-9.-]+)\//i)?.[1]?.toUpperCase()
+    const quoteMatch = companyCell.match(
+      /href=["']\/quote\/([a-z0-9.-]+)\/([a-z0-9.-]+)\//i,
+    )
+    const quoteKey = quoteMatch?.[1] && quoteMatch[2]
+      ? `${quoteMatch[1].toUpperCase()}:${quoteMatch[2].toUpperCase()}`
+      : null
+    const ticker = directTicker ?? (quoteKey ? usCrossListingByQuote.get(quoteKey) : undefined)
+    if (!ticker || !usTickerPattern.test(ticker)) continue
+
+    const companyName = decodeHtmlAttribute(
+      companyCell.match(/title=["']([^"']+)["']/i)?.[1] ?? '',
+    )
+    const marketCap = cleanHtml(cellHtml[2] ?? '')
+    if (!companyName || !marketCap) continue
     rows.push({
       rank: Number(rank),
       ticker,
       companyName,
-      marketCap: cells[3] ?? 'unavailable',
+      marketCap,
     })
   }
   return rows
@@ -133,6 +157,12 @@ function cleanHtml(value: string): string {
   return value
     .replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function decodeHtmlAttribute(value: string): string {
+  return cleanHtml(value)
 }
