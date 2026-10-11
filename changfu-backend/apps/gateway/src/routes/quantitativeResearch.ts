@@ -664,7 +664,11 @@ function parseBrokerEvidence(
     || value.title.length > 300
     || typeof value.capturedAt !== 'string'
     || !Number.isFinite(Date.parse(value.capturedAt))
-    || (value.asOf !== null && typeof value.asOf !== 'string')
+    || (
+      value.asOf !== undefined
+      && value.asOf !== null
+      && typeof value.asOf !== 'string'
+    )
     || !isPrimitive(value.value)
     || metadata === null
   ) return null
@@ -674,7 +678,7 @@ function parseBrokerEvidence(
     source: expectedProvider,
     title: value.title,
     capturedAt: value.capturedAt,
-    asOf: value.asOf as string | null,
+    asOf: typeof value.asOf === 'string' ? value.asOf : null,
     value: value.value,
     ...(metadata === undefined ? {} : { metadata }),
   }

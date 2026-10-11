@@ -322,6 +322,24 @@ test('Gateway 单票 observation 拒绝跨 Provider 证据与代码错配', () =
     }],
   }
   assert.ok(parseQuantitativeObservation(valid, 'FUTU', valid.requestId))
+  const { asOf: _asOf, ...evidenceWithoutAsOf } = valid.evidence[0]!
+  const longbridgeWithoutAsOf = {
+    ...valid,
+    symbol: 'NVDA.US',
+    providerId: 'LONGBRIDGE',
+    evidence: [{
+      ...evidenceWithoutAsOf,
+      source: 'LONGBRIDGE',
+    }],
+  }
+  assert.equal(
+    parseQuantitativeObservation(
+      longbridgeWithoutAsOf,
+      'LONGBRIDGE',
+      valid.requestId,
+    )?.evidence[0]?.asOf,
+    null,
+  )
   assert.equal(parseQuantitativeObservation({
     ...valid,
     evidence: [{ ...valid.evidence[0], source: 'LONGBRIDGE' }],
