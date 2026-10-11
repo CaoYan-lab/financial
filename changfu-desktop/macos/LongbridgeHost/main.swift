@@ -122,6 +122,8 @@ private struct CLI {
                 "HOME": inherited["HOME"] ?? NSHomeDirectory(),
                 "TMPDIR": inherited["TMPDIR"] ?? NSTemporaryDirectory(),
                 "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+                "LONGBRIDGE_REGION": inherited["LONGBRIDGE_REGION"] ?? "cn",
+                "LONGPORT_REGION": inherited["LONGPORT_REGION"] ?? "cn",
                 "LONGBRIDGE_APP_KEY": credentials.appKey,
                 "LONGBRIDGE_APP_SECRET": credentials.appSecret,
                 "LONGBRIDGE_ACCESS_TOKEN": credentials.accessToken

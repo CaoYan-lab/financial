@@ -47,6 +47,16 @@ PUBLIC_WORKER_STATUS="$(
   exit 1
 }
 
+QUANTITATIVE_WORKER_STATUS="$(
+  curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --request POST --header 'content-type: application/json' --data '{}' \
+    "${CHANGFU_WORKER_PROBE_ORIGIN%/}/internal/v1/quantitative/score"
+)"
+[[ "$QUANTITATIVE_WORKER_STATUS" == "401" ]] || {
+  echo "quantitative worker route must be present and reject unauthenticated probes with 401" >&2
+  exit 1
+}
+
 ADMIN_READY="$(
   curl --fail --silent --show-error --retry 6 --retry-delay 5 \
     "${CHANGFU_ADMIN_ORIGIN%/}/api/v1/admin/ready"

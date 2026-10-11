@@ -13,6 +13,7 @@ import {
 import { buildQuantitativeScorePrompt } from '../packages/domain/src/quantitativePrompt.js'
 import {
   parseQuantitativeObservation,
+  parseQuantitativeWorkerResponse,
   quantitativeItemIdempotencyOperation,
 } from '../apps/gateway/src/routes/quantitativeResearch.js'
 import {
@@ -46,11 +47,11 @@ const evidence = [
 const score: QuantitativeScoreResult = {
   schemaVersion: '1.0',
   dimensions: {
-    fundamentals: { score: 25, availability: 'AVAILABLE' },
-    filings: { score: 12, availability: 'AVAILABLE' },
-    shortActivity: { score: null, availability: 'UNAVAILABLE' },
-    priceTrend: { score: 20, availability: 'AVAILABLE' },
-    macroFit: { score: 10, availability: 'PARTIAL' },
+    fundamentals: { score: 25, availability: 'AVAILABLE', assessment: '基本面稳健。' },
+    filings: { score: 12, availability: 'AVAILABLE', assessment: '申报信息未见重大异常。' },
+    shortActivity: { score: null, availability: 'UNAVAILABLE', assessment: '卖空数据不可用。' },
+    priceTrend: { score: 20, availability: 'AVAILABLE', assessment: '价格趋势保持强势。' },
+    macroFit: { score: 10, availability: 'PARTIAL', assessment: '宏观环境部分支持。' },
   },
   summary: '基本面与趋势共同支持，卖空层暂不可用。',
   evidenceIds: ['sec-revenue', 'futu-price'],
@@ -109,7 +110,11 @@ test('模型五维评分由服务端校验边界、证据并确定性求和', ()
   assert.equal(validated.coverageWeight, 90)
 
   const outOfRange = structuredClone(score)
-  outOfRange.dimensions.shortActivity = { score: 11, availability: 'AVAILABLE' }
+  outOfRange.dimensions.shortActivity = {
+    score: 11,
+    availability: 'AVAILABLE',
+    assessment: '卖空压力偏高。',
+  }
   assert.deepEqual(
     validateQuantitativeScoreResult(outOfRange, evidence),
     { ok: false, reason: 'MODEL_SCORE_OUT_OF_RANGE:shortActivity' },
@@ -125,10 +130,25 @@ test('模型五维评分由服务端校验边界、证据并确定性求和', ()
 
 test('缺失维度必须使用 null 且不重新分配权重', () => {
   const invalid = structuredClone(score)
-  invalid.dimensions.shortActivity = { score: 0, availability: 'UNAVAILABLE' }
+  invalid.dimensions.shortActivity = {
+    score: 0,
+    availability: 'UNAVAILABLE',
+    assessment: '卖空数据不可用。',
+  }
   assert.deepEqual(
     validateQuantitativeScoreResult(invalid, evidence),
     { ok: false, reason: 'MODEL_UNAVAILABLE_SCORE_MUST_BE_NULL:shortActivity' },
+  )
+})
+
+test('每个维度必须包含模型聚合研判', () => {
+  const invalid = structuredClone(score) as unknown as {
+    dimensions: { shortActivity: Record<string, unknown> }
+  }
+  delete invalid.dimensions.shortActivity.assessment
+  assert.deepEqual(
+    validateQuantitativeScoreResult(invalid, evidence),
+    { ok: false, reason: 'MODEL_DIMENSION_INVALID:shortActivity' },
   )
 })
 
@@ -148,7 +168,7 @@ test('报告仅从满足报价、K 线和覆盖门槛的标的选 Top5', () => {
     { observation: observation(), scoreResult: score },
   ], new Date('2026-10-08T13:00:00.000Z'))
 
-  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v1')
+  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v2')
   assert.equal(QUANT_SCORING_VERSION, 'top30-five-layer-score-v1')
   assert.equal(report.items[0]?.ticker, 'MSFT')
   assert.equal(report.items[0]?.finalRank, 1)
@@ -207,7 +227,9 @@ test('单票 Prompt 不携带其他标的且禁止模型直接给出排名或交
   assert.doesNotMatch(prompt.user, /AAPL|MSFT/)
   assert.match(prompt.system, /禁止比较、引用或推断其他股票/)
   assert.match(prompt.system, /不得返回总分、排名、候选、交易信号或订单/)
-  assert.match(prompt.system, /score 与 availability 两个字段/)
+  assert.match(prompt.system, /score、availability 与 assessment 三个字段/)
+  assert.match(prompt.system, /shortActivity\.assessment 必须综合卖空成交占比/)
+  assert.match(prompt.system, /不得罗列或复述原始记录/)
   assert.match(prompt.system, /AVAILABLE、PARTIAL、UNAVAILABLE/)
 })
 
@@ -226,7 +248,11 @@ test('异 Provider 报告对比确定性计算 Top5 重合与排名差异', () =
         ...score,
         dimensions: {
           ...score.dimensions,
-          fundamentals: { score: 20, availability: 'AVAILABLE' },
+          fundamentals: {
+            score: 20,
+            availability: 'AVAILABLE',
+            assessment: '基本面保持稳健。',
+          },
         },
       },
     },
@@ -241,7 +267,11 @@ test('异 Provider 报告对比确定性计算 Top5 重合与排名差异', () =
         ...score,
         dimensions: {
           ...score.dimensions,
-          fundamentals: { score: 15, availability: 'AVAILABLE' },
+          fundamentals: {
+            score: 15,
+            availability: 'AVAILABLE',
+            assessment: '基本面质量中性。',
+          },
         },
       },
     },
@@ -309,6 +339,48 @@ test('量化单票幂等 operation 不超过数据库 varchar(80)', () => {
   assert.ok(operation.length <= 80)
 })
 
+test('Gateway 保留 Worker 非 JSON HTTP 状态并拒绝无效成功响应', () => {
+  assert.deepEqual(
+    parseQuantitativeWorkerResponse(404, ''),
+    { rejectionReason: 'MODEL_HTTP_404' },
+  )
+  assert.deepEqual(
+    parseQuantitativeWorkerResponse(502, '<html>bad gateway</html>'),
+    { rejectionReason: 'MODEL_HTTP_502' },
+  )
+  assert.deepEqual(
+    parseQuantitativeWorkerResponse(200, 'not-json'),
+    { rejectionReason: 'MODEL_RESPONSE_INVALID' },
+  )
+  assert.deepEqual(
+    parseQuantitativeWorkerResponse(502, '{"code":"MODEL_TIMEOUT"}'),
+    { rejectionReason: 'MODEL_TIMEOUT' },
+  )
+  assert.deepEqual(
+    parseQuantitativeWorkerResponse(200, '{"scoreResult":{"schemaVersion":"1.0"}}'),
+    { scoreResult: { schemaVersion: '1.0' } },
+  )
+})
+
+test('APIG 与发布验证覆盖量化 Worker 精确路由', async () => {
+  const [apig, verification] = await Promise.all([
+    readFile(
+      new URL('../deploy/volcano/scripts/configure-apig.sh', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL('../deploy/volcano/scripts/verify-deployment.sh', import.meta.url),
+      'utf8',
+    ),
+  ])
+  for (const source of [apig, verification]) {
+    assert.match(source, /\/internal\/v1\/quantitative\/score/)
+  }
+  assert.match(apig, /changfu-worker-quantitative/)
+  assert.match(apig, /TimeoutSetting:\{Enable:false\}/)
+  assert.match(verification, /QUANTITATIVE_WORKER_STATUS/)
+})
+
 test('量化链路不存在 Yahoo 且 Longbridge Host 仅使用固定只读命令', async () => {
   const files = await Promise.all([
     readFile(new URL('../apps/gateway/src/routes/quantitativeResearch.ts', import.meta.url), 'utf8'),
@@ -353,17 +425,49 @@ test('量化 Repository 在模型调用前绑定 run、requestId、symbol、tick
   assert.match(source, /stored\.rows\.length !== QUANT_POOL_CAPACITY/)
 })
 
-test('量化长任务按批次和封版重新取得自动续期后的 access token', async () => {
-  const source = await readFile(
-    new URL('../../changfu-desktop/macos/App/AppState.swift', import.meta.url),
-    'utf8',
-  )
+test('量化长任务使用滑动并发窗口并逐票读取自动续期后的 access token', async () => {
+  const [source, longbridgeClient] = await Promise.all([
+    readFile(
+      new URL('../../changfu-desktop/macos/App/AppState.swift', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL(
+        '../../changfu-desktop/macos/Infrastructure/LongbridgeBrokerClient.swift',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+  ])
   const run = source.slice(
     source.indexOf('func startQuantitativeReport()'),
     source.indexOf('func loadQuantitativeReport'),
   )
-  assert.match(run, /let batchAccessToken = authenticationSession\?\.accessToken/)
-  assert.match(run, /accessToken: batchAccessToken/)
+  const submission = source.slice(
+    source.indexOf('private func submitQuantitativeObservation'),
+    source.indexOf('private func quantitativeRunState'),
+  )
+  assert.match(run, /let concurrency = providerId == "FUTU" \? 8 : 3/)
+  assert.match(run, /while let success = await group\.next\(\)/)
+  assert.doesNotMatch(run, /stride\(from:/)
+  assert.match(submission, /let accessToken = authenticationSession\?\.accessToken/)
   assert.match(run, /let finalAccessToken = authenticationSession\?\.accessToken/)
   assert.match(run, /accessToken: finalAccessToken/)
+  assert.match(
+    longbridgeClient,
+    /BrokerHostRunner\(\s*executableURL: hostExecutableURL\s*\)\.run\(/,
+  )
+})
+
+test('桌面详情展示模型聚合卖空研判且隐藏原始卖空列表', async () => {
+  const source = await readFile(
+    new URL(
+      '../../changfu-desktop/macos/App/QuantitativeResearchWorkspace.swift',
+      import.meta.url,
+    ),
+    'utf8',
+  )
+  assert.match(source, /Text\("卖空研判"\)/)
+  assert.match(source, /value\.assessment/)
+  assert.match(source, /\.filter \{ \$0\.layer != \.shortActivity \}/)
 })

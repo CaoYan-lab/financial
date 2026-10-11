@@ -230,7 +230,7 @@
 
 定义：
 
-- `QUANT_PROMPT_VERSION = top30-quant-selection-v1`
+- `QUANT_PROMPT_VERSION = top30-quant-selection-v2`
 - `QUANT_SCORING_VERSION = top30-five-layer-score-v1`
 - `QuantitativeObservation`
 - `QuantitativeEvidence`
@@ -242,7 +242,7 @@
 #### `changfu-contracts/schemas/quantitative-score-result.schema.json`（新增）
 
 - 独立于交易 `model-result.schema.json`。
-- 严格限制五维分数、availability、证据 ID、反证、风险、缺口和失效条件。
+- 严格限制五维分数、availability、维度聚合研判、证据 ID、反证、风险、缺口和失效条件。
 - 禁止 signal、candidate、orderIntent、proposedOrder 等交易字段。
 
 ### Phase 2：官方数据适配与日缓存
@@ -421,11 +421,12 @@ API：
 
 #### `changfu-backend/packages/domain/src/quantitativePrompt.ts`（新增）
 
-Prompt v1 固定：
+Prompt v2 固定：
 
 - 一次只评估一个授权标的。
 - 使用五维锚定量表，不与其他标的作隐式比较。
 - 不得把 short volume 等同 short interest。
+- 每个维度输出一句聚合 `assessment`；卖空维度必须综合成交占比、持仓比例、回补天数及时间变化，给出方向、强度、趋势和轧空风险，不得逐条复述原始记录。
 - 内部人出售不自动判定为负面，必须结合交易类型和持仓变化。
 - 宏观分数必须解释该公司的行业/久期敏感性，不能只复述全市场事件。
 - 数据缺失不得估算或重新分配权重。
@@ -506,6 +507,7 @@ Prompt v1 固定：
 - 表格列：排名、标的、总分、基本面、申报、卖空、价格、宏观、覆盖度、状态、详情。
 - 行内不展开；点击行打开独立详情弹窗。
 - 详情弹窗成对展示证据/反证，另列风险、数据缺口、失效条件和逐字段来源时间。
+- 卖空原始序列仅保留为模型输入和审计证据；用户层展示模型聚合后的“卖空研判”，不得回显原始 JSON 列表。
 - 完整 Markdown 使用独立弹窗。
 - “对比报告”打开历史报告选择器和确定性差异弹窗。
 

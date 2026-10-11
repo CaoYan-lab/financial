@@ -48,6 +48,32 @@ export function quantitativeItemIdempotencyOperation(requestId: string): string 
   return `quantitative:item:${requestId}`
 }
 
+export function parseQuantitativeWorkerResponse(
+  status: number,
+  text: string,
+): { scoreResult?: unknown; rejectionReason?: string } {
+  let result: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (!isRecord(parsed)) throw new Error('MODEL_RESPONSE_INVALID')
+    result = parsed
+  } catch {
+    return {
+      rejectionReason: status >= 200 && status < 300
+        ? 'MODEL_RESPONSE_INVALID'
+        : `MODEL_HTTP_${status}`,
+    }
+  }
+  if (status < 200 || status >= 300 || result.scoreResult === undefined) {
+    return {
+      rejectionReason: typeof result.code === 'string'
+        ? result.code
+        : `MODEL_HTTP_${status}`,
+    }
+  }
+  return { scoreResult: result.scoreResult }
+}
+
 async function idempotentJson(
   context: Context,
   operation: string,
@@ -362,17 +388,17 @@ export async function handleQuantitativeResearchRoute(context: Context): Promise
             ]),
             body: JSON.stringify({ observation: enriched, modelProfile }),
           })
-          const result = await upstream.json() as {
-            scoreResult?: unknown
-            code?: unknown
-          }
-          if (!upstream.ok || result.scoreResult === undefined) {
-            rejectionReason = typeof result.code === 'string'
-              ? result.code
-              : `MODEL_HTTP_${upstream.status}`
-          } else {
-            scoreResult = result.scoreResult
-          }
+          safeLogger.info('quantitative_worker_response', {
+            requestId: itemRequestId,
+            status: upstream.status,
+            contentType: upstream.headers.get('content-type'),
+          })
+          const parsed = parseQuantitativeWorkerResponse(
+            upstream.status,
+            await upstream.text(),
+          )
+          rejectionReason = parsed.rejectionReason
+          scoreResult = parsed.scoreResult
         } catch (error) {
           rejectionReason = error instanceof Error ? error.name : 'MODEL_REQUEST_FAILED'
         }

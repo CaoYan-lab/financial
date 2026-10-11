@@ -428,6 +428,9 @@ private struct QuantitativeItemDetailSheet: View {
                             .lineSpacing(3)
                             .textSelection(.enabled)
                     }
+                    if let shortActivity = item.dimensions?.shortActivity {
+                        shortActivityAssessment(shortActivity)
+                    }
                     evidenceSection("支持证据", ids: item.evidenceIds)
                     evidenceSection("反对证据", ids: item.counterEvidenceIds)
                     detailSection("风险", item.risks, FutuTheme.rose)
@@ -454,10 +457,44 @@ private struct QuantitativeItemDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func shortActivityAssessment(
+        _ value: QuantitativeDimensionScore
+    ) -> some View {
+        let assessment = value.assessment?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let assessmentText = assessment.flatMap { $0.isEmpty ? nil : $0 }
+            ?? "该历史报告未保存模型聚合后的卖空研判。"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("卖空研判")
+                    .font(FutuTheme.panelTitle)
+                Text(value.score.map { "\($0) / 10" } ?? "不可用")
+                    .font(FutuTheme.metricNote.weight(.semibold))
+                    .foregroundStyle(FutuTheme.orange)
+                Spacer()
+                Text(value.availability.displayName)
+                    .font(FutuTheme.metricNote)
+                    .foregroundStyle(FutuTheme.inkMuted)
+            }
+            Text(assessmentText)
+            .font(FutuTheme.body)
+            .foregroundStyle(FutuTheme.ink)
+            .lineSpacing(3)
+            .textSelection(.enabled)
+        }
+        .padding(12)
+        .background(FutuTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
     @ViewBuilder
     private func evidenceSection(_ title: String, ids: [String]) -> some View {
         let evidence = ids.compactMap { selection.evidenceById[$0] }
-        if !ids.isEmpty {
+            .filter { $0.layer != .shortActivity }
+        let visibleIds = ids.filter {
+            selection.evidenceById[$0]?.layer != .shortActivity
+        }
+        if !visibleIds.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).font(FutuTheme.panelTitle)
                 ForEach(evidence) { item in
@@ -490,8 +527,8 @@ private struct QuantitativeItemDetailSheet: View {
                     .padding(.vertical, 7)
                     Divider()
                 }
-                if evidence.count < ids.count {
-                    Text("\(ids.count - evidence.count) 条历史证据未保存可读详情")
+                if evidence.count < visibleIds.count {
+                    Text("\(visibleIds.count - evidence.count) 条历史证据未保存可读详情")
                         .font(FutuTheme.metricNote)
                         .foregroundStyle(FutuTheme.amber)
                 }

@@ -19,6 +19,7 @@ public final class LongbridgeBrokerClient:
 {
     public private(set) var connectionState: LongbridgeConnectionState = .disconnected
     private let runner: BrokerHostRunner
+    private let hostExecutableURL: URL
     private let credentialStore: any LongbridgeCredentialProviding
     private var quantitativeMacroSnapshot: QuantitativeMacroSnapshot?
 
@@ -26,7 +27,9 @@ public final class LongbridgeBrokerClient:
         hostExecutableURL: URL? = nil,
         credentialStore: any LongbridgeCredentialProviding = SecureCredentialStore()
     ) {
-        runner = BrokerHostRunner(executableURL: hostExecutableURL ?? Self.defaultHostURL())
+        let resolvedHostExecutableURL = hostExecutableURL ?? Self.defaultHostURL()
+        runner = BrokerHostRunner(executableURL: resolvedHostExecutableURL)
+        self.hostExecutableURL = resolvedHostExecutableURL
         self.credentialStore = credentialStore
     }
 
@@ -139,11 +142,24 @@ public final class LongbridgeBrokerClient:
     public func quantitativeResearchObservation(
         _ request: QuantitativeBrokerObservationRequest
     ) async throws -> QuantitativeBrokerObservation {
-        let observation = try await decode(
-            QuantitativeBrokerObservation.self,
+        let input = try commandInput(request)
+        let data = try await BrokerHostRunner(
+            executableURL: hostExecutableURL
+        ).run(
             command: "quantitative-research-observation",
-            request: request
+            input: input
         )
+        let observation: QuantitativeBrokerObservation
+        do {
+            observation = try JSONDecoder().decode(
+                QuantitativeBrokerObservation.self,
+                from: data
+            )
+            connectionState = .connected
+        } catch {
+            connectionState = .failed(BrokerClientError.invalidResponse.localizedDescription)
+            throw BrokerClientError.invalidResponse
+        }
         guard let macro = quantitativeMacroSnapshot else { return observation }
         return QuantitativeBrokerObservation(
             requestId: observation.requestId,

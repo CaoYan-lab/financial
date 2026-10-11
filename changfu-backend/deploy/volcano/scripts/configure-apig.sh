@@ -165,6 +165,9 @@ create_route changfu-worker-model "$PRIVATE_SERVICE_ID" "$WORKER_UPSTREAM_ID" \
   /internal/v1/model/runs Exact POST > "$OUT_DIR/worker-model-route.result.json"
 create_route changfu-worker-sell-put "$PRIVATE_SERVICE_ID" "$WORKER_UPSTREAM_ID" \
   /internal/v1/sell-put/report Exact POST > "$OUT_DIR/worker-sell-put-route.result.json"
+create_route changfu-worker-quantitative "$PRIVATE_SERVICE_ID" "$WORKER_UPSTREAM_ID" \
+  /internal/v1/quantitative/score Exact POST \
+  > "$OUT_DIR/worker-quantitative-route.result.json"
 create_route changfu-admin-web "$ADMIN_SERVICE_ID" "$ADMIN_UPSTREAM_ID" \
   / Prefix GET POST PUT PATCH DELETE OPTIONS > "$OUT_DIR/admin-route.result.json"
 

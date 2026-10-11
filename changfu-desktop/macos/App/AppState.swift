@@ -1870,22 +1870,46 @@ final class AppState {
                 symbols: runItems.map(\.symbol)
             )
 
-            let batchSize = providerId == "FUTU" ? 8 : 3
             var terminalCount = existingTerminalCount
-            for batchStart in stride(from: 0, to: runItems.count, by: batchSize) {
-                let batchEnd = min(batchStart + batchSize, runItems.count)
-                let batch = Array(runItems[batchStart..<batchEnd])
-                guard let batchAccessToken = authenticationSession?.accessToken else {
-                    throw BackendClientError.authenticationRejected
+            let concurrency = providerId == "FUTU" ? 8 : 3
+            updateQuantitativeRunState(providerId) {
+                $0.statusMessage = "正在独立分析，已完成 \(terminalCount)/30"
+            }
+            let completed = await withTaskGroup(
+                of: Bool.self,
+                returning: Int.self
+            ) { group in
+                var nextIndex = 0
+                let initialCount = min(concurrency, runItems.count)
+                for _ in 0..<initialCount {
+                    let item = runItems[nextIndex]
+                    nextIndex += 1
+                    group.addTask { [self] in
+                        let observation = await collectQuantitativeObservation(
+                            item,
+                            providerId: providerId
+                        )
+                        return await submitQuantitativeObservation(
+                            observation,
+                            runId: runId,
+                            providerId: providerId
+                        )
+                    }
                 }
-                updateQuantitativeRunState(providerId) {
-                    $0.statusMessage = "正在独立分析 \(terminalCount + 1)-\(terminalCount + batch.count)/30"
-                }
-                let completed = await withTaskGroup(
-                    of: Bool.self,
-                    returning: Int.self
-                ) { group in
-                    for item in batch {
+                var completedCount = 0
+                while let success = await group.next() {
+                    if success {
+                        completedCount += 1
+                    }
+                    let currentTerminalCount = terminalCount + completedCount
+                    updateQuantitativeRunState(providerId) {
+                        $0.completedSymbols = currentTerminalCount
+                        $0.statusMessage =
+                            "正在独立分析，已完成 \(currentTerminalCount)/30"
+                    }
+                    if nextIndex < runItems.count {
+                        let item = runItems[nextIndex]
+                        nextIndex += 1
                         group.addTask { [self] in
                             let observation = await collectQuantitativeObservation(
                                 item,
@@ -1894,25 +1918,14 @@ final class AppState {
                             return await submitQuantitativeObservation(
                                 observation,
                                 runId: runId,
-                                providerId: providerId,
-                                accessToken: batchAccessToken
+                                providerId: providerId
                             )
                         }
                     }
-                    var count = 0
-                    for await success in group where success {
-                        count += 1
-                    }
-                    return count
                 }
-                terminalCount += completed
-                updateQuantitativeRunState(providerId) {
-                    $0.completedSymbols = terminalCount
-                }
-                if batchEnd < runItems.count {
-                    try await Task.sleep(for: .seconds(providerId == "FUTU" ? 31 : 2))
-                }
+                return completedCount
             }
+            terminalCount += completed
             guard terminalCount == 30 else {
                 updateQuantitativeRunState(providerId) {
                     $0.statusMessage =
@@ -2066,11 +2079,13 @@ final class AppState {
     private func submitQuantitativeObservation(
         _ observation: QuantitativeBrokerObservation,
         runId: String,
-        providerId: String,
-        accessToken: String
+        providerId: String
     ) async -> Bool {
         for attempt in 0..<2 {
             do {
+                guard let accessToken = authenticationSession?.accessToken else {
+                    throw BackendClientError.authenticationRejected
+                }
                 _ = try await backend.submitQuantitativeObservation(
                     runId: runId,
                     requestId: observation.requestId,

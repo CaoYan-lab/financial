@@ -337,6 +337,7 @@ test('SELL PUT 报告详情和桌面缓存按 Provider 隔离', () => {
   assert.match(appState, /validateLongbridgeSellPutAccess\(items\)/)
   assert.match(appState, /subscription\.grantsResearchAccess\(to: providerId\)/)
   assert.match(workspace, /\.disabled\(!state\.canStartSellPutReport\)/)
+  assert.match(apig, /\/internal\/v1\/sell-put\/report Exact POST/)
   assert.match(apig, /TimeoutSetting:\{Enable:false\}/)
   assert.match(appState, /message\.contains\("301604"\)/)
   assert.match(appState, /message\.contains\("500 internal server error"\)/)

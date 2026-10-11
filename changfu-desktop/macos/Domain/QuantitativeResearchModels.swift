@@ -301,6 +301,7 @@ public struct QuantitativeItemSubmission: Codable, Equatable, Sendable {
 public struct QuantitativeDimensionScore: Codable, Equatable, Sendable {
     public let score: Int?
     public let availability: QuantitativeAvailability
+    public let assessment: String?
 }
 
 public struct QuantitativeDimensions: Codable, Equatable, Sendable {

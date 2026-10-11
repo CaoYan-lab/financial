@@ -1,4 +1,4 @@
-export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v1'
+export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v2'
 export const QUANT_SCORING_VERSION = 'top30-five-layer-score-v1'
 export const QUANT_POOL_CAPACITY = 30
 
@@ -44,6 +44,7 @@ export type QuantitativeObservation = {
 export type QuantitativeDimensionScore = {
   score: number | null
   availability: QuantitativeAvailability
+  assessment: string
 }
 
 export type QuantitativeScoreResult = {
@@ -171,7 +172,10 @@ export function validateQuantitativeScoreResult(
   let coverageWeight = 0
   for (const key of dimensionKeys) {
     const value = input.dimensions[key]
-    if (!isRecord(value) || hasUnexpectedKeys(value, new Set(['score', 'availability']))) {
+    if (
+      !isRecord(value)
+      || hasUnexpectedKeys(value, new Set(['score', 'availability', 'assessment']))
+    ) {
       return invalid(`MODEL_DIMENSION_INVALID:${key}`)
     }
     const availability = value.availability
@@ -183,6 +187,8 @@ export function validateQuantitativeScoreResult(
       return invalid(`MODEL_AVAILABILITY_INVALID:${key}`)
     }
     const score = value.score
+    const assessment = boundedString(value.assessment, 1, 500)
+    if (assessment === null) return invalid(`MODEL_ASSESSMENT_INVALID:${key}`)
     if (availability === 'UNAVAILABLE') {
       if (score !== null) return invalid(`MODEL_UNAVAILABLE_SCORE_MUST_BE_NULL:${key}`)
     } else {
@@ -197,7 +203,7 @@ export function validateQuantitativeScoreResult(
       totalScore += score
       coverageWeight += QUANT_DIMENSION_LIMITS[key]
     }
-    dimensions[key] = { score: score as number | null, availability }
+    dimensions[key] = { score: score as number | null, availability, assessment }
   }
 
   const summary = boundedString(input.summary, 1, 2_000)
