@@ -458,13 +458,17 @@ test('Gateway 保留 Worker 非 JSON HTTP 状态并拒绝无效成功响应', ()
 })
 
 test('APIG 与发布验证覆盖量化 Worker 精确路由', async () => {
-  const [apig, verification] = await Promise.all([
+  const [apig, verification, release] = await Promise.all([
     readFile(
       new URL('../deploy/volcano/scripts/configure-apig.sh', import.meta.url),
       'utf8',
     ),
     readFile(
       new URL('../deploy/volcano/scripts/verify-deployment.sh', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL('../deploy/volcano/scripts/release-live-trading-core.sh', import.meta.url),
       'utf8',
     ),
   ])
@@ -474,6 +478,8 @@ test('APIG 与发布验证覆盖量化 Worker 精确路由', async () => {
   assert.match(apig, /changfu-worker-quantitative/)
   assert.match(apig, /TimeoutSetting:\{Enable:false\}/)
   assert.match(verification, /QUANTITATIVE_WORKER_STATUS/)
+  assert.match(release, /vefaas fn invoke/)
+  assert.match(release, /\/internal\/v1\/health/)
 })
 
 test('量化链路不存在 Yahoo 且 Longbridge Host 仅使用固定只读命令', async () => {

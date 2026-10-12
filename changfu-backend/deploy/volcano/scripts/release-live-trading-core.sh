@@ -27,7 +27,6 @@ fi
 : "${CHANGFU_GATEWAY_FUNCTION_ID:?required}"
 : "${CHANGFU_WORKER_FUNCTION_ID:?required}"
 : "${CHANGFU_CR_REGISTRY_ENDPOINT:?required}"
-: "${CHANGFU_PUBLIC_API_ORIGIN:?required}"
 : "${CHANGFU_WORKER_PROBE_ORIGIN:?required}"
 
 for command in curl flock jq openssl vefaas; do
@@ -147,10 +146,14 @@ configure_and_release() {
 "$SCRIPT_DIR/migrate-rds.sh"
 
 configure_and_release "$CHANGFU_WORKER_FUNCTION_ID" "$WORKER_IMAGE" worker
+WORKER_INVOKE="$(
+  vefaas fn invoke --id "$CHANGFU_WORKER_FUNCTION_ID" \
+    --method GET --path /internal/v1/health -o json
+)"
+jq -e '.ok == true and .data.statusCode == 200' <<<"$WORKER_INVOKE" >/dev/null
 WORKER_HEALTH="$(
-  curl --fail --silent --show-error --retry 12 --retry-delay 5 \
-    --retry-all-errors --connect-timeout 10 --max-time 20 \
-    "${CHANGFU_WORKER_PROBE_ORIGIN%/}/internal/v1/health"
+  jq -cer '.data.response | if type == "string" then fromjson else . end' \
+    <<<"$WORKER_INVOKE"
 )"
 jq -e '
   .ok == true
