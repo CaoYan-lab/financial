@@ -11,8 +11,8 @@
 - SEC/FINRA 官方源优先；官方源连接失败时，只回退到当前报告所属券商可提供的数据。任何路径都不读取 Yahoo。
 - 选股使用五层证据：SEC XBRL 基本面、SEC 申报事件、FINRA 卖空数据、券商宏观环境、券商复权价格趋势。
 - 每个标的拥有独立采集请求、独立模型请求和独立 `requestId`。单票失败不取消其他标的。
-- 模型负责五维综合评分；服务端校验分项边界、证据引用和数据覆盖，并确定性求和、排序及选出 Top5。模型不能直接跨标的修改排名，也不能生成交易信号或订单。
-- 结果统一进入“策略中心 → 报告”，包含 Top5、观察组、Bottom5、全 30 只明细、证据、反证、风险、数据缺口和退出/失效条件。
+- 模型负责五维投资吸引力评分与单票研究信号；服务端校验分项边界、证据引用和数据覆盖，并确定性求和、排序及选出 Top5。模型不能跨标的修改排名，也不能生成订单。
+- 结果统一进入“策略中心 → 报告”，包含 Top5 买入推荐、观察名单、放弃名单、全 30 只明细、聚合支持/反对研判、风险、数据缺口和退出/失效条件。
 - 两家券商报告不自动比较。用户在任一报告中点击“对比报告”，手动选择另一券商的一份历史报告，系统生成即时、确定性的并排差异页，不新增模型调用。
 - 首版只产出研究报告，不写交易候选池，不触发下单。
 
@@ -21,7 +21,7 @@
 1. Futu 与 Longbridge 均能在各自研究页独立启动 Top30 量化选股。
 2. 每次运行锁定 30 个标的并形成 30 个独立终态结果。
 3. 官方源不可用时按照当前券商能力降级，缺口明确可见，不跨券商补数。
-4. 有效评分按固定五维上限校验，Top5 只来自覆盖度和时效满足门槛的标的。
+4. 有效评分按固定五维上限校验，Top5 只来自覆盖度和时效满足门槛且研究信号为“买入”的标的。
 5. 报告持久化、可恢复、可分页查看，并支持用户手动选择异券商报告进行确定性对比。
 
 ## Current State Analysis
@@ -142,7 +142,7 @@
 
 ### 4. 模型评分与确定性聚合
 
-每个标的独立调用一次模型，模型只能返回以下五个分项：
+每个标的独立调用一次模型。五个分项表示该维度对当前投资吸引力的贡献，不表示接口返回完整度；完整度只由 `availability` 与服务端计算的覆盖权重表达：
 
 | 维度 | 上限 | 主要内容 |
 | --- | ---: | --- |
@@ -154,6 +154,10 @@
 
 模型还必须返回：
 
+- `researchSignal: BUY | WATCH | AVOID`
+- `signalReason`
+- `supportingAssessment`
+- `opposingAssessment`
 - `summary`
 - `evidenceIds`
 - `counterEvidenceIds`
@@ -168,7 +172,8 @@
 2. 验证分项分数为整数且不超过对应上限。
 3. 以分项之和计算 `totalScore`，不接受模型直接提交的总分。
 4. 不因缺失维度重分配权重，不以 0 或估算值伪装缺失数据。
-5. 按 `totalScore DESC`、原 Top30 市值排名、ticker 稳定排序。
+5. 按研究信号 `BUY → WATCH → AVOID`、`totalScore DESC`、原 Top30 市值排名、ticker 稳定排序；因此买入推荐拥有连续的优先排名。
+6. 研究信号只用于报告解释和分组，不写入交易候选池，不生成订单。
 
 候选覆盖门槛：
 
@@ -182,11 +187,12 @@
 
 ### 5. 报告分组
 
-- Top5：合格标的中总分最高的最多 5 只。
-- 观察组：Top5 之后的最多 5 只合格标的。
-- Bottom5：所有有有效模型评分的标的中总分最低的 5 只；单纯采集失败不作为“最差股票”。
+- Top5 买入推荐：数据门槛合格且 `researchSignal=BUY` 的标的中，投资吸引力总分最高的最多 5 只。
+- 观察名单：数据门槛合格且 `researchSignal=WATCH` 的标的，按投资吸引力排序。
+- 放弃名单：数据门槛合格且 `researchSignal=AVOID` 的标的，按投资吸引力由低到高展示；单纯采集失败或数据不足不作为“放弃”判断。
 - 数据不足：缺少硬前置或模型失败的标的单独列出。
 - 全量排名：固定列宽、斑马纹表格；点击行打开独立详情弹窗。
+- 详情页只展示模型聚合后的支持研判和反对研判；原始 `evidenceIds` 与 `counterEvidenceIds` 仅用于服务端校验和审计，不直接向用户罗列。
 
 ### 6. 模型失败策略
 
@@ -230,8 +236,8 @@
 
 定义：
 
-- `QUANT_PROMPT_VERSION = top30-quant-selection-v2`
-- `QUANT_SCORING_VERSION = top30-five-layer-score-v1`
+- `QUANT_PROMPT_VERSION = top30-quant-selection-v3`
+- `QUANT_SCORING_VERSION = top30-investment-signal-v2`
 - `QuantitativeObservation`
 - `QuantitativeEvidence`
 - `QuantitativeDimensionScore`
@@ -242,8 +248,8 @@
 #### `changfu-contracts/schemas/quantitative-score-result.schema.json`（新增）
 
 - 独立于交易 `model-result.schema.json`。
-- 严格限制五维分数、availability、维度聚合研判、证据 ID、反证、风险、缺口和失效条件。
-- 禁止 signal、candidate、orderIntent、proposedOrder 等交易字段。
+- 严格限制五维投资吸引力分数、availability、维度聚合研判、研究信号、信号理由、聚合支持/反对研判、证据 ID、风险、缺口和失效条件。
+- 允许 `researchSignal` 作为报告研究结论；禁止 candidate、orderIntent、proposedOrder 等交易执行字段。
 
 ### Phase 2：官方数据适配与日缓存
 

@@ -191,7 +191,7 @@ export async function handleQuantitativeResearchRoute(context: Context): Promise
       promptVersion: QUANT_PROMPT_VERSION,
       scoringVersion: QUANT_SCORING_VERSION,
       dimensions: QUANT_DIMENSION_LIMITS,
-      output: '只生成研究报告与 Top5，不写入交易候选池或订单',
+      output: '生成买入、观望、放弃研究信号与 Top5 买入推荐，不写入交易候选池或订单',
     })
     return true
   }

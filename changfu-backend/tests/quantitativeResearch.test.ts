@@ -45,7 +45,11 @@ const evidence = [
 ] satisfies QuantitativeObservation['evidence']
 
 const score: QuantitativeScoreResult = {
-  schemaVersion: '1.0',
+  schemaVersion: '2.0',
+  researchSignal: 'BUY',
+  signalReason: '基本面与趋势共同支持当前纳入买入推荐。',
+  supportingAssessment: '盈利质量和价格趋势形成主要支持。',
+  opposingAssessment: '估值偏高且卖空数据暂不完整。',
   dimensions: {
     fundamentals: { score: 25, availability: 'AVAILABLE', assessment: '基本面稳健。' },
     filings: { score: 12, availability: 'AVAILABLE', assessment: '申报信息未见重大异常。' },
@@ -168,13 +172,79 @@ test('报告仅从满足报价、K 线和覆盖门槛的标的选 Top5', () => {
     { observation: observation(), scoreResult: score },
   ], new Date('2026-10-08T13:00:00.000Z'))
 
-  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v2')
-  assert.equal(QUANT_SCORING_VERSION, 'top30-five-layer-score-v1')
-  assert.equal(report.items[0]?.ticker, 'MSFT')
+  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v3')
+  assert.equal(QUANT_SCORING_VERSION, 'top30-investment-signal-v2')
+  assert.equal(report.items[0]?.ticker, 'NVDA')
   assert.equal(report.items[0]?.finalRank, 1)
-  assert.equal(report.items[0]?.candidateStatus, 'DATA_INSUFFICIENT')
+  assert.equal(report.items.find(item => item.ticker === 'MSFT')?.finalRank, 2)
+  assert.equal(
+    report.items.find(item => item.ticker === 'MSFT')?.candidateStatus,
+    'DATA_INSUFFICIENT',
+  )
+  assert.equal(
+    report.items.find(item => item.ticker === 'MSFT')?.researchSignal,
+    'WATCH',
+  )
   assert.deepEqual(report.topFive.map(item => item.ticker), ['NVDA'])
   assert.match(report.markdown, /当前报价已过期/)
+})
+
+test('Top5 仅从买入信号选取并单独输出观望和放弃名单', () => {
+  const watchScore: QuantitativeScoreResult = {
+    ...structuredClone(score),
+    researchSignal: 'WATCH',
+    signalReason: '估值和买入时点尚不理想。',
+    dimensions: {
+      ...structuredClone(score.dimensions),
+      fundamentals: {
+        score: 30,
+        availability: 'AVAILABLE',
+        assessment: '基本面强劲但估值较高。',
+      },
+    },
+  }
+  const avoidScore: QuantitativeScoreResult = {
+    ...structuredClone(score),
+    researchSignal: 'AVOID',
+    signalReason: '当前风险收益不支持选择。',
+  }
+  const report = buildQuantitativeReport([
+    { observation: observation(), scoreResult: score },
+    {
+      observation: observation({
+        requestId: '22222222-2222-4222-8222-222222222222',
+        rank: 2,
+        symbol: 'US.AAPL',
+        ticker: 'AAPL',
+        displayName: 'Apple',
+      }),
+      scoreResult: watchScore,
+    },
+    {
+      observation: observation({
+        requestId: '33333333-3333-4333-8333-333333333333',
+        rank: 3,
+        symbol: 'US.AMZN',
+        ticker: 'AMZN',
+        displayName: 'Amazon',
+      }),
+      scoreResult: avoidScore,
+    },
+  ])
+  assert.deepEqual(report.topFive.map(item => item.ticker), ['NVDA'])
+  assert.deepEqual(report.watchlist.map(item => item.ticker), ['AAPL'])
+  assert.deepEqual(report.bottomFive.map(item => item.ticker), ['AMZN'])
+  assert.equal(report.candidateCount, 1)
+})
+
+test('研究信号只接受买入、观望和放弃三种枚举', () => {
+  assert.deepEqual(
+    validateQuantitativeScoreResult(
+      { ...structuredClone(score), researchSignal: 'SELL' },
+      evidence,
+    ),
+    { ok: false, reason: 'MODEL_RESEARCH_SIGNAL_INVALID' },
+  )
 })
 
 test('同分按原市值排名和 ticker 稳定排序，单票拒绝不取消其他结果', () => {
@@ -198,7 +268,7 @@ test('同分按原市值排名和 ticker 稳定排序，单票拒绝不取消其
         ticker: 'AMZN',
         displayName: 'Amazon',
       }),
-      scoreResult: { ...score, signal: 'BUY' },
+      scoreResult: { ...score, orderIntent: {} },
     },
   ])
   assert.deepEqual(report.topFive.map(item => item.ticker), ['NVDA', 'AAPL'])
@@ -206,14 +276,16 @@ test('同分按原市值排名和 ticker 稳定排序，单票拒绝不取消其
   assert.equal(report.items.find(item => item.ticker === 'AMZN')?.rejectionReason, 'MODEL_RESULT_SHAPE_INVALID')
 })
 
-test('独立评分 Schema 禁止交易字段且维度边界与领域一致', async () => {
+test('独立评分 Schema 允许研究信号但禁止交易执行字段', async () => {
   const schema = JSON.parse(await readFile(
     new URL('../../changfu-contracts/schemas/quantitative-score-result.schema.json', import.meta.url),
     'utf8',
   )) as Record<string, unknown>
   assert.equal(schema.additionalProperties, false)
+  const properties = schema.properties as Record<string, unknown>
+  assert.ok(properties.researchSignal)
   const source = JSON.stringify(schema)
-  for (const forbidden of ['signal', 'candidate', 'orderIntent', 'proposedOrder']) {
+  for (const forbidden of ['candidate', 'orderIntent', 'proposedOrder']) {
     assert.equal(source.includes(forbidden), false)
   }
   assert.match(source, /shortActivity/)
@@ -221,12 +293,17 @@ test('独立评分 Schema 禁止交易字段且维度边界与领域一致', asy
   assert.match(source, /"maximum":10/)
 })
 
-test('单票 Prompt 不携带其他标的且禁止模型直接给出排名或交易动作', () => {
+test('单票 Prompt 输出研究信号但禁止跨标的排名和交易执行', () => {
   const prompt = buildQuantitativeScorePrompt(observation())
   assert.match(prompt.user, /NVDA/)
   assert.doesNotMatch(prompt.user, /AAPL|MSFT/)
   assert.match(prompt.system, /禁止比较、引用或推断其他股票/)
-  assert.match(prompt.system, /不得返回总分、排名、候选、交易信号或订单/)
+  assert.match(prompt.system, /researchSignal 是研究结论，不是下单指令/)
+  assert.match(prompt.system, /BUY、WATCH、AVOID/)
+  assert.match(prompt.system, /score 表示该维度对当前投资吸引力的贡献/)
+  assert.match(prompt.system, /数据完整度只能用 availability 表示/)
+  assert.match(prompt.system, /supportingAssessment 必须将支持选择该股的核心证据合并/)
+  assert.match(prompt.system, /不得返回总分、跨标的排名、交易候选、仓位、价格目标或订单/)
   assert.match(prompt.system, /score、availability 与 assessment 三个字段/)
   assert.match(prompt.system, /shortActivity\.assessment 必须综合卖空成交占比/)
   assert.match(prompt.system, /不得罗列或复述原始记录/)
@@ -477,7 +554,7 @@ test('量化长任务使用滑动并发窗口并逐票读取自动续期后的 a
   )
 })
 
-test('桌面详情展示模型聚合卖空研判且隐藏原始卖空列表', async () => {
+test('桌面详情展示聚合支持反对研判且隐藏原始证据列表', async () => {
   const source = await readFile(
     new URL(
       '../../changfu-desktop/macos/App/QuantitativeResearchWorkspace.swift',
@@ -487,5 +564,7 @@ test('桌面详情展示模型聚合卖空研判且隐藏原始卖空列表', as
   )
   assert.match(source, /Text\("卖空研判"\)/)
   assert.match(source, /value\.assessment/)
-  assert.match(source, /\.filter \{ \$0\.layer != \.shortActivity \}/)
+  assert.match(source, /item\.supportingAssessment/)
+  assert.match(source, /item\.opposingAssessment/)
+  assert.doesNotMatch(source, /evidenceSection/)
 })

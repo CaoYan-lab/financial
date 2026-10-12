@@ -39,7 +39,7 @@ public enum ResearchSkill: String, CaseIterable, Codable, Identifiable, Sendable
 
     public var detail: String {
         switch self {
-        case .quantitative: "聚合价格、趋势、成交与事件证据，形成可复核的量化结论"
+        case .quantitative: "独立研判 Top30 标的，输出买入、观望、放弃信号与 Top5 推荐"
         case .sellPut: "基于当日全球市值 Top30、OpenD 行情与期权快照评估现金担保卖 Put"
         }
     }

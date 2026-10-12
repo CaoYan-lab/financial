@@ -7,6 +7,10 @@
   "required": [
     "schemaVersion",
     "dimensions",
+    "researchSignal",
+    "signalReason",
+    "supportingAssessment",
+    "opposingAssessment",
     "summary",
     "evidenceIds",
     "counterEvidenceIds",
@@ -16,7 +20,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "1.0"
+      "const": "2.0"
     },
     "dimensions": {
       "type": "object",
@@ -45,6 +49,23 @@
           "$ref": "#/$defs/macroFit"
         }
       }
+    },
+    "researchSignal": {
+      "type": "string",
+      "enum": [
+        "BUY",
+        "WATCH",
+        "AVOID"
+      ]
+    },
+    "signalReason": {
+      "$ref": "#/$defs/assessment"
+    },
+    "supportingAssessment": {
+      "$ref": "#/$defs/assessment"
+    },
+    "opposingAssessment": {
+      "$ref": "#/$defs/assessment"
     },
     "summary": {
       "type": "string",
@@ -96,7 +117,8 @@
       "additionalProperties": false,
       "required": [
         "score",
-        "availability"
+        "availability",
+        "assessment"
       ],
       "properties": {
         "score": {
@@ -109,6 +131,9 @@
         },
         "availability": {
           "$ref": "#/$defs/availability"
+        },
+        "assessment": {
+          "$ref": "#/$defs/dimensionAssessment"
         }
       }
     },
@@ -117,7 +142,8 @@
       "additionalProperties": false,
       "required": [
         "score",
-        "availability"
+        "availability",
+        "assessment"
       ],
       "properties": {
         "score": {
@@ -130,6 +156,9 @@
         },
         "availability": {
           "$ref": "#/$defs/availability"
+        },
+        "assessment": {
+          "$ref": "#/$defs/dimensionAssessment"
         }
       }
     },
@@ -138,7 +167,8 @@
       "additionalProperties": false,
       "required": [
         "score",
-        "availability"
+        "availability",
+        "assessment"
       ],
       "properties": {
         "score": {
@@ -151,6 +181,9 @@
         },
         "availability": {
           "$ref": "#/$defs/availability"
+        },
+        "assessment": {
+          "$ref": "#/$defs/dimensionAssessment"
         }
       }
     },
@@ -159,7 +192,8 @@
       "additionalProperties": false,
       "required": [
         "score",
-        "availability"
+        "availability",
+        "assessment"
       ],
       "properties": {
         "score": {
@@ -172,6 +206,9 @@
         },
         "availability": {
           "$ref": "#/$defs/availability"
+        },
+        "assessment": {
+          "$ref": "#/$defs/dimensionAssessment"
         }
       }
     },
@@ -180,7 +217,8 @@
       "additionalProperties": false,
       "required": [
         "score",
-        "availability"
+        "availability",
+        "assessment"
       ],
       "properties": {
         "score": {
@@ -193,8 +231,21 @@
         },
         "availability": {
           "$ref": "#/$defs/availability"
+        },
+        "assessment": {
+          "$ref": "#/$defs/dimensionAssessment"
         }
       }
+    },
+    "assessment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "dimensionAssessment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
     },
     "evidenceIds": {
       "type": "array",

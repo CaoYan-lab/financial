@@ -1,5 +1,5 @@
-export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v2'
-export const QUANT_SCORING_VERSION = 'top30-five-layer-score-v1'
+export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v3'
+export const QUANT_SCORING_VERSION = 'top30-investment-signal-v2'
 export const QUANT_POOL_CAPACITY = 30
 
 export const QUANT_DIMENSION_LIMITS = {
@@ -12,6 +12,7 @@ export const QUANT_DIMENSION_LIMITS = {
 
 export type QuantitativeDimension = keyof typeof QUANT_DIMENSION_LIMITS
 export type QuantitativeAvailability = 'AVAILABLE' | 'PARTIAL' | 'UNAVAILABLE'
+export type QuantitativeResearchSignal = 'BUY' | 'WATCH' | 'AVOID'
 export type QuantitativeLayer = QuantitativeDimension
 export type QuantitativeSource = 'SEC' | 'FINRA' | 'FUTU' | 'LONGBRIDGE'
 
@@ -48,8 +49,12 @@ export type QuantitativeDimensionScore = {
 }
 
 export type QuantitativeScoreResult = {
-  schemaVersion: '1.0'
+  schemaVersion: '2.0'
   dimensions: Record<QuantitativeDimension, QuantitativeDimensionScore>
+  researchSignal: QuantitativeResearchSignal
+  signalReason: string
+  supportingAssessment: string
+  opposingAssessment: string
   summary: string
   evidenceIds: string[]
   counterEvidenceIds: string[]
@@ -74,6 +79,10 @@ export type QuantitativeItemResult = {
   totalScore: number | null
   coverageWeight: number
   dimensions: Record<QuantitativeDimension, QuantitativeDimensionScore> | null
+  researchSignal: QuantitativeResearchSignal | null
+  signalReason: string
+  supportingAssessment: string
+  opposingAssessment: string
   summary: string
   evidenceIds: string[]
   counterEvidenceIds: string[]
@@ -145,6 +154,10 @@ const dimensionKeys = Object.keys(QUANT_DIMENSION_LIMITS) as QuantitativeDimensi
 const resultKeys = new Set([
   'schemaVersion',
   'dimensions',
+  'researchSignal',
+  'signalReason',
+  'supportingAssessment',
+  'opposingAssessment',
   'summary',
   'evidenceIds',
   'counterEvidenceIds',
@@ -160,7 +173,7 @@ export function validateQuantitativeScoreResult(
   if (!isRecord(input) || hasUnexpectedKeys(input, resultKeys)) {
     return invalid('MODEL_RESULT_SHAPE_INVALID')
   }
-  if (input.schemaVersion !== '1.0' || !isRecord(input.dimensions)) {
+  if (input.schemaVersion !== '2.0' || !isRecord(input.dimensions)) {
     return invalid('MODEL_RESULT_SCHEMA_INVALID')
   }
   if (hasUnexpectedKeys(input.dimensions, new Set(dimensionKeys))) {
@@ -206,6 +219,17 @@ export function validateQuantitativeScoreResult(
     dimensions[key] = { score: score as number | null, availability, assessment }
   }
 
+  const researchSignal = input.researchSignal
+  if (
+    researchSignal !== 'BUY'
+    && researchSignal !== 'WATCH'
+    && researchSignal !== 'AVOID'
+  ) {
+    return invalid('MODEL_RESEARCH_SIGNAL_INVALID')
+  }
+  const signalReason = boundedString(input.signalReason, 1, 2_000)
+  const supportingAssessment = boundedString(input.supportingAssessment, 1, 2_000)
+  const opposingAssessment = boundedString(input.opposingAssessment, 1, 2_000)
   const summary = boundedString(input.summary, 1, 2_000)
   const evidenceIds = stringArray(input.evidenceIds, 100, 128)
   const counterEvidenceIds = stringArray(input.counterEvidenceIds, 100, 128)
@@ -213,7 +237,10 @@ export function validateQuantitativeScoreResult(
   const dataGaps = stringArray(input.dataGaps, 50, 500)
   const invalidationConditions = stringArray(input.invalidationConditions, 50, 500)
   if (
-    summary === null
+    signalReason === null
+    || supportingAssessment === null
+    || opposingAssessment === null
+    || summary === null
     || evidenceIds === null
     || counterEvidenceIds === null
     || risks === null
@@ -231,8 +258,12 @@ export function validateQuantitativeScoreResult(
   return {
     ok: true,
     value: {
-      schemaVersion: '1.0',
+      schemaVersion: '2.0',
       dimensions,
+      researchSignal,
+      signalReason,
+      supportingAssessment,
+      opposingAssessment,
       summary,
       evidenceIds: unique(evidenceIds),
       counterEvidenceIds: unique(counterEvidenceIds),
@@ -263,6 +294,11 @@ export function buildQuantitativeReport(
     item.finalRank = index + 1
   })
   const eligible = scored.filter(item => item.candidateStatus === 'ELIGIBLE')
+  const buyCandidates = eligible.filter(item => item.researchSignal === 'BUY')
+  const watchCandidates = eligible.filter(item => item.researchSignal === 'WATCH')
+  const avoidCandidates = eligible
+    .filter(item => item.researchSignal === 'AVOID')
+    .sort(compareItems)
   const insufficient = items
     .filter(item => item.candidateStatus !== 'ELIGIBLE')
     .sort((a, b) => a.rank - b.rank || a.ticker.localeCompare(b.ticker))
@@ -280,11 +316,11 @@ export function buildQuantitativeReport(
     completedCount: items.filter(item => item.status === 'COMPLETED').length,
     rejectedCount: items.filter(item => item.status === 'REJECTED').length,
     unavailableCount: items.filter(item => item.status === 'UNAVAILABLE').length,
-    candidateCount: eligible.length,
+    candidateCount: buyCandidates.length,
     dataGapCount: items.reduce((sum, item) => sum + item.dataGaps.length, 0),
-    topFive: eligible.slice(0, 5),
-    watchlist: eligible.slice(5, 10),
-    bottomFive: [...scored].reverse().slice(0, 5),
+    topFive: buyCandidates.slice(0, 5),
+    watchlist: watchCandidates.slice(0, 5),
+    bottomFive: avoidCandidates.reverse().slice(0, 5),
     insufficient,
     items: orderedItems,
   }
@@ -309,14 +345,20 @@ export function compareQuantitativeReports(
   const rightOnlyTickers = tickers.filter(ticker => !leftItems.has(ticker) && rightItems.has(ticker))
   const leftTop = new Set(
     left.items
-      .filter(item => item.candidateStatus === 'ELIGIBLE' && item.finalRank !== null)
+      .filter(item => (
+        isReportBuyCandidate(item, left.scoringVersion)
+        && item.finalRank !== null
+      ))
       .sort((a, b) => a.finalRank! - b.finalRank!)
       .slice(0, 5)
       .map(item => item.ticker),
   )
   const rightTop = new Set(
     right.items
-      .filter(item => item.candidateStatus === 'ELIGIBLE' && item.finalRank !== null)
+      .filter(item => (
+        isReportBuyCandidate(item, right.scoringVersion)
+        && item.finalRank !== null
+      ))
       .sort((a, b) => a.finalRank! - b.finalRank!)
       .slice(0, 5)
       .map(item => item.ticker),
@@ -414,6 +456,12 @@ export function analyzeQuantitativeItem(
   }
   if (validated.coverageWeight < 80) hardGaps.push('有效证据权重低于 80')
   const candidateStatus = hardGaps.length === 0 ? 'ELIGIBLE' : 'DATA_INSUFFICIENT'
+  const researchSignal = candidateStatus === 'ELIGIBLE'
+    ? validated.value.researchSignal
+    : validated.value.researchSignal === 'AVOID' ? 'AVOID' : 'WATCH'
+  const signalReason = candidateStatus === 'ELIGIBLE'
+    ? validated.value.signalReason
+    : `数据门槛未满足，暂归为观望。${validated.value.signalReason}`
   return {
     requestId: observation.requestId,
     rank: observation.rank,
@@ -427,6 +475,10 @@ export function analyzeQuantitativeItem(
     totalScore: validated.totalScore,
     coverageWeight: validated.coverageWeight,
     dimensions: validated.value.dimensions,
+    researchSignal,
+    signalReason,
+    supportingAssessment: validated.value.supportingAssessment,
+    opposingAssessment: validated.value.opposingAssessment,
     summary: validated.value.summary,
     evidenceIds: validated.value.evidenceIds,
     counterEvidenceIds: validated.value.counterEvidenceIds,
@@ -458,6 +510,10 @@ function emptyItem(
     totalScore: null,
     coverageWeight: 0,
     dimensions: null,
+    researchSignal: null,
+    signalReason: '',
+    supportingAssessment: '',
+    opposingAssessment: '',
     summary: '',
     evidenceIds: [],
     counterEvidenceIds: [],
@@ -470,9 +526,19 @@ function emptyItem(
 }
 
 function compareItems(a: QuantitativeItemResult, b: QuantitativeItemResult): number {
-  return (b.totalScore ?? -1) - (a.totalScore ?? -1)
+  return signalOrder(a.researchSignal) - signalOrder(b.researchSignal)
+    || (b.totalScore ?? -1) - (a.totalScore ?? -1)
     || a.rank - b.rank
     || a.ticker.localeCompare(b.ticker)
+}
+
+function signalOrder(signal: QuantitativeResearchSignal | null): number {
+  switch (signal) {
+    case 'BUY': return 0
+    case 'WATCH': return 1
+    case 'AVOID': return 2
+    default: return 3
+  }
 }
 
 function renderQuantitativeMarkdown(
@@ -484,17 +550,36 @@ function renderQuantitativeMarkdown(
     `- 数据平台：${report.providerId === 'FUTU' ? '富途' : '长桥'}`,
     `- 生成时间：${report.generatedAt}`,
     `- 评分口径：${report.scoringVersion}`,
-    `- 合格标的：${report.candidateCount}`,
+    `- 买入信号：${report.candidateCount}`,
     `- 数据缺口：${report.dataGapCount}`,
     '',
-    '## Top 5',
+    '## Top 5 买入推荐',
     '',
   ]
   if (report.topFive.length === 0) {
-    lines.push('当前没有满足数据覆盖门槛的标的。')
+    lines.push('当前没有同时满足数据覆盖门槛和买入信号要求的标的。')
   } else {
     for (const item of report.topFive) {
-      lines.push(`${item.finalRank}. **${item.ticker} ${item.displayName}**：${item.totalScore} 分`)
+      lines.push(
+        `${item.finalRank}. **${item.ticker} ${item.displayName}**：`
+        + `${item.totalScore} 分；${item.signalReason}`,
+      )
+    }
+  }
+  lines.push('', '## 观察名单', '')
+  if (report.watchlist.length === 0) {
+    lines.push('无。')
+  } else {
+    for (const item of report.watchlist) {
+      lines.push(`- **${item.ticker}**：${item.signalReason}`)
+    }
+  }
+  lines.push('', '## 放弃名单', '')
+  if (report.bottomFive.length === 0) {
+    lines.push('无。')
+  } else {
+    for (const item of report.bottomFive) {
+      lines.push(`- **${item.ticker}**：${item.signalReason}`)
     }
   }
   lines.push('', '## 数据不足', '')
@@ -510,6 +595,16 @@ function renderQuantitativeMarkdown(
 
 function invalid(reason: string): QuantitativeScoreValidation {
   return { ok: false, reason }
+}
+
+function isReportBuyCandidate(
+  item: QuantitativeItemResult,
+  scoringVersion: string,
+): boolean {
+  if (scoringVersion === QUANT_SCORING_VERSION) {
+    return item.candidateStatus === 'ELIGIBLE' && item.researchSignal === 'BUY'
+  }
+  return item.candidateStatus === 'ELIGIBLE'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

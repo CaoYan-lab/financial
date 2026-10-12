@@ -335,6 +335,10 @@ public struct QuantitativeItemAnalysis: Codable, Equatable, Identifiable, Sendab
     public let totalScore: Int?
     public let coverageWeight: Int
     public let dimensions: QuantitativeDimensions?
+    public let researchSignal: String?
+    public let signalReason: String?
+    public let supportingAssessment: String?
+    public let opposingAssessment: String?
     public let summary: String
     public let evidenceIds: [String]
     public let counterEvidenceIds: [String]

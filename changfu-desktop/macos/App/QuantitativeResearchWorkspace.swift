@@ -14,17 +14,17 @@ struct QuantitativeReportModule: View {
                 header
                 if let report = state.quantitativeReport {
                     rankedSection(
-                        "Top 5 候选",
+                        isSignalReport(report) ? "Top 5 买入推荐" : "Top 5 历史评分",
                         items: report.summary?.topFive ?? [],
                         report: report
                     )
                     rankedSection(
-                        "观察名单",
+                        isSignalReport(report) ? "观察名单" : "历史观察名单",
                         items: report.summary?.watchlist ?? [],
                         report: report
                     )
                     rankedSection(
-                        "Bottom 5 风险",
+                        isSignalReport(report) ? "放弃名单" : "历史低分组",
                         items: report.summary?.bottomFive ?? [],
                         report: report
                     )
@@ -61,7 +61,13 @@ struct QuantitativeReportModule: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Top30 量化选股")
                         .font(FutuTheme.panelTitle)
-                    Text("长富Pro · 五层证据独立评分")
+                    Text(
+                        state.quantitativeReport.map {
+                            isSignalReport($0)
+                                ? "长富Pro · 五层证据独立研判"
+                                : "长富Pro · 五层证据历史评分"
+                        } ?? "长富Pro · 五层证据独立研判"
+                    )
                         .font(FutuTheme.pageSubtitle)
                         .foregroundStyle(FutuTheme.inkMuted)
                 }
@@ -101,8 +107,8 @@ struct QuantitativeReportModule: View {
                     .buttonStyle(.borderless)
                     .help("导出 Markdown 报告")
                     StatusPill(
-                        text: report.candidateCount > 0 ? "可用" : "数据不足",
-                        color: report.candidateCount > 0 ? FutuTheme.profit : FutuTheme.amber
+                        text: report.status == "COMPLETED" ? "已研判" : "未完成",
+                        color: report.status == "COMPLETED" ? FutuTheme.profit : FutuTheme.amber
                     )
                 }
             }
@@ -111,11 +117,16 @@ struct QuantitativeReportModule: View {
                     Label("生成于 \(displayTime(report.startedAt))", systemImage: "clock")
                     Spacer(minLength: 8)
                     Text("\(report.terminalCount)/\(report.symbolCount) 完成")
-                    Text("\(report.candidateCount) 合格")
+                    Text(candidateCountLabel(report))
                     Text("\(report.dataGapCount) 缺口")
                 }
                 .font(FutuTheme.metricNote)
                 .foregroundStyle(FutuTheme.inkMuted)
+                if isSignalReport(report) {
+                    Text("买入、观望、放弃为研究结论，不生成订单或触发交易")
+                        .font(FutuTheme.metricNote)
+                        .foregroundStyle(FutuTheme.inkMuted)
+                }
             }
         }
     }
@@ -128,7 +139,7 @@ struct QuantitativeReportModule: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(FutuTheme.panelTitle)
             if items.isEmpty {
-                Text("暂无满足条件的标的")
+                Text(emptyText(for: title))
                     .font(FutuTheme.body)
                     .foregroundStyle(FutuTheme.inkMuted)
             } else {
@@ -144,7 +155,7 @@ struct QuantitativeReportModule: View {
             HStack {
                 Text("逐标的明细").font(FutuTheme.panelTitle)
                 Spacer()
-                Text("点击详情查看五维评分、证据、风险与失效条件")
+                Text("点击详情查看信号理由、五维研判、风险与失效条件")
                     .font(FutuTheme.metricNote)
                     .foregroundStyle(FutuTheme.inkMuted)
             }
@@ -163,13 +174,13 @@ struct QuantitativeReportModule: View {
                 row(
                     rank: "排名",
                     symbol: "标的",
-                    score: "总分",
+                    score: "吸引力",
                     fundamentals: "基本面",
                     filings: "申报",
                     shortActivity: "卖空",
                     price: "价格",
                     macro: "宏观",
-                    status: "状态",
+                    status: "信号",
                     header: true
                 )
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, selection in
@@ -185,7 +196,7 @@ struct QuantitativeReportModule: View {
                             shortActivity: score(selection.analysis.dimensions?.shortActivity),
                             price: score(selection.analysis.dimensions?.priceTrend),
                             macro: score(selection.analysis.dimensions?.macroFit),
-                            status: statusLabel(selection.analysis.candidateStatus),
+                            status: statusLabel(selection.analysis),
                             header: false
                         )
                     }
@@ -291,7 +302,12 @@ struct QuantitativeReportModule: View {
                                     .font(FutuTheme.bodyStrong)
                                 Text(
                                     "\(report.terminalCount)/\(report.symbolCount) 完成"
-                                        + " · \(report.candidateCount) 合格"
+                                        + " · "
+                                        + (
+                                            isSignalReport(report)
+                                                ? "\(report.candidateCount) 买入"
+                                                : "\(report.candidateCount) 历史合格"
+                                        )
                                 )
                                 .font(FutuTheme.metricNote)
                                 .foregroundStyle(FutuTheme.inkMuted)
@@ -323,30 +339,53 @@ struct QuantitativeReportModule: View {
 
     private func detailSelection(
         _ analysis: QuantitativeItemAnalysis,
-        reportItem: QuantitativeReportItem?
+        reportItem _: QuantitativeReportItem?
     ) -> QuantitativeDetailSelection {
-        let evidence = (reportItem?.brokerObservation?.evidence ?? [])
-            + (reportItem?.officialEvidence ?? [])
-        var evidenceById: [String: QuantitativeEvidence] = [:]
-        for item in evidence {
-            evidenceById[item.id] = item
-        }
-        return QuantitativeDetailSelection(
-            analysis: analysis,
-            evidenceById: evidenceById
-        )
+        QuantitativeDetailSelection(analysis: analysis)
     }
 
     private func score(_ value: QuantitativeDimensionScore?) -> String {
         value?.score.map(String.init) ?? "—"
     }
 
-    private func statusLabel(_ value: String) -> String {
-        switch value {
-        case "ELIGIBLE": "合格"
-        case "DATA_INSUFFICIENT": "数据不足"
-        case "REJECTED": "评分失败"
-        default: "待处理"
+    private func isSignalReport(_ report: QuantitativeReport) -> Bool {
+        report.scoringVersion == "top30-investment-signal-v2"
+    }
+
+    private func isSignalReport(_ report: QuantitativeReportHistoryItem) -> Bool {
+        report.scoringVersion == "top30-investment-signal-v2"
+    }
+
+    private func candidateCountLabel(_ report: QuantitativeReport) -> String {
+        isSignalReport(report)
+            ? "\(report.candidateCount) 买入信号"
+            : "\(report.candidateCount) 历史合格"
+    }
+
+    private func emptyText(for title: String) -> String {
+        switch title {
+        case "Top 5 买入推荐":
+            return "本期暂无同时满足数据门槛的买入信号"
+        case "观察名单":
+            return "本期暂无观望信号"
+        case "放弃名单":
+            return "本期暂无放弃信号"
+        default:
+            return "暂无满足条件的标的"
+        }
+    }
+
+    private func statusLabel(_ item: QuantitativeItemAnalysis) -> String {
+        switch item.candidateStatus {
+        case "DATA_INSUFFICIENT": return "数据不足"
+        case "REJECTED": return "研判失败"
+        default:
+            switch item.researchSignal {
+            case "BUY": return "买入"
+            case "WATCH": return "观望"
+            case "AVOID": return "放弃"
+            default: return "历史评分"
+            }
         }
     }
 
@@ -370,7 +409,6 @@ struct QuantitativeReportModule: View {
 
 private struct QuantitativeDetailSelection: Identifiable {
     let analysis: QuantitativeItemAnalysis
-    let evidenceById: [String: QuantitativeEvidence]
 
     var id: String { analysis.requestId }
 }
@@ -380,16 +418,32 @@ private struct QuantitativeItemDetailSheet: View {
     let selection: QuantitativeDetailSelection
 
     private var item: QuantitativeItemAnalysis { selection.analysis }
+    private var signalReason: String {
+        let reason = item.signalReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.flatMap { $0.isEmpty ? nil : $0 }
+            ?? item.summary
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("\(item.ticker) · \(item.totalScore.map(String.init) ?? "不可用") 分")
+                    Text(
+                        "\(item.ticker) · "
+                        + "\(item.totalScore.map(String.init) ?? "不可用") 投资吸引力"
+                    )
                         .font(FutuTheme.pageTitle)
-                    Text(item.displayName)
-                        .font(FutuTheme.pageSubtitle)
-                        .foregroundStyle(FutuTheme.inkMuted)
+                    HStack(spacing: 8) {
+                        Text(item.displayName)
+                            .font(FutuTheme.pageSubtitle)
+                            .foregroundStyle(FutuTheme.inkMuted)
+                        if let signal = item.researchSignal {
+                            StatusPill(
+                                text: researchSignalLabel(signal),
+                                color: researchSignalColor(signal)
+                            )
+                        }
+                    }
                 }
                 Spacer()
                 Button {
@@ -422,6 +476,25 @@ private struct QuantitativeItemDetailSheet: View {
                     }
                     Divider()
                     VStack(alignment: .leading, spacing: 7) {
+                        Text("最终研究信号").font(FutuTheme.panelTitle)
+                        Text(signalReason)
+                            .font(FutuTheme.body)
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                    }
+                    assessmentSection(
+                        "支持研判",
+                        text: item.supportingAssessment,
+                        color: FutuTheme.profit,
+                        fallback: "该历史报告未保存模型聚合后的支持研判。"
+                    )
+                    assessmentSection(
+                        "反对研判",
+                        text: item.opposingAssessment,
+                        color: FutuTheme.rose,
+                        fallback: "该历史报告未保存模型聚合后的反对研判。"
+                    )
+                    VStack(alignment: .leading, spacing: 7) {
                         Text("研究结论").font(FutuTheme.panelTitle)
                         Text(item.summary)
                             .font(FutuTheme.body)
@@ -431,8 +504,6 @@ private struct QuantitativeItemDetailSheet: View {
                     if let shortActivity = item.dimensions?.shortActivity {
                         shortActivityAssessment(shortActivity)
                     }
-                    evidenceSection("支持证据", ids: item.evidenceIds)
-                    evidenceSection("反对证据", ids: item.counterEvidenceIds)
                     detailSection("风险", item.risks, FutuTheme.rose)
                     detailSection("数据缺口", item.dataGaps, FutuTheme.amber)
                     detailSection("失效条件", item.invalidationConditions, FutuTheme.ink)
@@ -487,53 +558,27 @@ private struct QuantitativeItemDetailSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    @ViewBuilder
-    private func evidenceSection(_ title: String, ids: [String]) -> some View {
-        let evidence = ids.compactMap { selection.evidenceById[$0] }
-            .filter { $0.layer != .shortActivity }
-        let visibleIds = ids.filter {
-            selection.evidenceById[$0]?.layer != .shortActivity
+    private func assessmentSection(
+        _ title: String,
+        text: String?,
+        color: Color,
+        fallback: String
+    ) -> some View {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = trimmed.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(FutuTheme.panelTitle)
+                .foregroundStyle(color)
+            Text(content)
+                .font(FutuTheme.body)
+                .foregroundStyle(FutuTheme.ink)
+                .lineSpacing(3)
+                .textSelection(.enabled)
         }
-        if !visibleIds.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(FutuTheme.panelTitle)
-                ForEach(evidence) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Text(sourceLabel(item.source))
-                                .font(FutuTheme.metricNote.weight(.semibold))
-                                .foregroundStyle(FutuTheme.orange)
-                                .frame(width: 112, alignment: .leading)
-                            Text(item.title)
-                                .font(FutuTheme.bodyStrong)
-                                .foregroundStyle(FutuTheme.ink)
-                            Spacer(minLength: 8)
-                            Text(displayDate(item.asOf ?? item.capturedAt))
-                                .font(FutuTheme.metricNote)
-                                .foregroundStyle(FutuTheme.inkMuted)
-                        }
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(item.layer.displayName)
-                                .font(FutuTheme.metricNote)
-                                .foregroundStyle(FutuTheme.inkMuted)
-                                .frame(width: 112, alignment: .leading)
-                            Text(evidenceValue(item))
-                                .font(FutuTheme.body)
-                                .foregroundStyle(FutuTheme.ink)
-                                .lineLimit(3)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .padding(.vertical, 7)
-                    Divider()
-                }
-                if evidence.count < visibleIds.count {
-                    Text("\(visibleIds.count - evidence.count) 条历史证据未保存可读详情")
-                        .font(FutuTheme.metricNote)
-                        .foregroundStyle(FutuTheme.amber)
-                }
-            }
-        }
+        .padding(12)
+        .background(FutuTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -551,53 +596,24 @@ private struct QuantitativeItemDetailSheet: View {
         }
     }
 
-    private func sourceLabel(_ source: String) -> String {
-        switch source.uppercased() {
-        case "SEC": "SEC 官方申报"
-        case "FINRA": "FINRA 官方成交"
-        case "FUTU": "富途 OpenD"
-        case "LONGBRIDGE": "Longbridge"
-        default: "其他数据源"
+    private func researchSignalLabel(_ signal: String) -> String {
+        switch signal {
+        case "BUY": return "买入"
+        case "WATCH": return "观望"
+        case "AVOID": return "放弃"
+        default: return "历史评分"
         }
     }
 
-    private func evidenceValue(_ evidence: QuantitativeEvidence) -> String {
-        guard case .number(let value) = evidence.value else {
-            return evidence.value.displayText
+    private func researchSignalColor(_ signal: String) -> Color {
+        switch signal {
+        case "BUY": return FutuTheme.profit
+        case "WATCH": return FutuTheme.amber
+        case "AVOID": return FutuTheme.rose
+        default: return FutuTheme.inkMuted
         }
-        if evidence.title.contains("市盈率") {
-            return String(format: "%.2f 倍", value)
-        }
-        if evidence.title.contains("趋势")
-            || evidence.title.contains("占比")
-            || evidence.title.contains("波动率")
-            || evidence.title.contains("距 52 周") {
-            return String(format: "%.2f%%", value)
-        }
-        return compactNumber(value)
     }
 
-    private func compactNumber(_ value: Double) -> String {
-        let absolute = abs(value)
-        if absolute >= 1_000_000_000_000 {
-            return String(format: "%.2f 万亿", value / 1_000_000_000_000)
-        }
-        if absolute >= 100_000_000 {
-            return String(format: "%.2f 亿", value / 100_000_000)
-        }
-        if absolute >= 10_000 {
-            return String(format: "%.2f 万", value / 10_000)
-        }
-        return String(format: "%.2f", value)
-    }
-
-    private func displayDate(_ value: String) -> String {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = fractional.date(from: value)
-            ?? ISO8601DateFormatter().date(from: value) else { return "日期不可用" }
-        return date.formatted(date: .abbreviated, time: .omitted)
-    }
 }
 
 private struct QuantitativeComparisonSheet: View {

@@ -188,6 +188,32 @@ struct ChangFuDesktopTests {
                 && item?.dimensions?.shortActivity.availability == .unavailable
                 && item?.totalScore == 82
         }
+        suite.test("新版量化研判解码买入信号与聚合支持反对说明") {
+            let data = Data("""
+            {"requestId":"00000000-0000-4000-8000-000000000703",
+             "rank":1,"finalRank":1,"symbol":"US.NVDA","ticker":"NVDA",
+             "displayName":"NVIDIA","providerId":"FUTU","status":"COMPLETED",
+             "candidateStatus":"ELIGIBLE","totalScore":82,"coverageWeight":100,
+             "dimensions":null,"researchSignal":"BUY",
+             "signalReason":"风险收益支持纳入买入推荐。",
+             "supportingAssessment":"盈利与趋势共同改善。",
+             "opposingAssessment":"估值处于偏高区间。",
+             "summary":"综合判断偏积极。","evidenceIds":[],
+             "counterEvidenceIds":[],"risks":[],"dataGaps":[],
+             "invalidationConditions":["盈利趋势反转"],
+             "capturedAt":"2026-10-12T00:00:00Z","rejectionReason":null}
+            """.utf8)
+            guard let item = try? JSONDecoder().decode(
+                QuantitativeItemAnalysis.self,
+                from: data
+            ) else {
+                return false
+            }
+            return item.researchSignal == "BUY"
+                && item.signalReason == "风险收益支持纳入买入推荐。"
+                && item.supportingAssessment == "盈利与趋势共同改善。"
+                && item.opposingAssessment == "估值处于偏高区间。"
+        }
         suite.test("量化证据值支持数值、文本、布尔和空值往返") {
             let values: [QuantitativeEvidenceValue] = [
                 .number(12.5),
