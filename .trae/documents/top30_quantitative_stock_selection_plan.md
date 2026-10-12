@@ -61,7 +61,7 @@
 现有桥接已实现：
 
 - 正股快照：现价、市值、PE。
-- 260 根前复权日 K：20/30/60/120 日趋势、MA50/200、RSI14、实现波动率、52 周位置。
+- 最多 300 根前复权日 K：20/30/60/120 日趋势、MA50/200、RSI14、实现波动率、52 周位置。
 - 美国经济日历、FedWatch、财报日历。
 - 新闻/公告搜索；Futu `NOTICE` 可作为申报事件的券商降级证据。
 
@@ -155,6 +155,7 @@
 模型还必须返回：
 
 - `researchSignal: BUY | WATCH | AVOID`
+- `pricePlan`：固定中期研究周期内的入场、止盈、止损和等待/持有计划
 - `signalReason`
 - `supportingAssessment`
 - `opposingAssessment`
@@ -174,6 +175,51 @@
 4. 不因缺失维度重分配权重，不以 0 或估算值伪装缺失数据。
 5. 按研究信号 `BUY → WATCH → AVOID`、`totalScore DESC`、原 Top30 市值排名、ticker 稳定排序；因此买入推荐拥有连续的优先排名。
 6. 研究信号只用于报告解释和分组，不写入交易候选池，不生成订单。
+
+#### 4.1 固定中期价格计划
+
+价格计划是研究结论，不是订单，也不包含仓位。Futu 与 Longbridge 必须使用同一字段、同一计算口径和同一校验规则：
+
+- 入场计划有效期固定为未来 `5–10` 个交易日。
+- 预期持有期固定为 `20–60` 个交易日。
+- `entryDecision` 只能是：
+  - `BUY_NOW`：现价已处于可接受入场区间。
+  - `WAIT_PULLBACK`：等待回调到入场区间。
+  - `WAIT_BREAKOUT`：等待有效突破后进入入场区间。
+  - `NO_ENTRY`：当前不提供入场计划。
+- `pricePlan` 必须包含：
+  - `entryPriceLow` / `entryPriceHigh`
+  - `takeProfitLow` / `takeProfitHigh`
+  - `stopLossPrice`
+  - `entryExpiryTradingDays`
+  - `expectedHoldingDaysLow` / `expectedHoldingDaysHigh`
+  - `riskRewardRatio`
+  - `confidence: HIGH | MEDIUM | LOW`
+  - `rationale`
+  - `exitConditions`
+- `AVOID` 必须对应 `NO_ENTRY`，所有价格字段和风险收益比必须为 `null`。
+- `BUY` 必须提供非 `NO_ENTRY` 的完整价格计划；`WATCH` 可以给等待回调/突破计划，也可以在证据不足时返回 `NO_ENTRY`。
+
+券商侧必须从前复权日 K 确定性计算以下规范化输入，模型不得自行从原始 JSON 猜测：
+
+- `atr14`：最近 14 根日 K 的 True Range 均值，True Range 使用当日高低价以及前一日收盘价。
+- `support20` / `support60`：对应窗口最低价。
+- `resistance20` / `resistance60` / `resistance252`：对应窗口最高价。
+- `realizedVolatility30`：30 日对数收益年化实现波动率。
+
+服务端必须拒绝以下结果：
+
+1. 非正数、非有限数、上下界倒置。
+2. `BUY_NOW` 的现价不在入场区间内。
+3. `WAIT_PULLBACK` 的入场上界不低于现价，或 `WAIT_BREAKOUT` 的入场下界不高于现价。
+4. 止损价不低于入场下界，止盈下界不高于入场上界。
+5. 有效期不在 `5–10`、持有期不在 `20–60`。
+6. 模型提交的 `riskRewardRatio` 与服务端按区间中点计算的收益风险比偏差超过 `0.05`。
+7. 缺少 ATR/支撑/阻力等关键价格输入却给出 `HIGH` 置信度。
+8. 可执行计划缺少 ATR14、20 日支撑或 20 日阻力，或入场、止损、止盈超出由
+   60 日支撑/阻力、252 日阻力与 ATR 倍数共同限定的合理价格包络。
+
+旧报告中的 `pricePlan` 和规范化技术输入保持可空，继续按历史评分展示，不反向伪造价格结论。
 
 候选覆盖门槛：
 
@@ -236,9 +282,11 @@
 
 定义：
 
-- `QUANT_PROMPT_VERSION = top30-quant-selection-v3`
-- `QUANT_SCORING_VERSION = top30-investment-signal-v2`
+- `QUANT_PROMPT_VERSION = top30-quant-selection-v4`
+- `QUANT_SCORING_VERSION = top30-investment-price-plan-v3`
 - `QuantitativeObservation`
+- `QuantitativeTechnicalPriceInputs`
+- `QuantitativePricePlan`
 - `QuantitativeEvidence`
 - `QuantitativeDimensionScore`
 - `QuantitativeItemResult`
@@ -248,7 +296,7 @@
 #### `changfu-contracts/schemas/quantitative-score-result.schema.json`（新增）
 
 - 独立于交易 `model-result.schema.json`。
-- 严格限制五维投资吸引力分数、availability、维度聚合研判、研究信号、信号理由、聚合支持/反对研判、证据 ID、风险、缺口和失效条件。
+- 严格限制五维投资吸引力分数、availability、维度聚合研判、研究信号、结构化价格计划、信号理由、聚合支持/反对研判、证据 ID、风险、缺口和失效条件。
 - 允许 `researchSignal` 作为报告研究结论；禁止 candidate、orderIntent、proposedOrder 等交易执行字段。
 
 ### Phase 2：官方数据适配与日缓存
@@ -330,7 +378,7 @@
 
 新增 `quantitative-research-observation` 白名单命令：
 
-- 复用现有正股快照和 260 根前复权日 K 计算。
+- 复用现有正股快照并请求最多 300 根前复权日 K，给 252 日阻力计算预留缺失记录余量。
 - 采集市值、PE、趋势、均线、52 周位置、波动率和成交活跃度。
 - 复用美国经济日历、FedWatch、财报日历和 NOTICE。
 - 若当前 SDK 确认存在财务或卖空协议，再通过编译期/能力检查接入；当前打包 SDK 不具备时返回明确 `UNAVAILABLE`，不阻止应用构建。
@@ -352,7 +400,7 @@
 内部只调用固定 Longbridge CLI argv：
 
 - `quote`
-- `kline --period day --count 260 --adjust forward`
+- `kline --period day --count 300 --adjust forward`
 - `financial-statement --kind ALL`
 - `financial-report --latest`
 - `filing`
@@ -427,7 +475,7 @@ API：
 
 #### `changfu-backend/packages/domain/src/quantitativePrompt.ts`（新增）
 
-Prompt v2 固定：
+Prompt v3 固定：
 
 - 一次只评估一个授权标的。
 - 使用五维锚定量表，不与其他标的作隐式比较。
@@ -437,6 +485,9 @@ Prompt v2 固定：
 - 宏观分数必须解释该公司的行业/久期敏感性，不能只复述全市场事件。
 - 数据缺失不得估算或重新分配权重。
 - 只引用提供的证据 ID。
+- 固定按未来 5–10 个交易日入场、20–60 个交易日持有的中期周期生成价格计划。
+- 价格区间必须锚定输入中的 ATR14、20/60 日支撑和 20/60/252 日阻力；不得凭空生成目标价。
+- `AVOID` 必须输出 `NO_ENTRY`；价格计划只用于研究展示，禁止输出仓位和订单。
 
 #### `changfu-backend/apps/decision-worker/src/server.ts`（修改）
 
@@ -513,6 +564,7 @@ Prompt v2 固定：
 - 表格列：排名、标的、总分、基本面、申报、卖空、价格、宏观、覆盖度、状态、详情。
 - 行内不展开；点击行打开独立详情弹窗。
 - 详情弹窗成对展示证据/反证，另列风险、数据缺口、失效条件和逐字段来源时间。
+- 详情弹窗在信号理由后展示紧凑“价格计划”：入场判断、买入区间、止盈区间、止损价、有效期、预计持有期、风险收益比与置信度；旧报告显示“历史报告未生成价格计划”。
 - 卖空原始序列仅保留为模型输入和审计证据；用户层展示模型聚合后的“卖空研判”，不得回显原始 JSON 列表。
 - 完整 Markdown 使用独立弹窗。
 - “对比报告”打开历史报告选择器和确定性差异弹窗。
@@ -636,6 +688,7 @@ Prompt v2 固定：
 - Top5、观察组、Bottom5、全量明细使用固定列宽和斑马纹；详情使用独立弹窗。
 - 手动对比只列出另一 Provider 历史报告，不自动触发比较或模型请求。
 - 中文界面不出现英文技术枚举；`PARTIAL/UNAVAILABLE` 映射为专业中文状态。
+- 价格计划中的 `BUY_NOW/WAIT_PULLBACK/WAIT_BREAKOUT/NO_ENTRY` 与置信度枚举必须映射为专业中文，不直接显示内部枚举。
 
 ### Live data acceptance
 
@@ -663,6 +716,7 @@ Longbridge：
 - 排名源：继续使用现有 StockAnalysis 当日来源；不可用时停止，不以静态 seed 继续。
 - 选股权威：模型生成五维分项，服务端校验、求和和排序。
 - 价格层：保留，宏观层用于公司暴露适配，不单独用全市场共同变量决定排名。
+- 价格计划周期：入场有效期 5–10 个交易日，预计持有 20–60 个交易日；两家券商使用同一技术指标公式和服务端校验。
 - 执行方式：手动执行，同日官方缓存。
 - 报告用途：只读研究 Top5，不进入交易候选池。
 - Provider：两份报告完全独立，不跨券商补数。

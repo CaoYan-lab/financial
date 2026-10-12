@@ -1,5 +1,5 @@
-export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v3'
-export const QUANT_SCORING_VERSION = 'top30-investment-signal-v2'
+export const QUANT_PROMPT_VERSION = 'top30-quant-selection-v4'
+export const QUANT_SCORING_VERSION = 'top30-investment-price-plan-v3'
 export const QUANT_POOL_CAPACITY = 30
 
 export const QUANT_DIMENSION_LIMITS = {
@@ -15,6 +15,12 @@ export type QuantitativeAvailability = 'AVAILABLE' | 'PARTIAL' | 'UNAVAILABLE'
 export type QuantitativeResearchSignal = 'BUY' | 'WATCH' | 'AVOID'
 export type QuantitativeLayer = QuantitativeDimension
 export type QuantitativeSource = 'SEC' | 'FINRA' | 'FUTU' | 'LONGBRIDGE'
+export type QuantitativeEntryDecision =
+  | 'BUY_NOW'
+  | 'WAIT_PULLBACK'
+  | 'WAIT_BREAKOUT'
+  | 'NO_ENTRY'
+export type QuantitativePricePlanConfidence = 'HIGH' | 'MEDIUM' | 'LOW'
 
 export type QuantitativeEvidence = {
   id: string
@@ -38,8 +44,19 @@ export type QuantitativeObservation = {
   currentPrice: number | null
   quoteFreshness: 'FRESH' | 'STALE' | 'UNAVAILABLE'
   adjustedDailyBarCount: number
+  technicalPriceInputs: QuantitativeTechnicalPriceInputs | null
   evidence: QuantitativeEvidence[]
   dataGaps: string[]
+}
+
+export type QuantitativeTechnicalPriceInputs = {
+  atr14: number | null
+  support20: number | null
+  support60: number | null
+  resistance20: number | null
+  resistance60: number | null
+  resistance252: number | null
+  realizedVolatility30: number | null
 }
 
 export type QuantitativeDimensionScore = {
@@ -48,10 +65,27 @@ export type QuantitativeDimensionScore = {
   assessment: string
 }
 
+export type QuantitativePricePlan = {
+  entryDecision: QuantitativeEntryDecision
+  entryPriceLow: number | null
+  entryPriceHigh: number | null
+  takeProfitLow: number | null
+  takeProfitHigh: number | null
+  stopLossPrice: number | null
+  entryExpiryTradingDays: number | null
+  expectedHoldingDaysLow: number | null
+  expectedHoldingDaysHigh: number | null
+  riskRewardRatio: number | null
+  confidence: QuantitativePricePlanConfidence
+  rationale: string
+  exitConditions: string[]
+}
+
 export type QuantitativeScoreResult = {
-  schemaVersion: '2.0'
+  schemaVersion: '3.0'
   dimensions: Record<QuantitativeDimension, QuantitativeDimensionScore>
   researchSignal: QuantitativeResearchSignal
+  pricePlan: QuantitativePricePlan
   signalReason: string
   supportingAssessment: string
   opposingAssessment: string
@@ -80,6 +114,7 @@ export type QuantitativeItemResult = {
   coverageWeight: number
   dimensions: Record<QuantitativeDimension, QuantitativeDimensionScore> | null
   researchSignal: QuantitativeResearchSignal | null
+  pricePlan: QuantitativePricePlan | null
   signalReason: string
   supportingAssessment: string
   opposingAssessment: string
@@ -155,6 +190,7 @@ const resultKeys = new Set([
   'schemaVersion',
   'dimensions',
   'researchSignal',
+  'pricePlan',
   'signalReason',
   'supportingAssessment',
   'opposingAssessment',
@@ -169,11 +205,12 @@ const resultKeys = new Set([
 export function validateQuantitativeScoreResult(
   input: unknown,
   evidenceCatalog: readonly QuantitativeEvidence[],
+  observation: Pick<QuantitativeObservation, 'currentPrice' | 'technicalPriceInputs'>,
 ): QuantitativeScoreValidation {
   if (!isRecord(input) || hasUnexpectedKeys(input, resultKeys)) {
     return invalid('MODEL_RESULT_SHAPE_INVALID')
   }
-  if (input.schemaVersion !== '2.0' || !isRecord(input.dimensions)) {
+  if (input.schemaVersion !== '3.0' || !isRecord(input.dimensions)) {
     return invalid('MODEL_RESULT_SCHEMA_INVALID')
   }
   if (hasUnexpectedKeys(input.dimensions, new Set(dimensionKeys))) {
@@ -227,6 +264,8 @@ export function validateQuantitativeScoreResult(
   ) {
     return invalid('MODEL_RESEARCH_SIGNAL_INVALID')
   }
+  const pricePlan = parsePricePlan(input.pricePlan, researchSignal, observation)
+  if (typeof pricePlan === 'string') return invalid(pricePlan)
   const signalReason = boundedString(input.signalReason, 1, 2_000)
   const supportingAssessment = boundedString(input.supportingAssessment, 1, 2_000)
   const opposingAssessment = boundedString(input.opposingAssessment, 1, 2_000)
@@ -258,9 +297,10 @@ export function validateQuantitativeScoreResult(
   return {
     ok: true,
     value: {
-      schemaVersion: '2.0',
+      schemaVersion: '3.0',
       dimensions,
       researchSignal,
+      pricePlan,
       signalReason,
       supportingAssessment,
       opposingAssessment,
@@ -274,6 +314,195 @@ export function validateQuantitativeScoreResult(
     totalScore,
     coverageWeight,
   }
+}
+
+function parsePricePlan(
+  input: unknown,
+  researchSignal: QuantitativeResearchSignal,
+  observation: Pick<QuantitativeObservation, 'currentPrice' | 'technicalPriceInputs'>,
+): QuantitativePricePlan | string {
+  const keys = new Set([
+    'entryDecision',
+    'entryPriceLow',
+    'entryPriceHigh',
+    'takeProfitLow',
+    'takeProfitHigh',
+    'stopLossPrice',
+    'entryExpiryTradingDays',
+    'expectedHoldingDaysLow',
+    'expectedHoldingDaysHigh',
+    'riskRewardRatio',
+    'confidence',
+    'rationale',
+    'exitConditions',
+  ])
+  if (!isRecord(input) || hasUnexpectedKeys(input, keys)) {
+    return 'MODEL_PRICE_PLAN_SHAPE_INVALID'
+  }
+  const entryDecision = input.entryDecision
+  const confidence = input.confidence
+  const rationale = boundedString(input.rationale, 1, 2_000)
+  const exitConditions = stringArray(input.exitConditions, 20, 500)
+  if (
+    !['BUY_NOW', 'WAIT_PULLBACK', 'WAIT_BREAKOUT', 'NO_ENTRY'].includes(String(entryDecision))
+    || !['HIGH', 'MEDIUM', 'LOW'].includes(String(confidence))
+    || rationale === null
+    || exitConditions === null
+  ) {
+    return 'MODEL_PRICE_PLAN_TEXT_INVALID'
+  }
+  const decision = entryDecision as QuantitativeEntryDecision
+  const priceFields = [
+    'entryPriceLow',
+    'entryPriceHigh',
+    'takeProfitLow',
+    'takeProfitHigh',
+    'stopLossPrice',
+    'riskRewardRatio',
+  ] as const
+  const durationFields = [
+    'entryExpiryTradingDays',
+    'expectedHoldingDaysLow',
+    'expectedHoldingDaysHigh',
+  ] as const
+  if (decision === 'NO_ENTRY') {
+    if (
+      researchSignal === 'BUY'
+      || [...priceFields, ...durationFields].some(key => input[key] !== null)
+    ) {
+      return 'MODEL_PRICE_PLAN_NO_ENTRY_INVALID'
+    }
+  } else {
+    if (researchSignal === 'AVOID') return 'MODEL_PRICE_PLAN_AVOID_MUST_BE_NO_ENTRY'
+    if (decision === 'BUY_NOW' && researchSignal !== 'BUY') {
+      return 'MODEL_PRICE_PLAN_BUY_NOW_REQUIRES_BUY_SIGNAL'
+    }
+    if (priceFields.some(key => !positiveFinite(input[key]))) {
+      return 'MODEL_PRICE_PLAN_NUMBER_INVALID'
+    }
+    if (durationFields.some(key => !positiveInteger(input[key]))) {
+      return 'MODEL_PRICE_PLAN_DURATION_INVALID'
+    }
+    const entryLow = input.entryPriceLow as number
+    const entryHigh = input.entryPriceHigh as number
+    const takeProfitLow = input.takeProfitLow as number
+    const takeProfitHigh = input.takeProfitHigh as number
+    const stopLoss = input.stopLossPrice as number
+    const expiry = input.entryExpiryTradingDays as number
+    const holdingLow = input.expectedHoldingDaysLow as number
+    const holdingHigh = input.expectedHoldingDaysHigh as number
+    if (
+      entryLow > entryHigh
+      || takeProfitLow > takeProfitHigh
+      || stopLoss >= entryLow
+      || takeProfitLow <= entryHigh
+    ) return 'MODEL_PRICE_PLAN_ORDER_INVALID'
+    if (expiry < 5 || expiry > 10 || holdingLow < 20 || holdingHigh > 60 || holdingLow > holdingHigh) {
+      return 'MODEL_PRICE_PLAN_HORIZON_INVALID'
+    }
+    const currentPrice = observation.currentPrice
+    if (!positiveFinite(currentPrice)) return 'MODEL_PRICE_PLAN_CURRENT_PRICE_MISSING'
+    const technical = observation.technicalPriceInputs
+    if (!hasCoreTechnicalPriceInputs(technical)) {
+      return 'MODEL_PRICE_PLAN_TECHNICAL_INPUTS_MISSING'
+    }
+    if (
+      decision === 'BUY_NOW'
+      && (currentPrice < entryLow || currentPrice > entryHigh)
+    ) return 'MODEL_PRICE_PLAN_BUY_NOW_OUTSIDE_ENTRY'
+    if (decision === 'WAIT_PULLBACK' && entryHigh >= currentPrice) {
+      return 'MODEL_PRICE_PLAN_PULLBACK_NOT_BELOW_MARKET'
+    }
+    if (decision === 'WAIT_BREAKOUT' && entryLow <= currentPrice) {
+      return 'MODEL_PRICE_PLAN_BREAKOUT_NOT_ABOVE_MARKET'
+    }
+    const entryFloor = Math.max(
+      0,
+      Math.min(currentPrice, technical.support60 ?? technical.support20) - technical.atr14 * 2,
+    )
+    const entryCeiling = Math.max(
+      currentPrice,
+      technical.resistance60 ?? technical.resistance20,
+    ) + technical.atr14 * 2
+    const stopFloor = Math.max(
+      0,
+      Math.min(currentPrice, technical.support20, technical.support60 ?? technical.support20)
+        - technical.atr14 * 3,
+    )
+    const targetCeiling = Math.max(
+      currentPrice,
+      technical.resistance20,
+      technical.resistance60 ?? technical.resistance20,
+      technical.resistance252 ?? technical.resistance60 ?? technical.resistance20,
+    ) + technical.atr14 * 4
+    if (
+      entryLow < entryFloor
+      || entryHigh > entryCeiling
+      || stopLoss < stopFloor
+      || takeProfitHigh > targetCeiling
+    ) return 'MODEL_PRICE_PLAN_NOT_ANCHORED'
+    const entryMidpoint = (entryLow + entryHigh) / 2
+    const computedRatio = (takeProfitLow - entryMidpoint) / (entryMidpoint - stopLoss)
+    if (
+      !Number.isFinite(computedRatio)
+      || computedRatio <= 0
+      || Math.abs(computedRatio - (input.riskRewardRatio as number)) > 0.05
+    ) return 'MODEL_PRICE_PLAN_RISK_REWARD_INVALID'
+    if (
+      confidence === 'HIGH'
+      && !hasCompleteTechnicalPriceInputs(observation.technicalPriceInputs)
+    ) return 'MODEL_PRICE_PLAN_HIGH_CONFIDENCE_INPUTS_MISSING'
+  }
+  return {
+    entryDecision: decision,
+    entryPriceLow: input.entryPriceLow as number | null,
+    entryPriceHigh: input.entryPriceHigh as number | null,
+    takeProfitLow: input.takeProfitLow as number | null,
+    takeProfitHigh: input.takeProfitHigh as number | null,
+    stopLossPrice: input.stopLossPrice as number | null,
+    entryExpiryTradingDays: input.entryExpiryTradingDays as number | null,
+    expectedHoldingDaysLow: input.expectedHoldingDaysLow as number | null,
+    expectedHoldingDaysHigh: input.expectedHoldingDaysHigh as number | null,
+    riskRewardRatio: input.riskRewardRatio as number | null,
+    confidence: confidence as QuantitativePricePlanConfidence,
+    rationale,
+    exitConditions: unique(exitConditions),
+  }
+}
+
+function positiveFinite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function positiveInteger(value: unknown): value is number {
+  return positiveFinite(value) && Number.isInteger(value)
+}
+
+function hasCompleteTechnicalPriceInputs(
+  value: QuantitativeTechnicalPriceInputs | null | undefined,
+): boolean {
+  return value !== null
+    && value !== undefined
+    && positiveFinite(value.atr14)
+    && positiveFinite(value.support20)
+    && positiveFinite(value.support60)
+    && positiveFinite(value.resistance20)
+    && positiveFinite(value.resistance60)
+    && positiveFinite(value.resistance252)
+}
+
+function hasCoreTechnicalPriceInputs(
+  value: QuantitativeTechnicalPriceInputs | null | undefined,
+): value is QuantitativeTechnicalPriceInputs & {
+  atr14: number
+  support20: number
+  resistance20: number
+} {
+  return value !== null
+    && value !== undefined
+    && positiveFinite(value.atr14)
+    && positiveFinite(value.support20)
+    && positiveFinite(value.resistance20)
 }
 
 export function buildQuantitativeReport(
@@ -431,7 +660,11 @@ export function analyzeQuantitativeItem(
       input.rejectionReason,
     )
   }
-  const validated = validateQuantitativeScoreResult(input.scoreResult, observation.evidence)
+  const validated = validateQuantitativeScoreResult(
+    input.scoreResult,
+    observation.evidence,
+    observation,
+  )
   if (!validated.ok) {
     return emptyItem(
       observation,
@@ -476,6 +709,7 @@ export function analyzeQuantitativeItem(
     coverageWeight: validated.coverageWeight,
     dimensions: validated.value.dimensions,
     researchSignal,
+    pricePlan: validated.value.pricePlan,
     signalReason,
     supportingAssessment: validated.value.supportingAssessment,
     opposingAssessment: validated.value.opposingAssessment,
@@ -511,6 +745,7 @@ function emptyItem(
     coverageWeight: 0,
     dimensions: null,
     researchSignal: null,
+    pricePlan: null,
     signalReason: '',
     supportingAssessment: '',
     opposingAssessment: '',
@@ -562,7 +797,7 @@ function renderQuantitativeMarkdown(
     for (const item of report.topFive) {
       lines.push(
         `${item.finalRank}. **${item.ticker} ${item.displayName}**：`
-        + `${item.totalScore} 分；${item.signalReason}`,
+        + `${item.totalScore} 分；${item.signalReason}；${renderPricePlan(item.pricePlan)}`,
       )
     }
   }
@@ -571,7 +806,7 @@ function renderQuantitativeMarkdown(
     lines.push('无。')
   } else {
     for (const item of report.watchlist) {
-      lines.push(`- **${item.ticker}**：${item.signalReason}`)
+      lines.push(`- **${item.ticker}**：${item.signalReason}；${renderPricePlan(item.pricePlan)}`)
     }
   }
   lines.push('', '## 放弃名单', '')
@@ -591,6 +826,22 @@ function renderQuantitativeMarkdown(
     }
   }
   return lines.join('\n')
+}
+
+function renderPricePlan(plan: QuantitativePricePlan | null): string {
+  if (!plan || plan.entryDecision === 'NO_ENTRY') return '价格计划：暂不入场'
+  return `价格计划：买入 ${formatPriceRange(plan.entryPriceLow, plan.entryPriceHigh)}，`
+    + `止盈 ${formatPriceRange(plan.takeProfitLow, plan.takeProfitHigh)}，`
+    + `止损 ${formatPrice(plan.stopLossPrice)}，预计持有 `
+    + `${plan.expectedHoldingDaysLow}–${plan.expectedHoldingDaysHigh} 个交易日`
+}
+
+function formatPriceRange(low: number | null, high: number | null): string {
+  return `${formatPrice(low)}–${formatPrice(high)}`
+}
+
+function formatPrice(value: number | null): string {
+  return value === null ? '不适用' : `$${value.toFixed(2)}`
 }
 
 function invalid(reason: string): QuantitativeScoreValidation {

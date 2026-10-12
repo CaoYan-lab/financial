@@ -52,6 +52,15 @@
 - 情报与主题层：`longbridge-intel`
 - 价值投资层：`longbridge-value-investing`
 
+## Top30 量化价格计划口径
+
+- 使用 `.tools/longbridge/longbridge kline <symbol> --period day --count 260 --adjust forward`
+  获取前复权日 K。
+- 必须同时读取 high/low/close，并与 Futu 使用同一公式计算 ATR14、20/60 日支撑、
+  20/60/252 日阻力和 30 日年化实现波动率。
+- 价格计划固定为 5–10 个交易日入场有效期、20–60 个交易日预计持有期；CLI 只负责
+  只读证据采集，不生成订单，也不得调用 Futu 补数。
+
 ## 授权状态
 
 当前已完成 CLI 和 Skill 文件安装，但真实数据查询仍需要执行 Longbridge OAuth 登录：

@@ -253,6 +253,12 @@ public final class FutuBrokerClient:
         appendNumber("distance-52w-high", .priceTrend, "距 52 周高点", snapshot.distanceTo52wHigh)
         appendNumber("distance-52w-low", .priceTrend, "距 52 周低点", snapshot.distanceTo52wLow)
         appendNumber("realized-vol-30d", .priceTrend, "30 日实现波动率", snapshot.realizedVol30d)
+        appendNumber("atr14", .priceTrend, "ATR14", snapshot.atr14)
+        appendNumber("support20", .priceTrend, "20 日支撑位", snapshot.support20)
+        appendNumber("support60", .priceTrend, "60 日支撑位", snapshot.support60)
+        appendNumber("resistance20", .priceTrend, "20 日阻力位", snapshot.resistance20)
+        appendNumber("resistance60", .priceTrend, "60 日阻力位", snapshot.resistance60)
+        appendNumber("resistance252", .priceTrend, "252 日阻力位", snapshot.resistance252)
 
         let relatedEvents = market.sections.flatMap(\.events).filter { event in
             event.group == .usMacro
@@ -293,6 +299,15 @@ public final class FutuBrokerClient:
             currentPrice: snapshot.currentPrice,
             quoteFreshness: snapshot.currentPrice == nil ? "UNAVAILABLE" : "FRESH",
             adjustedDailyBarCount: snapshot.adjustedDailyBarCount ?? 0,
+            technicalPriceInputs: QuantitativeTechnicalPriceInputs(
+                atr14: snapshot.atr14,
+                support20: snapshot.support20,
+                support60: snapshot.support60,
+                resistance20: snapshot.resistance20,
+                resistance60: snapshot.resistance60,
+                resistance252: snapshot.resistance252,
+                realizedVolatility30: snapshot.realizedVol30d
+            ),
             evidence: evidence,
             dataGaps: Array(Set(
                 snapshot.dataGaps

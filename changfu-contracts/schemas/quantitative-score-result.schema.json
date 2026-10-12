@@ -8,6 +8,7 @@
     "schemaVersion",
     "dimensions",
     "researchSignal",
+    "pricePlan",
     "signalReason",
     "supportingAssessment",
     "opposingAssessment",
@@ -20,7 +21,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "2.0"
+      "const": "3.0"
     },
     "dimensions": {
       "type": "object",
@@ -57,6 +58,9 @@
         "WATCH",
         "AVOID"
       ]
+    },
+    "pricePlan": {
+      "$ref": "#/$defs/pricePlan"
     },
     "signalReason": {
       "$ref": "#/$defs/assessment"
@@ -96,6 +100,97 @@
         "PARTIAL",
         "UNAVAILABLE"
       ]
+    },
+    "pricePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryDecision",
+        "entryPriceLow",
+        "entryPriceHigh",
+        "takeProfitLow",
+        "takeProfitHigh",
+        "stopLossPrice",
+        "entryExpiryTradingDays",
+        "expectedHoldingDaysLow",
+        "expectedHoldingDaysHigh",
+        "riskRewardRatio",
+        "confidence",
+        "rationale",
+        "exitConditions"
+      ],
+      "properties": {
+        "entryDecision": {
+          "type": "string",
+          "enum": [
+            "BUY_NOW",
+            "WAIT_PULLBACK",
+            "WAIT_BREAKOUT",
+            "NO_ENTRY"
+          ]
+        },
+        "entryPriceLow": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "entryPriceHigh": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "takeProfitLow": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "takeProfitHigh": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "stopLossPrice": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "entryExpiryTradingDays": {
+          "$ref": "#/$defs/nullablePositiveInteger"
+        },
+        "expectedHoldingDaysLow": {
+          "$ref": "#/$defs/nullablePositiveInteger"
+        },
+        "expectedHoldingDaysHigh": {
+          "$ref": "#/$defs/nullablePositiveInteger"
+        },
+        "riskRewardRatio": {
+          "$ref": "#/$defs/nullablePositiveNumber"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/assessment"
+        },
+        "exitConditions": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "nullablePositiveNumber": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "nullablePositiveInteger": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
     },
     "fundamentals": {
       "$ref": "#/$defs/dimension30"

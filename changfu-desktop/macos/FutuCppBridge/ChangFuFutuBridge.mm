@@ -2790,7 +2790,7 @@ ChangFuFutuStatus changfu_futu_sell_put_underlying_json(
     barRequest.mutable_c2s()->mutable_security()->CopyFrom(security);
     barRequest.mutable_c2s()->set_rehabtype(Qot_Common::RehabType_Forward);
     barRequest.mutable_c2s()->set_kltype(Qot_Common::KLType_Day);
-    barRequest.mutable_c2s()->set_reqnum(260);
+    barRequest.mutable_c2s()->set_reqnum(300);
     Qot_GetKL::Response barResponse;
     status = sendRequest(client, FTAPI_ProtoID_Qot_GetKL, barRequest, &barResponse);
     if (status == ChangFuFutuStatusOk
@@ -2798,9 +2798,17 @@ ChangFuFutuStatus changfu_futu_sell_put_underlying_json(
         && barResponse.has_s2c()
         && barResponse.s2c().kllist_size() >= 2) {
         std::vector<double> closes;
+        std::vector<double> highs;
+        std::vector<double> lows;
         closes.reserve(barResponse.s2c().kllist_size());
+        highs.reserve(barResponse.s2c().kllist_size());
+        lows.reserve(barResponse.s2c().kllist_size());
         for (const auto &bar : barResponse.s2c().kllist()) {
-            if (bar.closeprice() > 0) closes.push_back(bar.closeprice());
+            if (bar.closeprice() > 0 && bar.highprice() > 0 && bar.lowprice() > 0) {
+                closes.push_back(bar.closeprice());
+                highs.push_back(bar.highprice());
+                lows.push_back(bar.lowprice());
+            }
         }
         setNumber(
             &root,
@@ -2866,6 +2874,45 @@ ChangFuFutuStatus changfu_futu_sell_put_underlying_json(
             setNumber(&root, "realizedVol30d", std::sqrt(variance * 252.0) * 100);
         } else {
             appendGap(gaps, "30 日实现波动率不可用");
+        }
+        const auto rangeMinimum = [&](std::size_t periods) -> double {
+            if (lows.size() < periods) return 0;
+            return *std::min_element(lows.end() - periods, lows.end());
+        };
+        const auto rangeMaximum = [&](std::size_t periods) -> double {
+            if (highs.size() < periods) return 0;
+            return *std::max_element(highs.end() - periods, highs.end());
+        };
+        if (closes.size() >= 15) {
+            double trueRangeSum = 0;
+            for (std::size_t index = closes.size() - 14; index < closes.size(); ++index) {
+                const double previousClose = closes[index - 1];
+                trueRangeSum += std::max({
+                    highs[index] - lows[index],
+                    std::abs(highs[index] - previousClose),
+                    std::abs(lows[index] - previousClose)
+                });
+            }
+            setNumber(&root, "atr14", trueRangeSum / 14.0);
+        } else {
+            appendGap(gaps, "ATR14 不可用");
+        }
+        if (lows.size() >= 20) {
+            setNumber(&root, "support20", rangeMinimum(20));
+            setNumber(&root, "resistance20", rangeMaximum(20));
+        } else {
+            appendGap(gaps, "20 日支撑阻力不可用");
+        }
+        if (lows.size() >= 60) {
+            setNumber(&root, "support60", rangeMinimum(60));
+            setNumber(&root, "resistance60", rangeMaximum(60));
+        } else {
+            appendGap(gaps, "60 日支撑阻力不可用");
+        }
+        if (lows.size() >= 252) {
+            setNumber(&root, "resistance252", rangeMaximum(252));
+        } else {
+            appendGap(gaps, "252 日阻力不可用");
         }
         if (!closes.empty()) {
             const auto rangeStart = closes.size() > 252 ? closes.end() - 252 : closes.begin();

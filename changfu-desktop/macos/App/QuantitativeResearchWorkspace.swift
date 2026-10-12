@@ -349,11 +349,15 @@ struct QuantitativeReportModule: View {
     }
 
     private func isSignalReport(_ report: QuantitativeReport) -> Bool {
-        report.scoringVersion == "top30-investment-signal-v2"
+        signalScoringVersions.contains(report.scoringVersion)
     }
 
     private func isSignalReport(_ report: QuantitativeReportHistoryItem) -> Bool {
-        report.scoringVersion == "top30-investment-signal-v2"
+        signalScoringVersions.contains(report.scoringVersion)
+    }
+
+    private var signalScoringVersions: Set<String> {
+        ["top30-investment-signal-v2", "top30-investment-price-plan-v3"]
     }
 
     private func candidateCountLabel(_ report: QuantitativeReport) -> String {
@@ -482,6 +486,7 @@ private struct QuantitativeItemDetailSheet: View {
                             .lineSpacing(3)
                             .textSelection(.enabled)
                     }
+                    pricePlanSection(item.pricePlan)
                     assessmentSection(
                         "支持研判",
                         text: item.supportingAssessment,
@@ -579,6 +584,97 @@ private struct QuantitativeItemDetailSheet: View {
         .padding(12)
         .background(FutuTheme.surfaceMuted)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func pricePlanSection(_ plan: QuantitativePricePlan?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("价格计划").font(FutuTheme.panelTitle)
+            if let plan {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(), spacing: 14),
+                        count: 4
+                    ),
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    planMetric("入场判断", entryDecisionLabel(plan.entryDecision))
+                    planMetric("买入区间", priceRange(plan.entryPriceLow, plan.entryPriceHigh))
+                    planMetric("止盈区间", priceRange(plan.takeProfitLow, plan.takeProfitHigh))
+                    planMetric("止损价", price(plan.stopLossPrice))
+                    planMetric(
+                        "计划有效期",
+                        plan.entryExpiryTradingDays.map { "\($0) 个交易日" } ?? "不适用"
+                    )
+                    planMetric(
+                        "预计持有期",
+                        dayRange(plan.expectedHoldingDaysLow, plan.expectedHoldingDaysHigh)
+                    )
+                    planMetric(
+                        "收益风险比",
+                        plan.riskRewardRatio.map { String(format: "%.2f", $0) } ?? "不适用"
+                    )
+                    planMetric("置信度", confidenceLabel(plan.confidence))
+                }
+                Text(plan.rationale)
+                    .font(FutuTheme.body)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                detailSection("退出条件", plan.exitConditions, FutuTheme.ink)
+            } else {
+                Text("该历史报告未生成价格计划。")
+                    .font(FutuTheme.body)
+                    .foregroundStyle(FutuTheme.inkMuted)
+            }
+        }
+        .padding(12)
+        .background(FutuTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func planMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(FutuTheme.metricNote)
+                .foregroundStyle(FutuTheme.inkMuted)
+            Text(value)
+                .font(FutuTheme.bodyStrong)
+                .monospacedDigit()
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func priceRange(_ low: Double?, _ high: Double?) -> String {
+        guard let low, let high else { return "不适用" }
+        return "\(price(low)) – \(price(high))"
+    }
+
+    private func price(_ value: Double?) -> String {
+        value.map { String(format: "$%.2f", $0) } ?? "不适用"
+    }
+
+    private func dayRange(_ low: Int?, _ high: Int?) -> String {
+        guard let low, let high else { return "不适用" }
+        return "\(low)–\(high) 个交易日"
+    }
+
+    private func entryDecisionLabel(_ value: String) -> String {
+        switch value {
+        case "BUY_NOW": return "当前可买"
+        case "WAIT_PULLBACK": return "等待回调"
+        case "WAIT_BREAKOUT": return "等待突破"
+        default: return "暂不入场"
+        }
+    }
+
+    private func confidenceLabel(_ value: String) -> String {
+        switch value {
+        case "HIGH": return "高"
+        case "MEDIUM": return "中"
+        default: return "低"
+        }
     }
 
     @ViewBuilder

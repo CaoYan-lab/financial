@@ -28,7 +28,9 @@
 ## API 能力映射
 
 - `get_market_snapshot(code_list)`：市场快照，无需订阅，最多 400 个标的。
-- `request_history_kline(...)`：历史 K 线，用于 RSI、50MA、200MA 计算。
+- `request_history_kline(...)` / C++ `Qot_GetKL`：前复权日 K 线，用于 RSI、50MA、200MA
+  及量化选股价格计划。价格计划必须同时读取 high/low/close，按统一公式计算 ATR14、
+  20/60 日支撑、20/60/252 日阻力和 30 日年化实现波动率；不得只用收盘价猜测区间。
 - `get_option_chain(...)`：获取期权链静态信息。
 - `get_market_snapshot(option_codes)`：获取期权 IV、Delta、strike、contract size 等快照字段。
 - `get_global_state()`：可用于判断 `qot_logined` 等连接状态。
@@ -39,4 +41,3 @@
 - 禁止在本项目中暴露交易 API。
 - 实盘交易不属于本应用范围。
 - OpenD 必须由用户手动登录。
-

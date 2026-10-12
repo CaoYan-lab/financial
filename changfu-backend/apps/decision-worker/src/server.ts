@@ -572,9 +572,28 @@ function isQuantitativeObservation(value: unknown): value is QuantitativeObserva
     && typeof observation.adjustedDailyBarCount === 'number'
     && Number.isInteger(observation.adjustedDailyBarCount)
     && observation.adjustedDailyBarCount >= 0
+    && isQuantitativeTechnicalPriceInputs(observation.technicalPriceInputs)
     && Array.isArray(observation.evidence)
     && Array.isArray(observation.dataGaps)
   )
+}
+
+function isQuantitativeTechnicalPriceInputs(value: unknown): boolean {
+  if (value === null) return true
+  if (typeof value !== 'object' || Array.isArray(value)) return false
+  const inputs = value as Record<string, unknown>
+  return [
+    'atr14',
+    'support20',
+    'support60',
+    'resistance20',
+    'resistance60',
+    'resistance252',
+    'realizedVolatility30',
+  ].every(key => (
+    inputs[key] === null
+    || typeof inputs[key] === 'number' && Number.isFinite(inputs[key]) && inputs[key] > 0
+  ))
 }
 
 function isRetryableModelError(error: unknown): boolean {
@@ -715,6 +734,7 @@ const server = createServer(async (request, response) => {
           const validated = validateQuantitativeScoreResult(
             parsed,
             body.observation.evidence,
+            body.observation,
           )
           if (!validated.ok) throw new Error(validated.reason)
           sendJson(response, 200, {

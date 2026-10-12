@@ -387,6 +387,12 @@ public struct SellPutUnderlyingSnapshot: Codable, Equatable, Sendable {
     public let distanceTo52wHigh: Double?
     public let distanceTo52wLow: Double?
     public let realizedVol30d: Double?
+    public let atr14: Double?
+    public let support20: Double?
+    public let support60: Double?
+    public let resistance20: Double?
+    public let resistance60: Double?
+    public let resistance252: Double?
     public let adjustedDailyBarCount: Int?
     public let capturedAt: String
     public let dataGaps: [String]
@@ -409,6 +415,12 @@ public struct SellPutUnderlyingSnapshot: Codable, Equatable, Sendable {
         distanceTo52wHigh: Double? = nil,
         distanceTo52wLow: Double? = nil,
         realizedVol30d: Double? = nil,
+        atr14: Double? = nil,
+        support20: Double? = nil,
+        support60: Double? = nil,
+        resistance20: Double? = nil,
+        resistance60: Double? = nil,
+        resistance252: Double? = nil,
         adjustedDailyBarCount: Int? = nil
     ) {
         self.providerId = providerId
@@ -426,6 +438,12 @@ public struct SellPutUnderlyingSnapshot: Codable, Equatable, Sendable {
         self.distanceTo52wHigh = distanceTo52wHigh
         self.distanceTo52wLow = distanceTo52wLow
         self.realizedVol30d = realizedVol30d
+        self.atr14 = atr14
+        self.support20 = support20
+        self.support60 = support60
+        self.resistance20 = resistance20
+        self.resistance60 = resistance60
+        self.resistance252 = resistance252
         self.adjustedDailyBarCount = adjustedDailyBarCount
         self.capturedAt = capturedAt
         self.dataGaps = dataGaps

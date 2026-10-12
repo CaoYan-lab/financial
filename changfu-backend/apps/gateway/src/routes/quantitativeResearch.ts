@@ -6,6 +6,7 @@ import {
   QUANT_SCORING_VERSION,
   type QuantitativeEvidence,
   type QuantitativeObservation,
+  type QuantitativeTechnicalPriceInputs,
 } from '../../../../packages/domain/src/quantitativeResearch.js'
 import { fetchTopThirty } from '../../../../packages/domain/src/topThirtyUniverse.js'
 import { sendJson, sendProblem } from '../../../../packages/http/src/problem.js'
@@ -131,6 +132,7 @@ export function parseQuantitativeObservation(
 ): QuantitativeObservation | null {
   if (!isRecord(value)) return null
   const currentPrice = nullableNumber(value.currentPrice)
+  const technicalPriceInputs = parseTechnicalPriceInputs(value.technicalPriceInputs)
   const evidence = Array.isArray(value.evidence)
     ? value.evidence.map(item => parseBrokerEvidence(item, expectedProvider))
     : null
@@ -155,6 +157,7 @@ export function parseQuantitativeObservation(
     || !Number.isInteger(value.adjustedDailyBarCount)
     || Number(value.adjustedDailyBarCount) < 0
     || Number(value.adjustedDailyBarCount) > 10_000
+    || technicalPriceInputs === undefined
     || evidence === null
     || evidence.length > 500
     || evidence.some(item => item === null)
@@ -176,9 +179,37 @@ export function parseQuantitativeObservation(
     currentPrice,
     quoteFreshness: value.quoteFreshness as QuantitativeObservation['quoteFreshness'],
     adjustedDailyBarCount: Number(value.adjustedDailyBarCount),
+    technicalPriceInputs,
     evidence: evidence as QuantitativeEvidence[],
     dataGaps: value.dataGaps as string[],
   }
+}
+
+function parseTechnicalPriceInputs(
+  value: unknown,
+): QuantitativeTechnicalPriceInputs | null | undefined {
+  if (value === undefined || value === null) return null
+  if (!isRecord(value)) return undefined
+  const keys = [
+    'atr14',
+    'support20',
+    'support60',
+    'resistance20',
+    'resistance60',
+    'resistance252',
+    'realizedVolatility30',
+  ] as const
+  if (
+    Object.keys(value).some(key => !keys.includes(key as typeof keys[number]))
+    || keys.some(key => !(key in value))
+  ) return undefined
+  const parsed = {} as QuantitativeTechnicalPriceInputs
+  for (const key of keys) {
+    const number = nullableNumber(value[key])
+    if (number === undefined || number !== null && number <= 0) return undefined
+    parsed[key] = number
+  }
+  return parsed
 }
 
 export async function handleQuantitativeResearchRoute(context: Context): Promise<boolean> {

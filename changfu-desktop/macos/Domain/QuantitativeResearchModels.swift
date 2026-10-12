@@ -124,6 +124,34 @@ public struct QuantitativeBrokerObservationRequest: Codable, Equatable, Sendable
     }
 }
 
+public struct QuantitativeTechnicalPriceInputs: Codable, Equatable, Sendable {
+    public let atr14: Double?
+    public let support20: Double?
+    public let support60: Double?
+    public let resistance20: Double?
+    public let resistance60: Double?
+    public let resistance252: Double?
+    public let realizedVolatility30: Double?
+
+    public init(
+        atr14: Double?,
+        support20: Double?,
+        support60: Double?,
+        resistance20: Double?,
+        resistance60: Double?,
+        resistance252: Double?,
+        realizedVolatility30: Double?
+    ) {
+        self.atr14 = atr14
+        self.support20 = support20
+        self.support60 = support60
+        self.resistance20 = resistance20
+        self.resistance60 = resistance60
+        self.resistance252 = resistance252
+        self.realizedVolatility30 = realizedVolatility30
+    }
+}
+
 public struct QuantitativeBrokerObservation: Codable, Equatable, Sendable {
     public let requestId: String
     public let rank: Int
@@ -135,6 +163,7 @@ public struct QuantitativeBrokerObservation: Codable, Equatable, Sendable {
     public let currentPrice: Double?
     public let quoteFreshness: String
     public let adjustedDailyBarCount: Int
+    public let technicalPriceInputs: QuantitativeTechnicalPriceInputs?
     public let evidence: [QuantitativeEvidence]
     public let dataGaps: [String]
 
@@ -149,6 +178,7 @@ public struct QuantitativeBrokerObservation: Codable, Equatable, Sendable {
         currentPrice: Double?,
         quoteFreshness: String,
         adjustedDailyBarCount: Int,
+        technicalPriceInputs: QuantitativeTechnicalPriceInputs? = nil,
         evidence: [QuantitativeEvidence],
         dataGaps: [String]
     ) {
@@ -162,6 +192,7 @@ public struct QuantitativeBrokerObservation: Codable, Equatable, Sendable {
         self.currentPrice = currentPrice
         self.quoteFreshness = quoteFreshness
         self.adjustedDailyBarCount = adjustedDailyBarCount
+        self.technicalPriceInputs = technicalPriceInputs
         self.evidence = evidence
         self.dataGaps = dataGaps
     }
@@ -322,6 +353,22 @@ public struct QuantitativeDimensions: Codable, Equatable, Sendable {
     }
 }
 
+public struct QuantitativePricePlan: Codable, Equatable, Sendable {
+    public let entryDecision: String
+    public let entryPriceLow: Double?
+    public let entryPriceHigh: Double?
+    public let takeProfitLow: Double?
+    public let takeProfitHigh: Double?
+    public let stopLossPrice: Double?
+    public let entryExpiryTradingDays: Int?
+    public let expectedHoldingDaysLow: Int?
+    public let expectedHoldingDaysHigh: Int?
+    public let riskRewardRatio: Double?
+    public let confidence: String
+    public let rationale: String
+    public let exitConditions: [String]
+}
+
 public struct QuantitativeItemAnalysis: Codable, Equatable, Identifiable, Sendable {
     public let requestId: String
     public let rank: Int
@@ -336,6 +383,7 @@ public struct QuantitativeItemAnalysis: Codable, Equatable, Identifiable, Sendab
     public let coverageWeight: Int
     public let dimensions: QuantitativeDimensions?
     public let researchSignal: String?
+    public let pricePlan: QuantitativePricePlan?
     public let signalReason: String?
     public let supportingAssessment: String?
     public let opposingAssessment: String?

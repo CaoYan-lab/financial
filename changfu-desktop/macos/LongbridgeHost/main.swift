@@ -786,27 +786,65 @@ private func quantitativeResearchObservation(
     )
     if currentPrice == nil { gaps.append("Longbridge 当前报价不可用") }
 
-    var closes: [Double] = []
+    var bars: [(high: Double, low: Double, close: Double)] = []
     if let klineJSON = try? cli.json(
         [
             "kline", brokerSymbol,
             "--period", "day",
-            "--count", "260",
+            "--count", "300",
             "--adjust", "forward"
         ],
         name: "量化研究前复权日 K"
     ) {
-        closes = records(klineJSON, keys: ["data", "candlesticks", "list"])
-            .compactMap { double($0.decimal("close", "close_price")) }
+        bars = records(klineJSON, keys: ["data", "candlesticks", "list"])
+            .compactMap { record in
+                guard let high = double(record.decimal("high", "high_price")),
+                      let low = double(record.decimal("low", "low_price")),
+                      let close = double(record.decimal("close", "close_price")),
+                      high > 0, low > 0, close > 0 else {
+                    return nil
+                }
+                return (high, low, close)
+            }
         appendPriceEvidence(
             &evidence,
-            closes: closes,
+            closes: bars.map(\.close),
             ticker: request.ticker,
             capturedAt: capturedAt
         )
     } else {
         gaps.append("Longbridge 前复权日 K 不可用")
     }
+    let technicalInputs = technicalPriceInputs(bars)
+    appendNumberEvidence(
+        &evidence, id: "atr14", layer: .priceTrend, title: "ATR14",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.atr14
+    )
+    appendNumberEvidence(
+        &evidence, id: "support20", layer: .priceTrend, title: "20 日支撑位",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.support20
+    )
+    appendNumberEvidence(
+        &evidence, id: "support60", layer: .priceTrend, title: "60 日支撑位",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.support60
+    )
+    appendNumberEvidence(
+        &evidence, id: "resistance20", layer: .priceTrend, title: "20 日阻力位",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.resistance20
+    )
+    appendNumberEvidence(
+        &evidence, id: "resistance60", layer: .priceTrend, title: "60 日阻力位",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.resistance60
+    )
+    appendNumberEvidence(
+        &evidence, id: "resistance252", layer: .priceTrend, title: "252 日阻力位",
+        ticker: request.ticker, capturedAt: capturedAt, value: technicalInputs.resistance252
+    )
+    appendNumberEvidence(
+        &evidence, id: "realized-vol-30d", layer: .priceTrend,
+        title: "30 日实现波动率", ticker: request.ticker,
+        capturedAt: capturedAt, value: technicalInputs.realizedVolatility30
+    )
 
     let readOnlyCommands: [(
         arguments: [String],
@@ -868,9 +906,60 @@ private func quantitativeResearchObservation(
         capturedAt: capturedAt,
         currentPrice: currentPrice,
         quoteFreshness: currentPrice == nil ? "UNAVAILABLE" : "FRESH",
-        adjustedDailyBarCount: closes.count,
+        adjustedDailyBarCount: bars.count,
+        technicalPriceInputs: technicalInputs,
         evidence: evidence,
         dataGaps: Array(Set(gaps)).sorted()
+    )
+}
+
+private func technicalPriceInputs(
+    _ bars: [(high: Double, low: Double, close: Double)]
+) -> QuantitativeTechnicalPriceInputs {
+    func minimumLow(_ periods: Int) -> Double? {
+        guard bars.count >= periods else { return nil }
+        return bars.suffix(periods).map(\.low).min()
+    }
+    func maximumHigh(_ periods: Int) -> Double? {
+        guard bars.count >= periods else { return nil }
+        return bars.suffix(periods).map(\.high).max()
+    }
+    let atr14: Double?
+    if bars.count >= 15 {
+        let start = bars.count - 14
+        let trueRanges = (start..<bars.count).map { index in
+            max(
+                bars[index].high - bars[index].low,
+                abs(bars[index].high - bars[index - 1].close),
+                abs(bars[index].low - bars[index - 1].close)
+            )
+        }
+        atr14 = trueRanges.reduce(0, +) / 14
+    } else {
+        atr14 = nil
+    }
+    let realizedVolatility30: Double?
+    if bars.count >= 31 {
+        let start = bars.count - 30
+        let returns = (start..<bars.count).map { index in
+            log(bars[index].close / bars[index - 1].close)
+        }
+        let mean = returns.reduce(0, +) / Double(returns.count)
+        let variance = returns.reduce(0) { partial, value in
+            partial + pow(value - mean, 2)
+        } / Double(returns.count - 1)
+        realizedVolatility30 = sqrt(variance * 252) * 100
+    } else {
+        realizedVolatility30 = nil
+    }
+    return QuantitativeTechnicalPriceInputs(
+        atr14: atr14,
+        support20: minimumLow(20),
+        support60: minimumLow(60),
+        resistance20: maximumHigh(20),
+        resistance60: maximumHigh(60),
+        resistance252: maximumHigh(252),
+        realizedVolatility30: realizedVolatility30
     )
 }
 

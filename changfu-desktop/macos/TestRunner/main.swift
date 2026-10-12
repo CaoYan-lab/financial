@@ -195,6 +195,13 @@ struct ChangFuDesktopTests {
              "displayName":"NVIDIA","providerId":"FUTU","status":"COMPLETED",
              "candidateStatus":"ELIGIBLE","totalScore":82,"coverageWeight":100,
              "dimensions":null,"researchSignal":"BUY",
+             "pricePlan":{"entryDecision":"BUY_NOW","entryPriceLow":188,
+             "entryPriceHigh":192,"takeProfitLow":210,"takeProfitHigh":220,
+             "stopLossPrice":180,"entryExpiryTradingDays":5,
+             "expectedHoldingDaysLow":20,"expectedHoldingDaysHigh":40,
+             "riskRewardRatio":2,"confidence":"HIGH",
+             "rationale":"现价风险收益满足中期计划要求。",
+             "exitConditions":["跌破止损价","达到止盈区间后分段退出"]},
              "signalReason":"风险收益支持纳入买入推荐。",
              "supportingAssessment":"盈利与趋势共同改善。",
              "opposingAssessment":"估值处于偏高区间。",
@@ -210,6 +217,11 @@ struct ChangFuDesktopTests {
                 return false
             }
             return item.researchSignal == "BUY"
+                && item.pricePlan?.entryDecision == "BUY_NOW"
+                && item.pricePlan?.entryPriceLow == 188
+                && item.pricePlan?.takeProfitHigh == 220
+                && item.pricePlan?.expectedHoldingDaysHigh == 40
+                && item.pricePlan?.exitConditions.count == 2
                 && item.signalReason == "风险收益支持纳入买入推荐。"
                 && item.supportingAssessment == "盈利与趋势共同改善。"
                 && item.opposingAssessment == "估值处于偏高区间。"

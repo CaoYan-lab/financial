@@ -45,8 +45,23 @@ const evidence = [
 ] satisfies QuantitativeObservation['evidence']
 
 const score: QuantitativeScoreResult = {
-  schemaVersion: '2.0',
+  schemaVersion: '3.0',
   researchSignal: 'BUY',
+  pricePlan: {
+    entryDecision: 'BUY_NOW',
+    entryPriceLow: 188,
+    entryPriceHigh: 192,
+    takeProfitLow: 210,
+    takeProfitHigh: 220,
+    stopLossPrice: 180,
+    entryExpiryTradingDays: 5,
+    expectedHoldingDaysLow: 20,
+    expectedHoldingDaysHigh: 40,
+    riskRewardRatio: 2,
+    confidence: 'HIGH',
+    rationale: '现价位于支撑与短期阻力之间，风险收益比满足中期计划要求。',
+    exitConditions: ['跌破止损价', '达到止盈区间后分段退出'],
+  },
   signalReason: '基本面与趋势共同支持当前纳入买入推荐。',
   supportingAssessment: '盈利质量和价格趋势形成主要支持。',
   opposingAssessment: '估值偏高且卖空数据暂不完整。',
@@ -77,6 +92,15 @@ function observation(overrides: Partial<QuantitativeObservation> = {}): Quantita
     currentPrice: 190,
     quoteFreshness: 'FRESH',
     adjustedDailyBarCount: 260,
+    technicalPriceInputs: {
+      atr14: 6,
+      support20: 180,
+      support60: 170,
+      resistance20: 205,
+      resistance60: 215,
+      resistance252: 230,
+      realizedVolatility30: 42,
+    },
     evidence,
     dataGaps: [],
     ...overrides,
@@ -107,7 +131,7 @@ test('共享 Top30 保持股权类别合并和券商代码转换', () => {
 })
 
 test('模型五维评分由服务端校验边界、证据并确定性求和', () => {
-  const validated = validateQuantitativeScoreResult(score, evidence)
+  const validated = validateQuantitativeScoreResult(score, evidence, observation())
   assert.equal(validated.ok, true)
   if (!validated.ok) return
   assert.equal(validated.totalScore, 67)
@@ -120,14 +144,14 @@ test('模型五维评分由服务端校验边界、证据并确定性求和', ()
     assessment: '卖空压力偏高。',
   }
   assert.deepEqual(
-    validateQuantitativeScoreResult(outOfRange, evidence),
+    validateQuantitativeScoreResult(outOfRange, evidence, observation()),
     { ok: false, reason: 'MODEL_SCORE_OUT_OF_RANGE:shortActivity' },
   )
 
   const unknownEvidence = structuredClone(score)
   unknownEvidence.evidenceIds = ['not-in-catalog']
   assert.deepEqual(
-    validateQuantitativeScoreResult(unknownEvidence, evidence),
+    validateQuantitativeScoreResult(unknownEvidence, evidence, observation()),
     { ok: false, reason: 'MODEL_EVIDENCE_NOT_FOUND:not-in-catalog' },
   )
 })
@@ -140,7 +164,7 @@ test('缺失维度必须使用 null 且不重新分配权重', () => {
     assessment: '卖空数据不可用。',
   }
   assert.deepEqual(
-    validateQuantitativeScoreResult(invalid, evidence),
+    validateQuantitativeScoreResult(invalid, evidence, observation()),
     { ok: false, reason: 'MODEL_UNAVAILABLE_SCORE_MUST_BE_NULL:shortActivity' },
   )
 })
@@ -151,8 +175,69 @@ test('每个维度必须包含模型聚合研判', () => {
   }
   delete invalid.dimensions.shortActivity.assessment
   assert.deepEqual(
-    validateQuantitativeScoreResult(invalid, evidence),
+    validateQuantitativeScoreResult(invalid, evidence, observation()),
     { ok: false, reason: 'MODEL_DIMENSION_INVALID:shortActivity' },
+  )
+})
+
+test('价格计划校验入场关系、周期、收益风险比和技术输入覆盖', () => {
+  const invalidRatio = structuredClone(score)
+  invalidRatio.pricePlan.riskRewardRatio = 3
+  assert.deepEqual(
+    validateQuantitativeScoreResult(invalidRatio, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_RISK_REWARD_INVALID' },
+  )
+
+  const invalidPullback = structuredClone(score)
+  invalidPullback.pricePlan.entryDecision = 'WAIT_PULLBACK'
+  assert.deepEqual(
+    validateQuantitativeScoreResult(invalidPullback, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_PULLBACK_NOT_BELOW_MARKET' },
+  )
+
+  const missingTechnical = observation({ technicalPriceInputs: null })
+  assert.deepEqual(
+    validateQuantitativeScoreResult(score, evidence, missingTechnical),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_TECHNICAL_INPUTS_MISSING' },
+  )
+
+  const invalidHorizon = structuredClone(score)
+  invalidHorizon.pricePlan.expectedHoldingDaysHigh = 61
+  assert.deepEqual(
+    validateQuantitativeScoreResult(invalidHorizon, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_HORIZON_INVALID' },
+  )
+
+  const detachedFromMarket = structuredClone(score)
+  detachedFromMarket.pricePlan = {
+    ...detachedFromMarket.pricePlan,
+    entryDecision: 'WAIT_PULLBACK',
+    entryPriceLow: 10,
+    entryPriceHigh: 12,
+    takeProfitLow: 20,
+    takeProfitHigh: 22,
+    stopLossPrice: 8,
+    riskRewardRatio: 3,
+  }
+  assert.deepEqual(
+    validateQuantitativeScoreResult(detachedFromMarket, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_NOT_ANCHORED' },
+  )
+
+  const watchBuyNow = structuredClone(score)
+  watchBuyNow.researchSignal = 'WATCH'
+  assert.deepEqual(
+    validateQuantitativeScoreResult(watchBuyNow, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_BUY_NOW_REQUIRES_BUY_SIGNAL' },
+  )
+})
+
+test('放弃信号必须明确不入场且价格字段为空', () => {
+  const avoidWithEntry = structuredClone(score)
+  avoidWithEntry.researchSignal = 'AVOID'
+  assert.deepEqual(
+    validateQuantitativeScoreResult(avoidWithEntry, evidence, observation()),
+    { ok: false, reason: 'MODEL_PRICE_PLAN_AVOID_MUST_BE_NO_ENTRY' },
   )
 })
 
@@ -172,8 +257,8 @@ test('报告仅从满足报价、K 线和覆盖门槛的标的选 Top5', () => {
     { observation: observation(), scoreResult: score },
   ], new Date('2026-10-08T13:00:00.000Z'))
 
-  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v3')
-  assert.equal(QUANT_SCORING_VERSION, 'top30-investment-signal-v2')
+  assert.equal(QUANT_PROMPT_VERSION, 'top30-quant-selection-v4')
+  assert.equal(QUANT_SCORING_VERSION, 'top30-investment-price-plan-v3')
   assert.equal(report.items[0]?.ticker, 'NVDA')
   assert.equal(report.items[0]?.finalRank, 1)
   assert.equal(report.items.find(item => item.ticker === 'MSFT')?.finalRank, 2)
@@ -193,6 +278,18 @@ test('Top5 仅从买入信号选取并单独输出观望和放弃名单', () => 
   const watchScore: QuantitativeScoreResult = {
     ...structuredClone(score),
     researchSignal: 'WATCH',
+    pricePlan: {
+      ...structuredClone(score.pricePlan),
+      entryDecision: 'WAIT_PULLBACK',
+      entryPriceLow: 180,
+      entryPriceHigh: 184,
+      takeProfitLow: 205,
+      takeProfitHigh: 215,
+      stopLossPrice: 172,
+      riskRewardRatio: 2.3,
+      confidence: 'MEDIUM',
+      rationale: '基本面具备吸引力，但需等待价格回落至支撑区间。',
+    },
     signalReason: '估值和买入时点尚不理想。',
     dimensions: {
       ...structuredClone(score.dimensions),
@@ -206,6 +303,21 @@ test('Top5 仅从买入信号选取并单独输出观望和放弃名单', () => 
   const avoidScore: QuantitativeScoreResult = {
     ...structuredClone(score),
     researchSignal: 'AVOID',
+    pricePlan: {
+      entryDecision: 'NO_ENTRY',
+      entryPriceLow: null,
+      entryPriceHigh: null,
+      takeProfitLow: null,
+      takeProfitHigh: null,
+      stopLossPrice: null,
+      entryExpiryTradingDays: null,
+      expectedHoldingDaysLow: null,
+      expectedHoldingDaysHigh: null,
+      riskRewardRatio: null,
+      confidence: 'LOW',
+      rationale: '当前风险收益不支持制定入场计划。',
+      exitConditions: [],
+    },
     signalReason: '当前风险收益不支持选择。',
   }
   const report = buildQuantitativeReport([
@@ -242,6 +354,7 @@ test('研究信号只接受买入、观望和放弃三种枚举', () => {
     validateQuantitativeScoreResult(
       { ...structuredClone(score), researchSignal: 'SELL' },
       evidence,
+      observation(),
     ),
     { ok: false, reason: 'MODEL_RESEARCH_SIGNAL_INVALID' },
   )
@@ -303,11 +416,14 @@ test('单票 Prompt 输出研究信号但禁止跨标的排名和交易执行', 
   assert.match(prompt.system, /score 表示该维度对当前投资吸引力的贡献/)
   assert.match(prompt.system, /数据完整度只能用 availability 表示/)
   assert.match(prompt.system, /supportingAssessment 必须将支持选择该股的核心证据合并/)
-  assert.match(prompt.system, /不得返回总分、跨标的排名、交易候选、仓位、价格目标或订单/)
+  assert.match(prompt.system, /不得返回总分、跨标的排名、交易候选、仓位或订单/)
   assert.match(prompt.system, /score、availability 与 assessment 三个字段/)
   assert.match(prompt.system, /shortActivity\.assessment 必须综合卖空成交占比/)
   assert.match(prompt.system, /不得罗列或复述原始记录/)
   assert.match(prompt.system, /AVAILABLE、PARTIAL、UNAVAILABLE/)
+  assert.match(prompt.system, /入场计划有效期必须为 5–10 个交易日/)
+  assert.match(prompt.system, /riskRewardRatio 使用保守目标计算/)
+  assert.match(prompt.user, /technicalPriceInputs/)
 })
 
 test('异 Provider 报告对比确定性计算 Top5 重合与排名差异', () => {
@@ -425,6 +541,13 @@ test('Gateway 单票 observation 拒绝跨 Provider 证据与代码错配', () =
     ...valid,
     symbol: 'NVDA.US',
   }, 'FUTU', valid.requestId), null)
+  assert.equal(parseQuantitativeObservation({
+    ...valid,
+    technicalPriceInputs: {
+      ...valid.technicalPriceInputs!,
+      atr14: -1,
+    },
+  }, 'FUTU', valid.requestId), null)
 })
 
 test('量化单票幂等 operation 不超过数据库 varchar(80)', () => {
@@ -506,6 +629,37 @@ test('量化链路不存在 Yahoo 且 Longbridge Host 仅使用固定只读命�
   }
 })
 
+test('Futu 与 Longbridge 使用同口径技术价格输入', async () => {
+  const [futu, longbridge] = await Promise.all([
+    readFile(
+      new URL(
+        '../../changfu-desktop/macos/FutuCppBridge/ChangFuFutuBridge.mm',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+    readFile(
+      new URL('../../changfu-desktop/macos/LongbridgeHost/main.swift', import.meta.url),
+      'utf8',
+    ),
+  ])
+  for (const field of [
+    'atr14',
+    'support20',
+    'support60',
+    'resistance20',
+    'resistance60',
+    'resistance252',
+  ]) {
+    assert.ok(futu.includes(`"${field}"`), `Futu 缺少 ${field}`)
+    assert.ok(longbridge.includes(`${field}:`), `Longbridge 缺少 ${field}`)
+  }
+  assert.match(futu, /highs\[index\] - lows\[index\]/)
+  assert.match(futu, /std::abs\(highs\[index\] - previousClose\)/)
+  assert.match(longbridge, /bars\[index\]\.high - bars\[index\]\.low/)
+  assert.match(longbridge, /abs\(bars\[index\]\.high - bars\[index - 1\]\.close\)/)
+})
+
 test('量化 Repository 在模型调用前绑定 run、requestId、symbol、ticker 与排名', async () => {
   const source = await readFile(
     new URL(
@@ -560,7 +714,7 @@ test('量化长任务使用滑动并发窗口并逐票读取自动续期后的 a
   )
 })
 
-test('桌面详情展示聚合支持反对研判且隐藏原始证据列表', async () => {
+test('桌面详情展示聚合研判和价格计划且隐藏原始证据列表', async () => {
   const source = await readFile(
     new URL(
       '../../changfu-desktop/macos/App/QuantitativeResearchWorkspace.swift',
@@ -572,5 +726,9 @@ test('桌面详情展示聚合支持反对研判且隐藏原始证据列表', as
   assert.match(source, /value\.assessment/)
   assert.match(source, /item\.supportingAssessment/)
   assert.match(source, /item\.opposingAssessment/)
+  assert.match(source, /Text\("价格计划"\)/)
+  assert.match(source, /entryDecisionLabel/)
+  assert.match(source, /riskRewardRatio/)
+  assert.match(source, /top30-investment-price-plan-v3/)
   assert.doesNotMatch(source, /evidenceSection/)
 })
