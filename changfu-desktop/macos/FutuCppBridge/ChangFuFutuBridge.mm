@@ -1480,18 +1480,24 @@ std::string tradeSymbol(const std::string &code, int securityMarket) {
     }
 }
 
+std::string orderIdentifier(const Trd_Common::Order &order) {
+    return order.has_orderidex() && !order.orderidex().empty()
+        ? order.orderidex()
+        : std::to_string(order.orderid());
+}
+
+std::string fillIdentifier(const Trd_Common::OrderFill &fill) {
+    return fill.has_fillidex() && !fill.fillidex().empty()
+        ? fill.fillidex()
+        : std::to_string(fill.fillid());
+}
+
 void appendOrder(
     google::protobuf::ListValue *list,
     const Trd_Common::Order &order
 ) {
     auto *object = list->add_values()->mutable_struct_value();
-    setString(
-        object,
-        "orderId",
-        order.has_orderidex() && !order.orderidex().empty()
-            ? order.orderidex()
-            : std::to_string(order.orderid())
-    );
+    setString(object, "orderId", orderIdentifier(order));
     setString(
         object,
         "symbol",
@@ -1515,13 +1521,7 @@ void appendFill(
     const Trd_Common::OrderFill &fill
 ) {
     auto *object = list->add_values()->mutable_struct_value();
-    setString(
-        object,
-        "fillId",
-        fill.has_fillidex() && !fill.fillidex().empty()
-            ? fill.fillidex()
-            : std::to_string(fill.fillid())
-    );
+    setString(object, "fillId", fillIdentifier(fill));
     setString(
         object,
         "orderId",
@@ -1567,6 +1567,10 @@ void loadTradeSnapshot(
     bool currentFillSucceeded = false;
     bool historyOrderSucceeded = false;
     bool historyFillSucceeded = false;
+    std::set<std::string> currentOrderIds;
+    std::set<std::string> currentFillIds;
+    std::set<std::string> historyOrderIds;
+    std::set<std::string> historyFillIds;
     std::vector<int> markets = account.markets;
     if (markets.empty()) {
         markets.push_back(Trd_Common::TrdMarket_HK);
@@ -1595,7 +1599,9 @@ void loadTradeSnapshot(
             && orderResponse.has_s2c()) {
             currentOrderSucceeded = true;
             for (const auto &order : orderResponse.s2c().orderlist()) {
-                appendOrder(orders, order);
+                if (currentOrderIds.insert(orderIdentifier(order)).second) {
+                    appendOrder(orders, order);
+                }
             }
         }
 
@@ -1614,7 +1620,9 @@ void loadTradeSnapshot(
             && fillResponse.has_s2c()) {
             currentFillSucceeded = true;
             for (const auto &fill : fillResponse.s2c().orderfilllist()) {
-                appendFill(fills, fill);
+                if (currentFillIds.insert(fillIdentifier(fill)).second) {
+                    appendFill(fills, fill);
+                }
             }
         }
 
@@ -1635,7 +1643,9 @@ void loadTradeSnapshot(
             && historyOrderResponse.has_s2c()) {
             historyOrderSucceeded = true;
             for (const auto &order : historyOrderResponse.s2c().orderlist()) {
-                appendOrder(historyOrders, order);
+                if (historyOrderIds.insert(orderIdentifier(order)).second) {
+                    appendOrder(historyOrders, order);
+                }
             }
         }
 
@@ -1656,7 +1666,9 @@ void loadTradeSnapshot(
             && historyFillResponse.has_s2c()) {
             historyFillSucceeded = true;
             for (const auto &fill : historyFillResponse.s2c().orderfilllist()) {
-                appendFill(historyFills, fill);
+                if (historyFillIds.insert(fillIdentifier(fill)).second) {
+                    appendFill(historyFills, fill);
+                }
             }
         }
     }

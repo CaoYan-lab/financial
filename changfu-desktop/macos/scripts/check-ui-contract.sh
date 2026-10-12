@@ -298,6 +298,20 @@ do
   fi
 done
 
+for contract in \
+  'orderIdentifier' \
+  'fillIdentifier' \
+  'currentOrderIds.insert' \
+  'currentFillIds.insert' \
+  'historyOrderIds.insert' \
+  'historyFillIds.insert'
+do
+  if ! rg -q "$contract" "$FUTU_BRIDGE"; then
+    printf '%s\n' "UI 契约失败：Futu 委托与成交列表去重缺少 ${contract}" >&2
+    exit 1
+  fi
+done
+
 for contract in '"App Key"' '"App Secret"' '"Access Token"' '"保存并连接"'; do
   if ! rg -q "$contract" "$SETTINGS"; then
     printf '%s\n' "UI 契约失败：Longbridge 配置缺少 ${contract}" >&2
