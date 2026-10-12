@@ -165,7 +165,7 @@ jq -e '
 
 configure_and_release "$CHANGFU_GATEWAY_FUNCTION_ID" "$GATEWAY_IMAGE" gateway
 GATEWAY_READY="$(
-  curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+  curl --fail --silent --show-error --retry 24 --retry-delay 5 \
     --retry-all-errors --connect-timeout 10 --max-time 20 \
     "${CHANGFU_PUBLIC_API_ORIGIN%/}/v1/ready"
 )"
