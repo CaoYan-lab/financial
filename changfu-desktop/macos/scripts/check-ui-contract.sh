@@ -79,13 +79,14 @@ done
 for contract in \
   '"执行 Top30 选股研究"' \
   'QuantitativeReportModule' \
-  '"Top 5 候选"' \
+  '"Top 5 买入推荐"' \
   '"观察名单"' \
-  '"Bottom 5 风险"' \
+  '"放弃名单"' \
   '"逐标的明细"' \
   '"选择另一平台报告对比"' \
-  '"SEC 官方申报"' \
-  '"FINRA 官方成交"' \
+  '"最终研究信号"' \
+  '"支持研判"' \
+  '"反对研判"' \
   'quantitativeRunStates'
 do
   if ! rg -q "$contract" "$WORKSPACES" "$QUANTITATIVE_REPORT" "$APP_STATE"; then
