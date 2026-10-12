@@ -603,6 +603,13 @@ function isRetryableModelError(error: unknown): boolean {
     || /^MODEL_HTTP_(408|429|5\d\d)$/.test(error.message)
 }
 
+function isRepairableQuantitativeModelError(error: unknown): boolean {
+  return error instanceof SyntaxError
+    || error instanceof Error
+      && error.message.startsWith('MODEL_')
+      && !error.message.startsWith('MODEL_HTTP_')
+}
+
 const server = createServer(async (request, response) => {
   const requestId = request.headers['x-request-id']?.toString() ?? randomUUID()
   if (request.method === 'GET' && request.url === '/internal/v1/health') {
@@ -718,11 +725,15 @@ const server = createServer(async (request, response) => {
         body.modelProfile as 'fast' | 'deep' | 'risk',
       )
       let lastError: unknown
+      let repairReason: string | null = null
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           const text = (await requestModelText({
             config: official,
-            system: prompt.system,
+            system: repairReason === null
+              ? prompt.system
+              : `${prompt.system}上一次输出未通过服务端校验：${repairReason}。`
+                + '请重新从原始输入生成完整 JSON，逐项修正该错误，不得省略字段。',
             user: prompt.user,
             temperature: 0,
             timeoutMs: modelRequestTimeoutMs,
@@ -744,7 +755,11 @@ const server = createServer(async (request, response) => {
           return
         } catch (error) {
           lastError = error
-          if (attempt > 0 || !isRetryableModelError(error)) throw error
+          repairReason = error instanceof Error ? error.message : 'MODEL_RESULT_INVALID'
+          if (
+            attempt > 0
+            || !isRetryableModelError(error) && !isRepairableQuantitativeModelError(error)
+          ) throw error
         }
       }
       throw lastError

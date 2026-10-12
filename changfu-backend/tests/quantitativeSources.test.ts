@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { Pool } from 'pg'
 import {
   calculateFinraShortMetrics,
+  FinraResearchClient,
   parseFinraShortVolume,
   type FinraShortVolumePoint,
 } from '../packages/research/src/finraResearchClient.js'
@@ -11,7 +12,10 @@ import {
   extractRecentEvents,
   selectLatestFactAsOf,
 } from '../packages/research/src/secResearchClient.js'
-import { PostgresPublicSourceCache } from '../packages/research/src/publicSourceCache.js'
+import {
+  PostgresPublicSourceCache,
+  type PublicSourceCache,
+} from '../packages/research/src/publicSourceCache.js'
 
 test('SEC point-in-time 只选择 capturedAt 前已申报的最新重述值', () => {
   const selected = selectLatestFactAsOf('Revenue', {
@@ -128,6 +132,34 @@ test('FINRA 20/60 日均值、z-score 与 5 日变化按时间降序计算', () 
   assert.equal(metrics.observations, 60)
   assert.ok((metrics.zScore60 ?? 0) > 7)
   assert.ok(Math.abs((metrics.change5Day ?? 0) - 0.4) < 1e-10)
+})
+
+test('FINRA 整批日期文件不可用时停止继续扫描历史日期', async () => {
+  let fetchCount = 0
+  const cache: PublicSourceCache = {
+    async getOrFetch(input) {
+      const payload = await input.fetcher()
+      return {
+        source: input.source,
+        cacheKey: input.cacheKey,
+        asOf: input.asOf.toISOString(),
+        fetchedAt: input.asOf.toISOString(),
+        expiresAt: input.expiresAt.toISOString(),
+        checksum: 'test',
+        payload,
+      }
+    },
+  }
+  const fetcher = (async () => {
+    fetchCount += 1
+    return new Response('', { status: 404 })
+  }) as typeof fetch
+  const result = await new FinraResearchClient(cache, fetcher).shortVolume(
+    'NVDA',
+    new Date('2026-10-12T00:00:00.000Z'),
+  )
+  assert.equal(fetchCount, 10)
+  assert.equal(result.availability, 'UNAVAILABLE')
 })
 
 test('官方数据缓存合并同一进程内的并发请求', async () => {

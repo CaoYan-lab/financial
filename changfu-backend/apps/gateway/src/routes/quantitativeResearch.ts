@@ -179,7 +179,11 @@ export function parseQuantitativeObservation(
     currentPrice,
     quoteFreshness: value.quoteFreshness as QuantitativeObservation['quoteFreshness'],
     adjustedDailyBarCount: Number(value.adjustedDailyBarCount),
-    technicalPriceInputs,
+    technicalPriceInputs: technicalPriceInputs ?? recoverTechnicalPriceInputs(
+      evidence as QuantitativeEvidence[],
+      expectedProvider,
+      String(value.ticker),
+    ),
     evidence: evidence as QuantitativeEvidence[],
     dataGaps: value.dataGaps as string[],
   }
@@ -210,6 +214,38 @@ function parseTechnicalPriceInputs(
     parsed[key] = number
   }
   return parsed
+}
+
+function recoverTechnicalPriceInputs(
+  evidence: QuantitativeEvidence[],
+  providerId: QuantitativeProvider,
+  ticker: string,
+): QuantitativeTechnicalPriceInputs | null {
+  if (providerId !== 'LONGBRIDGE') return null
+  const valueFor = (key: string): number | null => {
+    const match = evidence.find(item => (
+      item.source === 'LONGBRIDGE'
+      && item.id === `longbridge:${key}:${ticker}`
+      && typeof item.value === 'number'
+      && Number.isFinite(item.value)
+      && item.value > 0
+    ))
+    return typeof match?.value === 'number' ? match.value : null
+  }
+  const recovered = {
+    atr14: valueFor('atr14'),
+    support20: valueFor('support20'),
+    support60: valueFor('support60'),
+    resistance20: valueFor('resistance20'),
+    resistance60: valueFor('resistance60'),
+    resistance252: valueFor('resistance252'),
+    realizedVolatility30: valueFor('realized-vol-30d'),
+  }
+  return recovered.atr14 !== null
+    && recovered.support20 !== null
+    && recovered.resistance20 !== null
+    ? recovered
+    : null
 }
 
 export async function handleQuantitativeResearchRoute(context: Context): Promise<boolean> {

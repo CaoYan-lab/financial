@@ -172,6 +172,7 @@ public final class LongbridgeBrokerClient:
             currentPrice: observation.currentPrice,
             quoteFreshness: observation.quoteFreshness,
             adjustedDailyBarCount: observation.adjustedDailyBarCount,
+            technicalPriceInputs: observation.technicalPriceInputs,
             evidence: observation.evidence + macro.evidence,
             dataGaps: observation.dataGaps.filter {
                 $0 != "Longbridge 宏观快照未准备"

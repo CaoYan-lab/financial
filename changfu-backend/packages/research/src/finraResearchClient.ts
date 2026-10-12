@@ -44,7 +44,8 @@ export class FinraResearchClient {
         date,
         capturedAt,
       )))
-      points.push(...fetched.filter((point): point is FinraShortVolumePoint => point !== null))
+      if (fetched.every(point => point === undefined)) break
+      points.push(...fetched.filter((point): point is FinraShortVolumePoint => point != null))
       if (points.length >= maximumTradingDays) break
     }
     return calculateFinraShortMetrics(
@@ -59,7 +60,7 @@ export class FinraResearchClient {
     ticker: string,
     date: string,
     capturedAt: Date,
-  ): Promise<FinraShortVolumePoint | null> {
+  ): Promise<FinraShortVolumePoint | null | undefined> {
     try {
       const immutableAt = new Date(`${date}T23:59:59.000Z`)
       const isLatestWindow = capturedAt.getTime() - immutableAt.getTime() < 3 * 86_400_000
@@ -72,9 +73,11 @@ export class FinraResearchClient {
           : new Date('2100-01-01T00:00:00.000Z'),
         fetcher: () => this.fetchDailyFile(date),
       })
-      return parseFinraShortVolume(entry.payload, ticker, date)
+      return entry.payload === ''
+        ? undefined
+        : parseFinraShortVolume(entry.payload, ticker, date)
     } catch {
-      return null
+      return undefined
     }
   }
 
@@ -86,6 +89,7 @@ export class FinraResearchClient {
       headers: { Accept: 'text/plain' },
       signal: AbortSignal.timeout(15_000),
     })
+    if (response.status === 404 || response.status === 410) return ''
     if (!response.ok) throw new Error(`FINRA_HTTP_${response.status}`)
     return response.text()
   }

@@ -533,6 +533,25 @@ test('Gateway 单票 observation 拒绝跨 Provider 证据与代码错配', () =
     )?.evidence[0]?.asOf,
     null,
   )
+  const recovered = parseQuantitativeObservation({
+    ...longbridgeWithoutAsOf,
+    technicalPriceInputs: null,
+    evidence: [
+      ['atr14', 6],
+      ['support20', 180],
+      ['support60', 170],
+      ['resistance20', 205],
+      ['resistance60', 215],
+      ['resistance252', 230],
+      ['realized-vol-30d', 42],
+    ].map(([key, value]) => ({
+      ...longbridgeWithoutAsOf.evidence[0],
+      id: `longbridge:${key}:NVDA`,
+      value,
+    })),
+  }, 'LONGBRIDGE', valid.requestId)
+  assert.equal(recovered?.technicalPriceInputs?.atr14, 6)
+  assert.equal(recovered?.technicalPriceInputs?.resistance252, 230)
   assert.equal(parseQuantitativeObservation({
     ...valid,
     evidence: [{ ...valid.evidence[0], source: 'LONGBRIDGE' }],
@@ -630,7 +649,7 @@ test('量化链路不存在 Yahoo 且 Longbridge Host 仅使用固定只读命�
 })
 
 test('Futu 与 Longbridge 使用同口径技术价格输入', async () => {
-  const [futu, longbridge] = await Promise.all([
+  const [futu, longbridge, longbridgeClient] = await Promise.all([
     readFile(
       new URL(
         '../../changfu-desktop/macos/FutuCppBridge/ChangFuFutuBridge.mm',
@@ -640,6 +659,13 @@ test('Futu 与 Longbridge 使用同口径技术价格输入', async () => {
     ),
     readFile(
       new URL('../../changfu-desktop/macos/LongbridgeHost/main.swift', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL(
+        '../../changfu-desktop/macos/Infrastructure/LongbridgeBrokerClient.swift',
+        import.meta.url,
+      ),
       'utf8',
     ),
   ])
@@ -658,6 +684,10 @@ test('Futu 与 Longbridge 使用同口径技术价格输入', async () => {
   assert.match(futu, /std::abs\(highs\[index\] - previousClose\)/)
   assert.match(longbridge, /bars\[index\]\.high - bars\[index\]\.low/)
   assert.match(longbridge, /abs\(bars\[index\]\.high - bars\[index - 1\]\.close\)/)
+  assert.match(
+    longbridgeClient,
+    /technicalPriceInputs:\s*observation\.technicalPriceInputs/,
+  )
 })
 
 test('量化 Repository 在模型调用前绑定 run、requestId、symbol、ticker 与排名', async () => {
